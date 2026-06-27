@@ -1,0 +1,85 @@
+# Glossary
+
+- State-based version control: storing the desired end state of database objects in versioned files.
+- Migration-based version control: storing ordered change scripts that move a database from one version to another.
+- Per-object file: one durable database object represented by one file.
+- Schema compare: comparison of database object definitions between sources.
+- Data compare: comparison of configured table data between sources.
+- Reference data: stable business data that can be deliberately versioned.
+- Configuration data: application or operational settings stored in database tables and deliberately versioned.
+- Transactional data: operational records such as orders, payments, events, and logs that should not be versioned by default.
+- Drift: a difference between desired repository state and a live database.
+- Deployment artifact: generated output used for review or deployment, such as SQL scripts and reports.
+- Deterministic core: engine logic that computes results without relying on AI judgment.
+- DbState Service: local backend that performs repository, Git, database, comparison, and artifact work.
+- RDBMS adapter: engine-specific component for inspection, normalization, dependency analysis, and SQL generation.
+- Cross-platform: able to run on Windows, macOS, and Linux.
+- Native build: platform-specific executable or package.
+- CLI binary: command-line executable for headless operation.
+- Docker image: container image for automation, CI/CD, scheduled drift checks, and server-style runtime.
+- MCP: Model Context Protocol, a potential local integration surface for agents.
+- Dry-run: operation that reports planned changes without applying them.
+- Destructive change: change that may drop, overwrite, truncate, or make data inaccessible.
+- Git repository: version-controlled directory containing DbState project files.
+- Remote repository: hosted or network Git repository.
+- Clone: create a local copy of a remote repository.
+- Fetch: download remote Git refs without merging them.
+- Pull: fetch and integrate remote changes into the current branch.
+- Push: upload local commits to a remote repository.
+- Branch: named Git line of work.
+- Checkout: switch to a branch or restore files.
+- Working tree: local files currently checked out.
+- Staging area: Git index of files prepared for commit.
+- Commit: recorded Git snapshot.
+- Merge conflict: Git conflict that requires manual resolution.
+- Dirty working tree: working tree with uncommitted changes.
+- Source-of-truth files: per-object desired-state files and configured reference-data files.
+- Generated artifact: file generated from deterministic comparison or planning.
+- Source database: live database used as input for repository synchronization.
+- Target database: live database compared against repository state for deployment planning.
+- Repository synchronization: updating local repository state from a source database after approval.
+- Database-to-repo synchronization: same as repository synchronization.
+- Repo-to-database planning: comparing repository state to a target database and generating scripts and reports.
+- Synchronization script: generated SQL that can align a target database to desired state.
+- Deployment script: SQL script intended for a human-controlled deployment process.
+- Direct apply: DbState executing generated SQL against a real target database.
+- Human-controlled deployment: deployment process outside DbState that executes reviewed SQL.
+- AI script review: AI explanation or review of generated scripts without execution.
+- Version-controlled deployment artifact: generated deployment file stored in Git.
+- Generated synchronization script: SQL produced from a selected synchronization plan.
+- Release script: generated SQL script stored under a release artifact folder.
+- Release folder: repository folder for generated deployment artifacts, recommended as `database/releases/`.
+- Script metadata header: non-secret header describing generation context and warnings.
+- Companion review artifact: related summary, risk report, JSON report, or AI-review note.
+- Risk report: artifact explaining destructive changes, warnings, and risk classification.
+- Object-level change summary: artifact listing changed database objects.
+- AI-reviewable artifact: deterministic artifact formatted so an AI agent can review or summarize it.
+- Selective synchronization: generating a plan from selected objects, changes, and rows.
+- Cherry-picking: user selection of specific changes to include or exclude.
+- Selected object: object chosen for inclusion in a synchronization plan.
+- Excluded object: object left out of a synchronization plan.
+- Required dependency: object or change needed by a selected object.
+- Missing dependency: required dependency that is excluded or absent.
+- Dependent object: object that relies on another object.
+- Dependency impact analysis: analysis of how selected and excluded objects affect each other.
+- Auto-include dependency: suggested dependency inclusion that requires user approval.
+- Critical dependency warning: warning that should block script generation by default.
+- Dependency override: explicit user approval to continue despite a non-critical warning.
+- Selected synchronization plan: approved set of included changes and recorded exclusions.
+- Deployment rehearsal: future premium feature for testing generated scripts against temporary targets.
+- Temporary target database: disposable database used for rehearsal.
+- Rehearsal setup script: script that prepares the temporary target.
+- Rehearsal execution log: log from rehearsal execution.
+- Post-rehearsal comparison: comparison after rehearsal to verify alignment.
+- Disposable database: temporary database that may be dropped after rehearsal.
+- Script-only rehearsal: mode where DbState generates scripts for the user to run.
+- Local rehearsal: mode where DbState runs rehearsal against a local temporary database after approval.
+- Docker rehearsal: mode where DbState uses a disposable database container.
+- Rehearsal report: artifact describing success, failures, warnings, and drift.
+- AI-assisted branch name: AI-drafted Git branch name grounded in deterministic artifacts.
+- AI-assisted PR title: AI-drafted pull request title grounded in deterministic artifacts.
+- AI-assisted PR body: AI-drafted pull request body grounded in deterministic artifacts.
+- AI-assisted review comment: AI-drafted review comment grounded in deterministic artifacts.
+- Draft comment: comment presented to the user before posting.
+- Review workflow artifact: generated text or report used in code or database review.
+- Grounded AI output: AI output based only on deterministic DbState artifacts.
