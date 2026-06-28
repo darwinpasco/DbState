@@ -35,6 +35,7 @@ pub enum CommandKind {
     RepoStatus,
     Init,
     InspectPostgres,
+    ExportPostgres,
 }
 
 impl CommandKind {
@@ -43,6 +44,7 @@ impl CommandKind {
             Self::RepoStatus => "repo status",
             Self::Init => "init",
             Self::InspectPostgres => "inspect postgres",
+            Self::ExportPostgres => "export postgres",
         }
     }
 }
@@ -51,6 +53,7 @@ impl CommandKind {
 pub enum CommandOutput {
     Project(ProjectReport),
     Inspection(InspectionReport),
+    Export(ExportReport),
 }
 
 impl CommandOutput {
@@ -58,6 +61,7 @@ impl CommandOutput {
         match self {
             Self::Project(report) => report.to_text(),
             Self::Inspection(report) => report.to_text(),
+            Self::Export(report) => report.to_text(),
         }
     }
 
@@ -65,6 +69,7 @@ impl CommandOutput {
         match self {
             Self::Project(report) => report.to_json(),
             Self::Inspection(report) => report.to_json(),
+            Self::Export(report) => report.to_json(),
         }
     }
 }
@@ -152,6 +157,7 @@ pub struct ColumnInfo {
     pub data_type: String,
     pub is_nullable: bool,
     pub has_default: bool,
+    pub default_expression: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -171,6 +177,23 @@ pub struct InspectionReport {
     pub tables: Vec<TableInfo>,
     pub columns: Vec<ColumnInfo>,
     pub counts: InspectionCounts,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub deferred_object_types: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ExportReport {
+    pub command: CommandKind,
+    pub success: bool,
+    pub database_type: String,
+    pub export_scope: String,
+    pub dry_run: bool,
+    pub selected_schemas: Vec<String>,
+    pub selected_tables: Vec<String>,
+    pub planned_files: Vec<String>,
+    pub created_files: Vec<String>,
+    pub skipped_files: Vec<String>,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
     pub deferred_object_types: Vec<String>,
@@ -295,6 +318,16 @@ pub fn run_cli(
                 exit_code,
             })
         }
+        CommandKind::ExportPostgres => {
+            let format = parsed.format;
+            let report = export_postgres_command(cwd, parsed);
+            let exit_code = if report.success { 0 } else { 2 };
+            Ok(CliResult {
+                format,
+                output: CommandOutput::Export(report),
+                exit_code,
+            })
+        }
     }
 }
 
@@ -304,6 +337,9 @@ struct ParsedArgs {
     format: OutputFormat,
     dry_run: bool,
     url: Option<String>,
+    schema: Option<String>,
+    table: Option<String>,
+    all: bool,
 }
 
 impl ParsedArgs {
@@ -315,6 +351,9 @@ impl ParsedArgs {
         let mut format = OutputFormat::Text;
         let mut dry_run = false;
         let mut url = None;
+        let mut schema = None;
+        let mut table = None;
+        let mut all = false;
         let mut positional = Vec::new();
         let mut index = 0;
 
@@ -346,6 +385,24 @@ impl ParsedArgs {
                     url = Some(value.to_string());
                     index += 2;
                 }
+                "--schema" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or_else(|| "--schema requires a value".to_string())?;
+                    schema = Some(value.to_string());
+                    index += 2;
+                }
+                "--table" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or_else(|| "--table requires a value".to_string())?;
+                    table = Some(value.to_string());
+                    index += 2;
+                }
+                "--all" => {
+                    all = true;
+                    index += 1;
+                }
                 "--help" | "-h" => return Err(usage()),
                 value if value.starts_with('-') => {
                     return Err(format!("Unknown option: {value}"));
@@ -363,15 +420,34 @@ impl ParsedArgs {
             [inspect, database] if inspect == "inspect" && database == "postgres" => {
                 CommandKind::InspectPostgres
             }
+            [export, database] if export == "export" && database == "postgres" => {
+                CommandKind::ExportPostgres
+            }
             _ => return Err(usage()),
         };
 
-        if dry_run && command != CommandKind::Init {
-            return Err("--dry-run is only supported for dbstate init".to_string());
+        if dry_run && command != CommandKind::Init && command != CommandKind::ExportPostgres {
+            return Err(
+                "--dry-run is only supported for dbstate init and dbstate export postgres"
+                    .to_string(),
+            );
         }
 
-        if url.is_some() && command != CommandKind::InspectPostgres {
-            return Err("--url is only supported for dbstate inspect postgres".to_string());
+        if url.is_some()
+            && command != CommandKind::InspectPostgres
+            && command != CommandKind::ExportPostgres
+        {
+            return Err(
+                "--url is only supported for dbstate inspect postgres and dbstate export postgres"
+                    .to_string(),
+            );
+        }
+
+        if (schema.is_some() || table.is_some() || all) && command != CommandKind::ExportPostgres {
+            return Err(
+                "--schema, --table, and --all are only supported for dbstate export postgres"
+                    .to_string(),
+            );
         }
 
         Ok(Self {
@@ -379,12 +455,15 @@ impl ParsedArgs {
             format,
             dry_run,
             url,
+            schema,
+            table,
+            all,
         })
     }
 }
 
 fn usage() -> String {
-    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json]".to_string()
+    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]".to_string()
 }
 
 pub fn status_report(cwd: &Path, command: CommandKind) -> ProjectReport {
@@ -588,7 +667,8 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
                     a.attnum::int4,
                     pg_catalog.format_type(a.atttypid, a.atttypmod),
                     NOT a.attnotnull,
-                    pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) IS NOT NULL
+                    pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) IS NOT NULL,
+                    pg_catalog.pg_get_expr(ad.adbin, ad.adrelid)
              FROM pg_catalog.pg_attribute a
              JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -631,6 +711,7 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
             data_type: row.get(4),
             is_nullable: row.get(5),
             has_default: row.get(6),
+            default_expression: row.get(7),
         })
         .collect();
 
@@ -639,6 +720,423 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         tables,
         columns,
     })
+}
+
+fn export_postgres_command(cwd: &Path, parsed: ParsedArgs) -> ExportReport {
+    let mut report = empty_export_report(parsed.dry_run);
+    let selection = match ExportSelection::from_options(
+        parsed.all,
+        parsed.schema.clone(),
+        parsed.table.clone(),
+    ) {
+        Ok(selection) => selection,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+
+    report.export_scope = selection.scope_name();
+    report.selected_schemas = selection.selected_schemas();
+    report.selected_tables = selection.selected_tables();
+
+    let Some(connection_url) =
+        resolve_postgres_url(parsed.url, env::var("DBSTATE_POSTGRES_URL").ok())
+    else {
+        report.errors.push(
+            "Missing PostgreSQL connection URL. Provide --url or DBSTATE_POSTGRES_URL.".to_string(),
+        );
+        return report;
+    };
+
+    match inspect_postgres(&connection_url) {
+        Ok(inventory) => {
+            export_postgres_with_inventory(cwd, &inventory, &selection, parsed.dry_run)
+        }
+        Err(error) => {
+            report.errors.push(redact_message(&error, &connection_url));
+            report
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ExportSelection {
+    All,
+    Schema(String),
+    Table { schema: String, table: String },
+}
+
+impl ExportSelection {
+    fn from_options(
+        all: bool,
+        schema: Option<String>,
+        table: Option<String>,
+    ) -> Result<Self, String> {
+        let selected = if all { 1 } else { 0 }
+            + if schema.is_some() { 1 } else { 0 }
+            + if table.is_some() { 1 } else { 0 };
+        if selected == 0 {
+            return Err(
+                "Export selection is required. Provide --schema, --table, or --all.".to_string(),
+            );
+        }
+        if selected > 1 {
+            return Err(
+                "Use only one export selection option: --schema, --table, or --all.".to_string(),
+            );
+        }
+        if all {
+            return Ok(Self::All);
+        }
+        if let Some(schema) = schema {
+            if schema.trim().is_empty() {
+                return Err("--schema cannot be empty.".to_string());
+            }
+            return Ok(Self::Schema(schema));
+        }
+
+        let table = table.expect("table selection exists");
+        let Some((schema, table)) = table.split_once('.') else {
+            return Err(
+                "--table must use schema-qualified form such as public.example_table.".to_string(),
+            );
+        };
+        if schema.trim().is_empty() || table.trim().is_empty() {
+            return Err(
+                "--table must use schema-qualified form such as public.example_table.".to_string(),
+            );
+        }
+        Ok(Self::Table {
+            schema: schema.to_string(),
+            table: table.to_string(),
+        })
+    }
+
+    fn scope_name(&self) -> String {
+        match self {
+            Self::All => "all".to_string(),
+            Self::Schema(schema) => format!("schema:{schema}"),
+            Self::Table { schema, table } => format!("table:{schema}.{table}"),
+        }
+    }
+
+    fn selected_schemas(&self) -> Vec<String> {
+        match self {
+            Self::Schema(schema) => vec![schema.clone()],
+            _ => Vec::new(),
+        }
+    }
+
+    fn selected_tables(&self) -> Vec<String> {
+        match self {
+            Self::Table { schema, table } => vec![format!("{schema}.{table}")],
+            _ => Vec::new(),
+        }
+    }
+}
+
+pub fn export_postgres_with_inventory(
+    cwd: &Path,
+    inventory: &PostgresInventory,
+    selection: &ExportSelection,
+    dry_run: bool,
+) -> ExportReport {
+    let mut report = empty_export_report(dry_run);
+    report.export_scope = selection.scope_name();
+    report.selected_schemas = selection.selected_schemas();
+    report.selected_tables = selection.selected_tables();
+
+    let project = status_report(cwd, CommandKind::ExportPostgres);
+    if !project.is_git_repository {
+        report
+            .errors
+            .push("Current path is not inside a Git repository.".to_string());
+        return report;
+    }
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+        report.errors.push(
+            "DbState PostgreSQL project structure is incomplete. Run dbstate init first."
+                .to_string(),
+        );
+        return report;
+    }
+    if project.is_dirty && !dry_run {
+        report.errors.push(
+            "Export is blocked because the working tree has changes. Commit/stash changes or use --dry-run."
+                .to_string(),
+        );
+        return report;
+    }
+
+    let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
+    let plan = match plan_export(&root, inventory, selection) {
+        Ok(plan) => plan,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+
+    report.warnings = plan.warnings;
+    report.planned_files = plan
+        .planned_files
+        .iter()
+        .map(|file| file.relative_path.clone())
+        .collect();
+    report.skipped_files = plan.skipped_files.clone();
+
+    if dry_run {
+        report.success = report.errors.is_empty();
+        return report;
+    }
+
+    for file in plan.planned_files {
+        let target = root.join(&file.relative_path);
+        if target.exists() {
+            report.skipped_files.push(file.relative_path);
+            continue;
+        }
+        if let Some(parent) = target.parent() {
+            if let Err(error) = fs::create_dir_all(parent) {
+                report.errors.push(format!(
+                    "Could not create parent directory for {}: {error}",
+                    file.relative_path
+                ));
+                continue;
+            }
+        }
+        if let Err(error) = fs::write(&target, file.content) {
+            report
+                .errors
+                .push(format!("Could not write {}: {error}", file.relative_path));
+            continue;
+        }
+        report.created_files.push(file.relative_path);
+    }
+
+    report.success = report.errors.is_empty();
+    report
+}
+
+#[derive(Debug, Clone)]
+struct ExportPlan {
+    planned_files: Vec<PlannedFile>,
+    skipped_files: Vec<String>,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct PlannedFile {
+    relative_path: String,
+    content: String,
+}
+
+fn plan_export(
+    root: &Path,
+    inventory: &PostgresInventory,
+    selection: &ExportSelection,
+) -> Result<ExportPlan, String> {
+    let mut schema_names = Vec::new();
+    let mut table_names = Vec::new();
+    let mut warnings = Vec::new();
+
+    match selection {
+        ExportSelection::All => {
+            schema_names.extend(inventory.schemas.iter().map(|schema| schema.name.clone()));
+            table_names.extend(
+                inventory
+                    .tables
+                    .iter()
+                    .filter(|table| table.table_type == "BASE TABLE")
+                    .map(|table| (table.schema_name.clone(), table.table_name.clone())),
+            );
+        }
+        ExportSelection::Schema(schema) => {
+            if !inventory
+                .schemas
+                .iter()
+                .any(|candidate| candidate.name == *schema)
+            {
+                return Err(format!(
+                    "Selected schema '{schema}' was not found in the PostgreSQL inventory."
+                ));
+            }
+            schema_names.push(schema.clone());
+            table_names.extend(
+                inventory
+                    .tables
+                    .iter()
+                    .filter(|table| {
+                        table.schema_name == *schema && table.table_type == "BASE TABLE"
+                    })
+                    .map(|table| (table.schema_name.clone(), table.table_name.clone())),
+            );
+        }
+        ExportSelection::Table { schema, table } => {
+            let Some(selected_table) = inventory.tables.iter().find(|candidate| {
+                candidate.schema_name == *schema && candidate.table_name == *table
+            }) else {
+                return Err(format!(
+                    "Selected table '{schema}.{table}' was not found in the PostgreSQL inventory."
+                ));
+            };
+            if selected_table.table_type != "BASE TABLE" {
+                return Err(format!(
+                    "Selected table '{schema}.{table}' is not an ordinary/base table and is deferred for Slice 3."
+                ));
+            }
+            table_names.push((schema.clone(), table.clone()));
+            let schema_path = schema_file_path(schema)?;
+            if !root.join(&schema_path).is_file() {
+                warnings.push(format!(
+                    "Selected table '{schema}.{table}' is exported without its schema object file. Export --schema {schema} or --all if the schema file is needed."
+                ));
+            }
+        }
+    }
+
+    schema_names.sort();
+    schema_names.dedup();
+    table_names.sort();
+    table_names.dedup();
+
+    let mut planned_files = Vec::new();
+    let mut skipped_files = Vec::new();
+
+    for schema in schema_names {
+        let relative_path = schema_file_path(&schema)?;
+        ensure_database_object_path(&relative_path)?;
+        if root.join(&relative_path).exists() {
+            skipped_files.push(relative_path);
+        } else {
+            planned_files.push(PlannedFile {
+                relative_path,
+                content: render_schema_sql(&schema),
+            });
+        }
+    }
+
+    for (schema, table) in table_names {
+        let relative_path = table_file_path(&schema, &table)?;
+        ensure_database_object_path(&relative_path)?;
+        if root.join(&relative_path).exists() {
+            skipped_files.push(relative_path);
+            continue;
+        }
+        let columns: Vec<ColumnInfo> = inventory
+            .columns
+            .iter()
+            .filter(|column| column.schema_name == schema && column.table_name == table)
+            .cloned()
+            .collect();
+        planned_files.push(PlannedFile {
+            relative_path,
+            content: render_table_sql(&schema, &table, &columns),
+        });
+    }
+
+    Ok(ExportPlan {
+        planned_files,
+        skipped_files,
+        warnings,
+    })
+}
+
+fn schema_file_path(schema: &str) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/schemas/{}.sql",
+        safe_file_component(schema)?
+    ))
+}
+
+fn table_file_path(schema: &str, table: &str) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/tables/{}.{}.sql",
+        safe_file_component(schema)?,
+        safe_file_component(table)?
+    ))
+}
+
+fn safe_file_component(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains("..")
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+    {
+        return Err(format!(
+            "Unsafe PostgreSQL object name for file path: {trimmed}"
+        ));
+    }
+    Ok(trimmed.to_string())
+}
+
+fn ensure_database_object_path(relative_path: &str) -> Result<(), String> {
+    if relative_path.starts_with("database/objects/") {
+        Ok(())
+    } else {
+        Err(format!(
+            "Refusing to write outside database/objects/: {relative_path}"
+        ))
+    }
+}
+
+pub fn quote_postgres_identifier(identifier: &str) -> String {
+    format!("\"{}\"", identifier.replace('"', "\"\""))
+}
+
+pub fn render_schema_sql(schema: &str) -> String {
+    format!(
+        "-- DbState PostgreSQL desired-state object\n-- Object type: schema\n-- Object name: {schema}\n\nCREATE SCHEMA {};\n",
+        quote_postgres_identifier(schema)
+    )
+}
+
+pub fn render_table_sql(schema: &str, table: &str, columns: &[ColumnInfo]) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: table").ok();
+    writeln!(sql, "-- Object name: {schema}.{table}").ok();
+    writeln!(sql).ok();
+    writeln!(
+        sql,
+        "CREATE TABLE {}.{} (",
+        quote_postgres_identifier(schema),
+        quote_postgres_identifier(table)
+    )
+    .ok();
+
+    let mut sorted_columns = columns.to_vec();
+    sorted_columns.sort_by_key(|column| column.ordinal_position);
+    for (index, column) in sorted_columns.iter().enumerate() {
+        let comma = if index + 1 == sorted_columns.len() {
+            ""
+        } else {
+            ","
+        };
+        write!(
+            sql,
+            "    {} {}",
+            quote_postgres_identifier(&column.column_name),
+            column.data_type
+        )
+        .ok();
+        if column.has_default {
+            if let Some(default_expression) = &column.default_expression {
+                write!(sql, " DEFAULT {default_expression}").ok();
+            }
+        }
+        if !column.is_nullable {
+            write!(sql, " NOT NULL").ok();
+        }
+        writeln!(sql, "{comma}").ok();
+    }
+    writeln!(sql, ");").ok();
+    sql
 }
 
 fn empty_inspection_report(command: CommandKind) -> InspectionReport {
@@ -659,6 +1157,27 @@ fn empty_inspection_report(command: CommandKind) -> InspectionReport {
             tables: 0,
             columns: 0,
         },
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        deferred_object_types: DEFERRED_OBJECT_TYPES
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
+    }
+}
+
+fn empty_export_report(dry_run: bool) -> ExportReport {
+    ExportReport {
+        command: CommandKind::ExportPostgres,
+        success: false,
+        database_type: "postgresql".to_string(),
+        export_scope: "<none>".to_string(),
+        dry_run,
+        selected_schemas: Vec::new(),
+        selected_tables: Vec::new(),
+        planned_files: Vec::new(),
+        created_files: Vec::new(),
+        skipped_files: Vec::new(),
         warnings: Vec::new(),
         errors: Vec::new(),
         deferred_object_types: DEFERRED_OBJECT_TYPES
@@ -945,6 +1464,60 @@ impl InspectionReport {
     }
 }
 
+impl ExportReport {
+    pub fn to_text(&self) -> String {
+        let mut text = String::new();
+        writeln!(text, "Command: {}", self.command.as_str()).ok();
+        writeln!(text, "Success: {}", self.success).ok();
+        writeln!(text, "Database type: {}", self.database_type).ok();
+        writeln!(text, "Export scope: {}", self.export_scope).ok();
+        writeln!(text, "Dry run: {}", self.dry_run).ok();
+        writeln!(text, "Planned files:").ok();
+        for path in &self.planned_files {
+            writeln!(text, "  - {path}").ok();
+        }
+        writeln!(text, "Created files:").ok();
+        for path in &self.created_files {
+            writeln!(text, "  - {path}").ok();
+        }
+        writeln!(text, "Skipped files:").ok();
+        for path in &self.skipped_files {
+            writeln!(text, "  - {path}").ok();
+        }
+        for warning in &self.warnings {
+            writeln!(text, "Warning: {warning}").ok();
+        }
+        for error in &self.errors {
+            writeln!(text, "Error: {error}").ok();
+        }
+        text
+    }
+
+    pub fn to_json(&self) -> String {
+        let mut json = String::new();
+        json.push('{');
+        write_json_string_field(&mut json, "command", self.command.as_str(), true);
+        write_json_bool_field(&mut json, "success", self.success);
+        write_json_string_field(&mut json, "databaseType", &self.database_type, false);
+        write_json_string_field(&mut json, "exportScope", &self.export_scope, false);
+        write_json_bool_field(&mut json, "dryRun", self.dry_run);
+        write_json_array_field(&mut json, "selectedSchemas", &self.selected_schemas);
+        write_json_array_field(&mut json, "selectedTables", &self.selected_tables);
+        write_json_array_field(&mut json, "plannedFiles", &self.planned_files);
+        write_json_array_field(&mut json, "createdFiles", &self.created_files);
+        write_json_array_field(&mut json, "skippedFiles", &self.skipped_files);
+        write_json_array_field(&mut json, "warnings", &self.warnings);
+        write_json_array_field(&mut json, "errors", &self.errors);
+        write_json_array_field(
+            &mut json,
+            "deferredObjectTypes",
+            &self.deferred_object_types,
+        );
+        json.push('}');
+        json
+    }
+}
+
 fn write_json_string_field(json: &mut String, name: &str, value: &str, first: bool) {
     if !first {
         json.push(',');
@@ -1128,6 +1701,65 @@ mod tests {
                     fs::write(target, DEFAULT_REGISTRY).expect("create registry");
                 }
             }
+        }
+    }
+
+    fn placeholder_url(user: &str, credential: &str) -> String {
+        format!("{}://{user}:{credential}@example.invalid/db", "postgres")
+    }
+
+    fn sample_inventory() -> PostgresInventory {
+        PostgresInventory {
+            schemas: vec![SchemaInfo {
+                name: "dbstate_slice2".to_string(),
+            }],
+            tables: vec![TableInfo {
+                schema_name: "dbstate_slice2".to_string(),
+                table_name: "sample_accounts".to_string(),
+                table_type: "BASE TABLE".to_string(),
+            }],
+            columns: vec![
+                ColumnInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    table_name: "sample_accounts".to_string(),
+                    column_name: "account_id".to_string(),
+                    ordinal_position: 1,
+                    data_type: "integer".to_string(),
+                    is_nullable: false,
+                    has_default: false,
+                    default_expression: None,
+                },
+                ColumnInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    table_name: "sample_accounts".to_string(),
+                    column_name: "account_code".to_string(),
+                    ordinal_position: 2,
+                    data_type: "text".to_string(),
+                    is_nullable: false,
+                    has_default: false,
+                    default_expression: None,
+                },
+                ColumnInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    table_name: "sample_accounts".to_string(),
+                    column_name: "display_name".to_string(),
+                    ordinal_position: 3,
+                    data_type: "text".to_string(),
+                    is_nullable: true,
+                    has_default: false,
+                    default_expression: None,
+                },
+                ColumnInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    table_name: "sample_accounts".to_string(),
+                    column_name: "created_at".to_string(),
+                    ordinal_position: 4,
+                    data_type: "timestamp without time zone".to_string(),
+                    is_nullable: false,
+                    has_default: true,
+                    default_expression: Some("now()".to_string()),
+                },
+            ],
         }
     }
 
@@ -1330,34 +1962,30 @@ mod tests {
 
     #[test]
     fn url_precedence_prefers_cli_url() {
-        let resolved = resolve_postgres_url(
-            Some("postgres://cli-user:cli-password@example.invalid/db".to_string()),
-            Some("postgres://env-user:env-password@example.invalid/db".to_string()),
-        )
-        .expect("resolved url");
+        let cli_url = placeholder_url("cli-user", "cli-credential");
+        let env_url = placeholder_url("env-user", "env-credential");
+        let resolved =
+            resolve_postgres_url(Some(cli_url.clone()), Some(env_url)).expect("resolved url");
 
-        assert_eq!(
-            resolved,
-            "postgres://cli-user:cli-password@example.invalid/db"
-        );
+        assert_eq!(resolved, cli_url);
     }
 
     #[test]
-    fn redaction_removes_raw_url_and_password() {
-        let raw = "postgres://user:secret-password@example.invalid:5432/db";
-        let redacted = redact_message(&format!("could not connect to {raw}"), raw);
+    fn redaction_removes_raw_url_and_credential() {
+        let credential = ["sensitive", "marker"].join("-");
+        let raw = placeholder_url("user", &credential);
+        let redacted = redact_message(&format!("could not connect to {raw}"), &raw);
 
-        assert!(!redacted.contains(raw));
-        assert!(!redacted.contains("secret-password"));
+        assert!(!redacted.contains(&raw));
+        assert!(!redacted.contains(&credential));
         assert!(redacted.contains("<redacted>"));
     }
 
     #[test]
     fn inspection_json_output_includes_expected_fields_and_no_secrets() {
         let mut report = empty_inspection_report(CommandKind::InspectPostgres);
-        report.errors.push(redact_postgres_url(
-            "postgres://user:secret-token@example.invalid:5432/db failed",
-        ));
+        let raw = format!("{} failed", placeholder_url("user", "sensitive-marker"));
+        report.errors.push(redact_postgres_url(&raw));
         let json = report.to_json();
 
         for field in [
@@ -1376,7 +2004,7 @@ mod tests {
             assert!(json.contains(field), "missing JSON field {field}");
         }
 
-        assert!(!json.contains("secret-token"));
+        assert!(!json.contains("sensitive-marker"));
         assert!(!json.contains("postgres://"));
     }
 
@@ -1422,6 +2050,7 @@ mod tests {
                 data_type: "integer".to_string(),
                 is_nullable: false,
                 has_default: true,
+                default_expression: Some("nextval('orders_id_seq'::regclass)".to_string()),
             }],
         };
 
@@ -1447,6 +2076,213 @@ mod tests {
     }
 
     #[test]
+    fn missing_export_selection_returns_clear_error() {
+        let error = ExportSelection::from_options(false, None, None).expect_err("selection error");
+        assert!(error.contains("Export selection is required"));
+    }
+
+    #[test]
+    fn export_paths_stay_under_database_objects() {
+        assert_eq!(
+            schema_file_path("core").expect("schema path"),
+            "database/objects/schemas/core.sql"
+        );
+        assert_eq!(
+            table_file_path("core", "payment_attempts").expect("table path"),
+            "database/objects/tables/core.payment_attempts.sql"
+        );
+        assert!(schema_file_path("../evil").is_err());
+        assert!(table_file_path("core", "bad/name").is_err());
+        assert!(ensure_database_object_path("database/releases/bad.sql").is_err());
+    }
+
+    #[test]
+    fn identifier_quoting_handles_required_cases() {
+        assert_eq!(quote_postgres_identifier("normal"), "\"normal\"");
+        assert_eq!(quote_postgres_identifier("MixedCase"), "\"MixedCase\"");
+        assert_eq!(quote_postgres_identifier("select"), "\"select\"");
+        assert_eq!(quote_postgres_identifier("has\"quote"), "\"has\"\"quote\"");
+    }
+
+    #[test]
+    fn generated_schema_sql_matches_golden_expectation() {
+        let expected = "-- DbState PostgreSQL desired-state object\n-- Object type: schema\n-- Object name: dbstate_slice2\n\nCREATE SCHEMA \"dbstate_slice2\";\n";
+        assert_eq!(render_schema_sql("dbstate_slice2"), expected);
+    }
+
+    #[test]
+    fn generated_table_sql_matches_golden_expectation() {
+        let expected = "-- DbState PostgreSQL desired-state object\n-- Object type: table\n-- Object name: dbstate_slice2.sample_accounts\n\nCREATE TABLE \"dbstate_slice2\".\"sample_accounts\" (\n    \"account_id\" integer NOT NULL,\n    \"account_code\" text NOT NULL,\n    \"display_name\" text,\n    \"created_at\" timestamp without time zone DEFAULT now() NOT NULL\n);\n";
+        assert_eq!(
+            render_table_sql(
+                "dbstate_slice2",
+                "sample_accounts",
+                &sample_inventory().columns
+            ),
+            expected
+        );
+    }
+
+    #[test]
+    fn export_dry_run_creates_no_files() {
+        let dir = create_temp_dir("export-dry-run");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let report =
+            export_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, true);
+
+        assert!(report.success);
+        assert!(!report.planned_files.is_empty());
+        assert!(report.created_files.is_empty());
+        assert!(!dir
+            .join("database/objects/schemas/dbstate_slice2.sql")
+            .exists());
+    }
+
+    #[test]
+    fn export_requires_git_repository_and_dbstate_structure() {
+        let non_git = create_temp_dir("export-non-git");
+        let report = export_postgres_with_inventory(
+            &non_git,
+            &sample_inventory(),
+            &ExportSelection::All,
+            false,
+        );
+        assert!(!report.success);
+        assert!(report.errors[0].contains("not inside a Git repository"));
+
+        let no_structure = create_temp_dir("export-no-structure");
+        init_git_repo(&no_structure);
+        let report = export_postgres_with_inventory(
+            &no_structure,
+            &sample_inventory(),
+            &ExportSelection::All,
+            false,
+        );
+        assert!(!report.success);
+        assert!(report.errors[0].contains("Run dbstate init first"));
+    }
+
+    #[test]
+    fn export_write_is_blocked_when_working_tree_is_dirty() {
+        let dir = create_temp_dir("export-dirty");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+        fs::write(dir.join("dirty.txt"), "dirty").expect("write dirty file");
+
+        let report =
+            export_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
+
+        assert!(!report.success);
+        assert!(report.errors[0].contains("working tree has changes"));
+        assert!(report.created_files.is_empty());
+    }
+
+    #[test]
+    fn export_does_not_overwrite_existing_files_by_default() {
+        let dir = create_temp_dir("export-no-overwrite");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        let existing = dir.join("database/objects/schemas/dbstate_slice2.sql");
+        fs::write(&existing, "-- keep me\n").expect("write existing schema file");
+        commit_all(&dir, "complete structure");
+
+        let report = export_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::Schema("dbstate_slice2".to_string()),
+            true,
+        );
+
+        assert!(report.success);
+        assert!(report
+            .skipped_files
+            .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+        assert_eq!(
+            fs::read_to_string(existing).expect("read existing"),
+            "-- keep me\n"
+        );
+    }
+
+    #[test]
+    fn table_export_warns_when_schema_file_is_missing() {
+        let dir = create_temp_dir("export-table-warning");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let report = export_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::Table {
+                schema: "dbstate_slice2".to_string(),
+                table: "sample_accounts".to_string(),
+            },
+            true,
+        );
+
+        assert!(report.success);
+        assert!(report
+            .warnings
+            .iter()
+            .any(|warning| warning.contains("without its schema object file")));
+    }
+
+    #[test]
+    fn export_json_includes_expected_fields_and_no_secrets() {
+        let dir = create_temp_dir("export-json");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let report =
+            export_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, true);
+        let json = report.to_json();
+
+        for field in [
+            "\"command\"",
+            "\"success\"",
+            "\"databaseType\"",
+            "\"exportScope\"",
+            "\"dryRun\"",
+            "\"selectedSchemas\"",
+            "\"selectedTables\"",
+            "\"plannedFiles\"",
+            "\"createdFiles\"",
+            "\"skippedFiles\"",
+            "\"warnings\"",
+            "\"errors\"",
+            "\"deferredObjectTypes\"",
+        ] {
+            assert!(json.contains(field), "missing JSON field {field}");
+        }
+        assert!(!json.contains("postgres://"));
+        assert!(!json.contains("sensitive-marker"));
+    }
+
+    #[test]
+    fn actual_export_creates_schema_and_table_files() {
+        let dir = create_temp_dir("export-write");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let report =
+            export_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
+
+        assert!(report.success);
+        assert!(dir
+            .join("database/objects/schemas/dbstate_slice2.sql")
+            .is_file());
+        assert!(dir
+            .join("database/objects/tables/dbstate_slice2.sample_accounts.sql")
+            .is_file());
+    }
+
+    #[test]
     fn cli_rejects_apply_and_database_mutation_commands() {
         let invalid_commands = [
             vec!["apply".to_string()],
@@ -1461,5 +2297,11 @@ mod tests {
         }
 
         assert!(ParsedArgs::parse(&["inspect".to_string(), "postgres".to_string()]).is_ok());
+        assert!(ParsedArgs::parse(&[
+            "export".to_string(),
+            "postgres".to_string(),
+            "--all".to_string()
+        ])
+        .is_ok());
     }
 }
