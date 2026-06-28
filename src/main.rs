@@ -10,8 +10,8 @@ fn main() -> ExitCode {
     match result {
         Ok(cli_result) => {
             match cli_result.format {
-                OutputFormat::Json => println!("{}", cli_result.report.to_json()),
-                OutputFormat::Text => print!("{}", cli_result.report.to_text()),
+                OutputFormat::Json => println!("{}", cli_result.output.to_json()),
+                OutputFormat::Text => print!("{}", cli_result.output.to_text()),
             }
             ExitCode::from(cli_result.exit_code)
         }
