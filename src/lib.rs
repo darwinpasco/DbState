@@ -1,9 +1,28 @@
+use std::env;
 use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+use postgres::{Client, NoTls};
+
 const DEFAULT_REGISTRY: &str = "version: 1\ntables: []\n";
+const DEFERRED_OBJECT_TYPES: &[&str] = &[
+    "extensions",
+    "enums",
+    "sequences",
+    "primaryKeys",
+    "foreignKeys",
+    "uniqueConstraints",
+    "checkConstraints",
+    "indexes",
+    "views",
+    "materializedViews",
+    "functions",
+    "triggers",
+    "grants",
+    "rlsPolicies",
+];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OutputFormat {
@@ -15,6 +34,7 @@ pub enum OutputFormat {
 pub enum CommandKind {
     RepoStatus,
     Init,
+    InspectPostgres,
 }
 
 impl CommandKind {
@@ -22,6 +42,29 @@ impl CommandKind {
         match self {
             Self::RepoStatus => "repo status",
             Self::Init => "init",
+            Self::InspectPostgres => "inspect postgres",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum CommandOutput {
+    Project(ProjectReport),
+    Inspection(InspectionReport),
+}
+
+impl CommandOutput {
+    pub fn to_text(&self) -> String {
+        match self {
+            Self::Project(report) => report.to_text(),
+            Self::Inspection(report) => report.to_text(),
+        }
+    }
+
+    pub fn to_json(&self) -> String {
+        match self {
+            Self::Project(report) => report.to_json(),
+            Self::Inspection(report) => report.to_json(),
         }
     }
 }
@@ -65,12 +108,12 @@ impl WorkingTreeStatus {
 #[derive(Debug, Clone)]
 pub struct CliResult {
     pub format: OutputFormat,
-    pub report: Report,
+    pub output: CommandOutput,
     pub exit_code: u8,
 }
 
 #[derive(Debug, Clone)]
-pub struct Report {
+pub struct ProjectReport {
     pub command: CommandKind,
     pub success: bool,
     pub repository_path: String,
@@ -86,6 +129,51 @@ pub struct Report {
     pub created_paths: Vec<String>,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaInfo {
+    pub name: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TableInfo {
+    pub schema_name: String,
+    pub table_name: String,
+    pub table_type: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnInfo {
+    pub schema_name: String,
+    pub table_name: String,
+    pub column_name: String,
+    pub ordinal_position: i32,
+    pub data_type: String,
+    pub is_nullable: bool,
+    pub has_default: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InspectionCounts {
+    pub schemas: usize,
+    pub tables: usize,
+    pub columns: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct InspectionReport {
+    pub command: CommandKind,
+    pub success: bool,
+    pub database_type: String,
+    pub inspection_scope: Vec<String>,
+    pub schemas: Vec<SchemaInfo>,
+    pub tables: Vec<TableInfo>,
+    pub columns: Vec<ColumnInfo>,
+    pub counts: InspectionCounts,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub deferred_object_types: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -184,7 +272,7 @@ pub fn run_cli(
             let exit_code = if report.is_git_repository { 0 } else { 2 };
             Ok(CliResult {
                 format: parsed.format,
-                report,
+                output: CommandOutput::Project(report),
                 exit_code,
             })
         }
@@ -193,7 +281,17 @@ pub fn run_cli(
             let exit_code = if report.success { 0 } else { 2 };
             Ok(CliResult {
                 format: parsed.format,
-                report,
+                output: CommandOutput::Project(report),
+                exit_code,
+            })
+        }
+        CommandKind::InspectPostgres => {
+            let report =
+                inspect_postgres_command(parsed.url, env::var("DBSTATE_POSTGRES_URL").ok());
+            let exit_code = if report.success { 0 } else { 2 };
+            Ok(CliResult {
+                format: parsed.format,
+                output: CommandOutput::Inspection(report),
                 exit_code,
             })
         }
@@ -205,6 +303,7 @@ struct ParsedArgs {
     command: CommandKind,
     format: OutputFormat,
     dry_run: bool,
+    url: Option<String>,
 }
 
 impl ParsedArgs {
@@ -215,6 +314,7 @@ impl ParsedArgs {
 
         let mut format = OutputFormat::Text;
         let mut dry_run = false;
+        let mut url = None;
         let mut positional = Vec::new();
         let mut index = 0;
 
@@ -239,6 +339,13 @@ impl ParsedArgs {
                     dry_run = true;
                     index += 1;
                 }
+                "--url" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or_else(|| "--url requires a value".to_string())?;
+                    url = Some(value.to_string());
+                    index += 2;
+                }
                 "--help" | "-h" => return Err(usage()),
                 value if value.starts_with('-') => {
                     return Err(format!("Unknown option: {value}"));
@@ -253,6 +360,9 @@ impl ParsedArgs {
         let command = match positional.as_slice() {
             [command] if command == "init" => CommandKind::Init,
             [repo, command] if repo == "repo" && command == "status" => CommandKind::RepoStatus,
+            [inspect, database] if inspect == "inspect" && database == "postgres" => {
+                CommandKind::InspectPostgres
+            }
             _ => return Err(usage()),
         };
 
@@ -260,24 +370,28 @@ impl ParsedArgs {
             return Err("--dry-run is only supported for dbstate init".to_string());
         }
 
+        if url.is_some() && command != CommandKind::InspectPostgres {
+            return Err("--url is only supported for dbstate inspect postgres".to_string());
+        }
+
         Ok(Self {
             command,
             format,
             dry_run,
+            url,
         })
     }
 }
 
 fn usage() -> String {
-    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]"
-        .to_string()
+    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json]".to_string()
 }
 
-pub fn status_report(cwd: &Path, command: CommandKind) -> Report {
+pub fn status_report(cwd: &Path, command: CommandKind) -> ProjectReport {
     let repository_path = display_path(cwd);
     let git_root = git_root(cwd);
 
-    let mut report = Report {
+    let mut report = ProjectReport {
         command,
         success: git_root.is_some(),
         repository_path,
@@ -318,7 +432,7 @@ pub fn status_report(cwd: &Path, command: CommandKind) -> Report {
     report
 }
 
-pub fn init_project(cwd: &Path, dry_run: bool) -> Result<Report, String> {
+pub fn init_project(cwd: &Path, dry_run: bool) -> Result<ProjectReport, String> {
     let mut report = status_report(cwd, CommandKind::Init);
 
     if !report.is_git_repository {
@@ -379,6 +493,210 @@ pub fn init_project(cwd: &Path, dry_run: bool) -> Result<Report, String> {
     report.dbstate_project_status = validation.status;
     report.success = report.errors.is_empty();
     Ok(report)
+}
+
+pub fn inspect_postgres_command(
+    cli_url: Option<String>,
+    env_url: Option<String>,
+) -> InspectionReport {
+    let mut report = empty_inspection_report(CommandKind::InspectPostgres);
+
+    let Some(connection_url) = resolve_postgres_url(cli_url, env_url) else {
+        report.errors.push(
+            "Missing PostgreSQL connection URL. Provide --url or DBSTATE_POSTGRES_URL.".to_string(),
+        );
+        return report;
+    };
+
+    match inspect_postgres(&connection_url) {
+        Ok(inventory) => {
+            report.schemas = inventory.schemas;
+            report.tables = inventory.tables;
+            report.columns = inventory.columns;
+            report.counts = InspectionCounts {
+                schemas: report.schemas.len(),
+                tables: report.tables.len(),
+                columns: report.columns.len(),
+            };
+            report.success = true;
+        }
+        Err(error) => {
+            report.errors.push(redact_message(&error, &connection_url));
+        }
+    }
+
+    report
+}
+
+fn resolve_postgres_url(cli_url: Option<String>, env_url: Option<String>) -> Option<String> {
+    cli_url
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| env_url.filter(|value| !value.trim().is_empty()))
+}
+
+#[derive(Debug, Clone)]
+pub struct PostgresInventory {
+    pub schemas: Vec<SchemaInfo>,
+    pub tables: Vec<TableInfo>,
+    pub columns: Vec<ColumnInfo>,
+}
+
+pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, String> {
+    let mut client = Client::connect(connection_url, NoTls).map_err(|_| {
+        "PostgreSQL connection failed. Verify the session-only connection URL, credentials, network, and database availability.".to_string()
+    })?;
+
+    let schema_rows = client
+        .query(
+            "SELECT nspname
+             FROM pg_catalog.pg_namespace
+             WHERE nspname <> 'pg_catalog'
+               AND nspname <> 'information_schema'
+               AND nspname NOT LIKE 'pg_toast%'
+               AND nspname NOT LIKE 'pg_%'
+             ORDER BY nspname",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading schemas.".to_string())?;
+
+    let table_rows = client
+        .query(
+            "SELECT n.nspname,
+                    c.relname,
+                    CASE c.relkind
+                        WHEN 'r' THEN 'BASE TABLE'
+                        WHEN 'p' THEN 'PARTITIONED TABLE'
+                        ELSE c.relkind::text
+                    END
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.relkind IN ('r', 'p')
+               AND n.nspname <> 'pg_catalog'
+               AND n.nspname <> 'information_schema'
+               AND n.nspname NOT LIKE 'pg_toast%'
+               AND n.nspname NOT LIKE 'pg_%'
+             ORDER BY n.nspname, c.relname",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading tables.".to_string())?;
+
+    let column_rows = client
+        .query(
+            "SELECT n.nspname,
+                    c.relname,
+                    a.attname,
+                    a.attnum::int4,
+                    pg_catalog.format_type(a.atttypid, a.atttypmod),
+                    NOT a.attnotnull,
+                    pg_catalog.pg_get_expr(ad.adbin, ad.adrelid) IS NOT NULL
+             FROM pg_catalog.pg_attribute a
+             JOIN pg_catalog.pg_class c ON c.oid = a.attrelid
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             LEFT JOIN pg_catalog.pg_attrdef ad
+               ON ad.adrelid = a.attrelid
+              AND ad.adnum = a.attnum
+             WHERE a.attnum > 0
+               AND NOT a.attisdropped
+               AND c.relkind IN ('r', 'p')
+               AND n.nspname <> 'pg_catalog'
+               AND n.nspname <> 'information_schema'
+               AND n.nspname NOT LIKE 'pg_toast%'
+               AND n.nspname NOT LIKE 'pg_%'
+             ORDER BY n.nspname, c.relname, a.attnum",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading columns.".to_string())?;
+
+    let schemas = schema_rows
+        .into_iter()
+        .map(|row| SchemaInfo { name: row.get(0) })
+        .collect();
+
+    let tables = table_rows
+        .into_iter()
+        .map(|row| TableInfo {
+            schema_name: row.get(0),
+            table_name: row.get(1),
+            table_type: row.get(2),
+        })
+        .collect();
+
+    let columns = column_rows
+        .into_iter()
+        .map(|row| ColumnInfo {
+            schema_name: row.get(0),
+            table_name: row.get(1),
+            column_name: row.get(2),
+            ordinal_position: row.get(3),
+            data_type: row.get(4),
+            is_nullable: row.get(5),
+            has_default: row.get(6),
+        })
+        .collect();
+
+    Ok(PostgresInventory {
+        schemas,
+        tables,
+        columns,
+    })
+}
+
+fn empty_inspection_report(command: CommandKind) -> InspectionReport {
+    InspectionReport {
+        command,
+        success: false,
+        database_type: "postgresql".to_string(),
+        inspection_scope: vec![
+            "schemas".to_string(),
+            "tables".to_string(),
+            "columns".to_string(),
+        ],
+        schemas: Vec::new(),
+        tables: Vec::new(),
+        columns: Vec::new(),
+        counts: InspectionCounts {
+            schemas: 0,
+            tables: 0,
+            columns: 0,
+        },
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        deferred_object_types: DEFERRED_OBJECT_TYPES
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
+    }
+}
+
+pub fn redact_message(message: &str, secret: &str) -> String {
+    let redacted = message.replace(secret, "<redacted>");
+    redact_postgres_url(&redacted)
+}
+
+pub fn redact_postgres_url(value: &str) -> String {
+    let mut output = String::new();
+    for token in value.split_whitespace() {
+        if token.starts_with("postgres://") || token.starts_with("postgresql://") {
+            output.push_str("<redacted>");
+        } else {
+            if !output.is_empty() {
+                output.push(' ');
+            }
+            output.push_str(token);
+        }
+    }
+    if output.is_empty() && !value.is_empty() {
+        "<redacted>".to_string()
+    } else {
+        output
+    }
+}
+
+pub fn is_user_schema(schema_name: &str) -> bool {
+    schema_name != "pg_catalog"
+        && schema_name != "information_schema"
+        && !schema_name.starts_with("pg_toast")
+        && !schema_name.starts_with("pg_")
 }
 
 #[derive(Debug, Clone)]
@@ -488,7 +806,7 @@ fn display_path(path: &Path) -> String {
     path.to_string_lossy().replace('\\', "/")
 }
 
-impl Report {
+impl ProjectReport {
     pub fn to_text(&self) -> String {
         let mut text = String::new();
         writeln!(text, "Command: {}", self.command.as_str()).ok();
@@ -568,6 +886,65 @@ impl Report {
     }
 }
 
+impl InspectionReport {
+    pub fn to_text(&self) -> String {
+        let mut text = String::new();
+        writeln!(text, "Command: {}", self.command.as_str()).ok();
+        writeln!(text, "Success: {}", self.success).ok();
+        writeln!(
+            text,
+            "Inspection scope: {}",
+            self.inspection_scope.join(", ")
+        )
+        .ok();
+        writeln!(text, "Schema count: {}", self.counts.schemas).ok();
+        writeln!(text, "Table count: {}", self.counts.tables).ok();
+        writeln!(text, "Column count: {}", self.counts.columns).ok();
+        writeln!(text, "Schemas:").ok();
+        for schema in &self.schemas {
+            writeln!(text, "  - {}", schema.name).ok();
+        }
+        writeln!(text, "Tables:").ok();
+        for table in &self.tables {
+            writeln!(
+                text,
+                "  - {}.{} ({})",
+                table.schema_name, table.table_name, table.table_type
+            )
+            .ok();
+        }
+        for warning in &self.warnings {
+            writeln!(text, "Warning: {warning}").ok();
+        }
+        for error in &self.errors {
+            writeln!(text, "Error: {error}").ok();
+        }
+        text
+    }
+
+    pub fn to_json(&self) -> String {
+        let mut json = String::new();
+        json.push('{');
+        write_json_string_field(&mut json, "command", self.command.as_str(), true);
+        write_json_bool_field(&mut json, "success", self.success);
+        write_json_string_field(&mut json, "databaseType", &self.database_type, false);
+        write_json_array_field(&mut json, "inspectionScope", &self.inspection_scope);
+        write_schema_array_field(&mut json, "schemas", &self.schemas);
+        write_table_array_field(&mut json, "tables", &self.tables);
+        write_column_array_field(&mut json, "columns", &self.columns);
+        write_counts_field(&mut json, "counts", &self.counts);
+        write_json_array_field(&mut json, "warnings", &self.warnings);
+        write_json_array_field(&mut json, "errors", &self.errors);
+        write_json_array_field(
+            &mut json,
+            "deferredObjectTypes",
+            &self.deferred_object_types,
+        );
+        json.push('}');
+        json
+    }
+}
+
 fn write_json_string_field(json: &mut String, name: &str, value: &str, first: bool) {
     if !first {
         json.push(',');
@@ -588,6 +965,13 @@ fn write_json_bool_field(json: &mut String, name: &str, value: bool) {
     write!(json, "\"{}\":{}", escape_json(name), value).ok();
 }
 
+fn write_json_i32_field(json: &mut String, name: &str, value: i32, first: bool) {
+    if !first {
+        json.push(',');
+    }
+    write!(json, "\"{}\":{}", escape_json(name), value).ok();
+}
+
 fn write_json_array_field(json: &mut String, name: &str, values: &[String]) {
     json.push(',');
     write!(json, "\"{}\":[", escape_json(name)).ok();
@@ -598,6 +982,69 @@ fn write_json_array_field(json: &mut String, name: &str, values: &[String]) {
         write!(json, "\"{}\"", escape_json(value)).ok();
     }
     json.push(']');
+}
+
+fn write_schema_array_field(json: &mut String, name: &str, values: &[SchemaInfo]) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "name", &value.name, true);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+fn write_table_array_field(json: &mut String, name: &str, values: &[TableInfo]) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schemaName", &value.schema_name, true);
+        write_json_string_field(json, "tableName", &value.table_name, false);
+        write_json_string_field(json, "tableType", &value.table_type, false);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+fn write_column_array_field(json: &mut String, name: &str, values: &[ColumnInfo]) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schemaName", &value.schema_name, true);
+        write_json_string_field(json, "tableName", &value.table_name, false);
+        write_json_string_field(json, "columnName", &value.column_name, false);
+        write_json_i32_field(json, "ordinalPosition", value.ordinal_position, false);
+        write_json_string_field(json, "dataType", &value.data_type, false);
+        write_json_bool_field(json, "isNullable", value.is_nullable);
+        write_json_bool_field(json, "hasDefault", value.has_default);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+fn write_counts_field(json: &mut String, name: &str, counts: &InspectionCounts) {
+    json.push(',');
+    write!(
+        json,
+        "\"{}\":{{\"schemas\":{},\"tables\":{},\"columns\":{}}}",
+        escape_json(name),
+        counts.schemas,
+        counts.tables,
+        counts.columns
+    )
+    .ok();
 }
 
 fn escape_json(value: &str) -> String {
@@ -842,7 +1289,7 @@ mod tests {
     }
 
     #[test]
-    fn json_output_includes_expected_fields() {
+    fn project_json_output_includes_expected_fields() {
         let dir = create_temp_dir("json");
         init_git_repo(&dir);
 
@@ -871,17 +1318,148 @@ mod tests {
     }
 
     #[test]
-    fn cli_has_no_sql_or_database_commands() {
+    fn missing_postgres_url_returns_clear_error() {
+        let report = inspect_postgres_command(None, None);
+
+        assert!(!report.success);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("Missing PostgreSQL connection URL")));
+    }
+
+    #[test]
+    fn url_precedence_prefers_cli_url() {
+        let resolved = resolve_postgres_url(
+            Some("postgres://cli-user:cli-password@example.invalid/db".to_string()),
+            Some("postgres://env-user:env-password@example.invalid/db".to_string()),
+        )
+        .expect("resolved url");
+
+        assert_eq!(
+            resolved,
+            "postgres://cli-user:cli-password@example.invalid/db"
+        );
+    }
+
+    #[test]
+    fn redaction_removes_raw_url_and_password() {
+        let raw = "postgres://user:secret-password@example.invalid:5432/db";
+        let redacted = redact_message(&format!("could not connect to {raw}"), raw);
+
+        assert!(!redacted.contains(raw));
+        assert!(!redacted.contains("secret-password"));
+        assert!(redacted.contains("<redacted>"));
+    }
+
+    #[test]
+    fn inspection_json_output_includes_expected_fields_and_no_secrets() {
+        let mut report = empty_inspection_report(CommandKind::InspectPostgres);
+        report.errors.push(redact_postgres_url(
+            "postgres://user:secret-token@example.invalid:5432/db failed",
+        ));
+        let json = report.to_json();
+
+        for field in [
+            "\"command\"",
+            "\"success\"",
+            "\"databaseType\"",
+            "\"inspectionScope\"",
+            "\"schemas\"",
+            "\"tables\"",
+            "\"columns\"",
+            "\"counts\"",
+            "\"warnings\"",
+            "\"errors\"",
+            "\"deferredObjectTypes\"",
+        ] {
+            assert!(json.contains(field), "missing JSON field {field}");
+        }
+
+        assert!(!json.contains("secret-token"));
+        assert!(!json.contains("postgres://"));
+    }
+
+    #[test]
+    fn inspect_command_does_not_create_repository_files() {
+        let dir = create_temp_dir("inspect-no-files");
+        init_git_repo(&dir);
+
+        let before_database_exists = dir.join("database").exists();
+        let report = inspect_postgres_command(None, None);
+
+        assert!(!report.success);
+        assert_eq!(before_database_exists, dir.join("database").exists());
+    }
+
+    #[test]
+    fn internal_schema_filtering_excludes_postgresql_schemas() {
+        assert!(!is_user_schema("pg_catalog"));
+        assert!(!is_user_schema("information_schema"));
+        assert!(!is_user_schema("pg_toast"));
+        assert!(!is_user_schema("pg_toast_temp_1"));
+        assert!(!is_user_schema("pg_temp_1"));
+        assert!(is_user_schema("public"));
+        assert!(is_user_schema("app_core"));
+    }
+
+    #[test]
+    fn object_inventory_model_represents_schemas_tables_and_columns() {
+        let inventory = PostgresInventory {
+            schemas: vec![SchemaInfo {
+                name: "app".to_string(),
+            }],
+            tables: vec![TableInfo {
+                schema_name: "app".to_string(),
+                table_name: "orders".to_string(),
+                table_type: "BASE TABLE".to_string(),
+            }],
+            columns: vec![ColumnInfo {
+                schema_name: "app".to_string(),
+                table_name: "orders".to_string(),
+                column_name: "id".to_string(),
+                ordinal_position: 1,
+                data_type: "integer".to_string(),
+                is_nullable: false,
+                has_default: true,
+            }],
+        };
+
+        assert_eq!(inventory.schemas[0].name, "app");
+        assert_eq!(inventory.tables[0].table_name, "orders");
+        assert_eq!(inventory.columns[0].column_name, "id");
+    }
+
+    #[test]
+    fn deferred_object_types_are_explicit() {
+        let report = empty_inspection_report(CommandKind::InspectPostgres);
+
+        assert!(report
+            .deferred_object_types
+            .contains(&"extensions".to_string()));
+        assert!(report
+            .deferred_object_types
+            .contains(&"indexes".to_string()));
+        assert!(report
+            .deferred_object_types
+            .contains(&"functions".to_string()));
+        assert!(report.deferred_object_types.contains(&"grants".to_string()));
+    }
+
+    #[test]
+    fn cli_rejects_apply_and_database_mutation_commands() {
         let invalid_commands = [
-            vec!["inspect".to_string()],
-            vec!["compare".to_string()],
             vec!["apply".to_string()],
             vec!["execute".to_string()],
             vec!["data-compare".to_string()],
+            vec!["compare".to_string()],
+            vec!["inspect".to_string(), "mysql".to_string()],
         ];
 
         for args in invalid_commands {
             assert!(ParsedArgs::parse(&args).is_err());
         }
+
+        assert!(ParsedArgs::parse(&["inspect".to_string(), "postgres".to_string()]).is_ok());
     }
 }
