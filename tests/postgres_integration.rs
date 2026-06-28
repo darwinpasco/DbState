@@ -5,8 +5,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use dbstate::{
     compare_postgres_with_inventory, export_postgres_with_inventory, inspect_postgres,
-    inspect_postgres_command, plan_postgres_with_inventory, render_schema_sql, render_table_sql,
-    sync_postgres_with_inventory, ExportSelection, PlanSelection,
+    inspect_postgres_command, plan_postgres_with_inventory, release_postgres_with_inventory,
+    render_schema_sql, render_table_sql, sync_postgres_with_inventory, ExportSelection,
+    PlanSelection,
 };
 use postgres::{Client, NoTls};
 
@@ -18,7 +19,7 @@ fn lock_postgres_fixture() -> MutexGuard<'static, ()> {
     POSTGRES_FIXTURE_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock()
-        .expect("PostgreSQL fixture lock poisoned")
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 #[test]
@@ -479,10 +480,7 @@ fn local_postgres_fixture_plan_generates_selected_items_and_dependency_warnings(
     );
     assert!(table_plan.success);
     assert_eq!(table_plan.plan_items.len(), 1);
-    assert_eq!(
-        table_plan.plan_items[0].plan_intent,
-        "updateDatabaseLater"
-    );
+    assert_eq!(table_plan.plan_items[0].plan_intent, "updateDatabaseLater");
 
     std::fs::write(
         repo.join("database/objects/schemas/local_only.sql"),
@@ -542,9 +540,10 @@ fn local_postgres_fixture_plan_generates_selected_items_and_dependency_warnings(
         &PlanSelection::include_all(),
     );
     assert!(missing_schema_plan.success);
-    assert!(missing_schema_plan.blocked_items.iter().any(|item| {
-        item.object_ref == "table:dbstate_slice2.sample_accounts"
-    }));
+    assert!(missing_schema_plan
+        .blocked_items
+        .iter()
+        .any(|item| { item.object_ref == "table:dbstate_slice2.sample_accounts" }));
     assert!(missing_schema_plan
         .dependency_warnings
         .iter()
@@ -557,6 +556,179 @@ fn local_postgres_fixture_plan_generates_selected_items_and_dependency_warnings(
     assert!(!json.contains("slice2-sensitive-marker"));
     assert!(!text.contains("slice2-sensitive-marker"));
     assert!(!repo.join("database/releases").join("slice6.sql").exists());
+}
+
+#[test]
+fn local_postgres_fixture_release_generates_artifacts_without_database_apply() {
+    let Some(url) = std::env::var("DBSTATE_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping PostgreSQL integration test: DBSTATE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let _fixture_guard = lock_postgres_fixture();
+    assert_safe_test_url(&url);
+
+    let mut client =
+        Client::connect(&url, NoTls).expect("connect to local disposable test database");
+    client
+        .batch_execute(FIXTURE_SQL)
+        .expect("apply test-only fixture SQL");
+
+    let inventory = inspect_postgres(&url).expect("inspect local disposable PostgreSQL fixture");
+    let repo = disposable_git_repo();
+
+    let sync = sync_postgres_with_inventory(&repo, &inventory, &ExportSelection::All, false);
+    assert!(sync.success);
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "synced files",
+        ],
+    );
+
+    let table_path = repo.join("database/objects/tables/dbstate_slice2.sample_accounts.sql");
+    let original_table_content = std::fs::read_to_string(&table_path).expect("read table");
+    std::fs::write(&table_path, "-- local drift for release\n").expect("write local drift");
+    std::fs::write(
+        repo.join("database/objects/schemas/local_only.sql"),
+        render_schema_sql("local_only"),
+    )
+    .expect("write repo-only schema");
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "release candidate files",
+        ],
+    );
+    let drifted_table_content = std::fs::read_to_string(&table_path).expect("read drifted table");
+    assert_ne!(original_table_content, drifted_table_content);
+
+    let dry_run = release_postgres_with_inventory(
+        &repo,
+        &inventory,
+        &ExportSelection::All,
+        &PlanSelection::include_all(),
+        "slice7_fixture",
+        true,
+    );
+    assert!(dry_run.success, "{:?}", dry_run.errors);
+    assert!(dry_run
+        .planned_artifacts
+        .contains(&"database/releases/0001_slice7_fixture.sql".to_string()));
+    assert!(!repo
+        .join("database/releases/0001_slice7_fixture.sql")
+        .exists());
+
+    let release = release_postgres_with_inventory(
+        &repo,
+        &inventory,
+        &ExportSelection::All,
+        &PlanSelection::include_all(),
+        "slice7_fixture",
+        false,
+    );
+    assert!(release.success, "{:?}", release.errors);
+    assert!(release
+        .created_artifacts
+        .contains(&"database/releases/0001_slice7_fixture.sql".to_string()));
+    assert!(release
+        .created_artifacts
+        .contains(&"database/releases/0001_slice7_fixture.summary.md".to_string()));
+    assert!(release
+        .created_artifacts
+        .contains(&"database/releases/0001_slice7_fixture.risk.json".to_string()));
+
+    assert_eq!(
+        std::fs::read_to_string(&table_path).expect("read table after release"),
+        drifted_table_content
+    );
+
+    let sql = std::fs::read_to_string(repo.join("database/releases/0001_slice7_fixture.sql"))
+        .expect("read sql artifact");
+    let summary =
+        std::fs::read_to_string(repo.join("database/releases/0001_slice7_fixture.summary.md"))
+            .expect("read summary artifact");
+    let risk =
+        std::fs::read_to_string(repo.join("database/releases/0001_slice7_fixture.risk.json"))
+            .expect("read risk artifact");
+    let json = release.to_json();
+    let text = release.to_text();
+
+    assert!(sql.contains("CREATE SCHEMA IF NOT EXISTS \"local_only\";"));
+    assert!(sql.contains("does not generate ALTER TABLE statements yet"));
+    for forbidden in [
+        "DROP TABLE",
+        "DROP SCHEMA",
+        "ALTER TABLE DROP",
+        "TRUNCATE",
+        "DELETE FROM",
+        "INSERT INTO",
+    ] {
+        assert!(!sql.contains(forbidden), "forbidden SQL found: {forbidden}");
+    }
+    assert!(risk.contains("\"destructiveSqlGenerated\":false"));
+    assert!(risk.contains("\"directApplyAvailable\":false"));
+    assert!(risk.contains("\"generatedSqlExecutionSupported\":false"));
+
+    for output in [&sql, &summary, &risk, &json, &text] {
+        assert!(!output.contains(&url));
+        assert!(!output.contains("dbstate_test_only"));
+        assert!(!output.contains("slice2-sensitive-marker"));
+    }
+
+    let blocked_repo = disposable_git_repo();
+    std::fs::write(
+        blocked_repo.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
+        "-- local drift without schema\n",
+    )
+    .expect("write blocked table");
+    run_git(&blocked_repo, &["add", "."]);
+    run_git(
+        &blocked_repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "blocked release candidate",
+        ],
+    );
+    let blocked = release_postgres_with_inventory(
+        &blocked_repo,
+        &inventory,
+        &ExportSelection::Table {
+            schema: "dbstate_slice2".to_string(),
+            table: "sample_accounts".to_string(),
+        },
+        &PlanSelection::include_all(),
+        "slice7_blocked",
+        false,
+    );
+    assert!(!blocked.success);
+    assert_eq!(blocked.risk_level, "blocked");
+    assert!(blocked.created_artifacts.is_empty());
+    assert!(blocked
+        .blocked_items
+        .iter()
+        .any(|item| item.object_ref == "table:dbstate_slice2.sample_accounts"));
 }
 
 fn assert_safe_test_url(url: &str) {

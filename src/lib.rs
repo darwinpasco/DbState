@@ -40,6 +40,7 @@ pub enum CommandKind {
     SyncPostgres,
     ComparePostgres,
     PlanPostgres,
+    ReleasePostgres,
 }
 
 impl CommandKind {
@@ -52,6 +53,7 @@ impl CommandKind {
             Self::SyncPostgres => "sync postgres",
             Self::ComparePostgres => "compare postgres",
             Self::PlanPostgres => "plan postgres",
+            Self::ReleasePostgres => "release postgres",
         }
     }
 }
@@ -64,6 +66,7 @@ pub enum CommandOutput {
     Sync(SyncReport),
     Compare(CompareReport),
     Plan(PlanReport),
+    Release(ReleaseReport),
 }
 
 impl CommandOutput {
@@ -75,6 +78,7 @@ impl CommandOutput {
             Self::Sync(report) => report.to_text(),
             Self::Compare(report) => report.to_text(),
             Self::Plan(report) => report.to_text(),
+            Self::Release(report) => report.to_text(),
         }
     }
 
@@ -86,6 +90,7 @@ impl CommandOutput {
             Self::Sync(report) => report.to_json(),
             Self::Compare(report) => report.to_json(),
             Self::Plan(report) => report.to_json(),
+            Self::Release(report) => report.to_json(),
         }
     }
 }
@@ -271,6 +276,31 @@ pub struct PlanReport {
     pub blocked_items: Vec<PlanItem>,
     pub dependency_warnings: Vec<DependencyWarning>,
     pub compare_summary: CompareSummary,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub deferred_object_types: Vec<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReleaseReport {
+    pub command: CommandKind,
+    pub success: bool,
+    pub database_type: String,
+    pub release_name: String,
+    pub release_scope: String,
+    pub dry_run: bool,
+    pub selected_schemas: Vec<String>,
+    pub selected_tables: Vec<String>,
+    pub included_objects: Vec<String>,
+    pub excluded_objects: Vec<String>,
+    pub plan_items: Vec<PlanItem>,
+    pub blocked_items: Vec<PlanItem>,
+    pub dependency_warnings: Vec<DependencyWarning>,
+    pub planned_artifacts: Vec<String>,
+    pub created_artifacts: Vec<String>,
+    pub risk_level: String,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
     pub deferred_object_types: Vec<String>,
@@ -467,6 +497,16 @@ pub fn run_cli(
                 exit_code,
             })
         }
+        CommandKind::ReleasePostgres => {
+            let format = parsed.format;
+            let report = release_postgres_command(cwd, parsed);
+            let exit_code = if report.success { 0 } else { 2 };
+            Ok(CliResult {
+                format,
+                output: CommandOutput::Release(report),
+                exit_code,
+            })
+        }
     }
 }
 
@@ -481,6 +521,7 @@ struct ParsedArgs {
     all: bool,
     includes: Vec<String>,
     excludes: Vec<String>,
+    release_name: Option<String>,
 }
 
 impl ParsedArgs {
@@ -497,6 +538,7 @@ impl ParsedArgs {
         let mut all = false;
         let mut includes = Vec::new();
         let mut excludes = Vec::new();
+        let mut release_name = None;
         let mut positional = Vec::new();
         let mut index = 0;
 
@@ -560,6 +602,13 @@ impl ParsedArgs {
                     excludes.push(value.to_string());
                     index += 2;
                 }
+                "--name" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or_else(|| "--name requires a value".to_string())?;
+                    release_name = Some(value.to_string());
+                    index += 2;
+                }
                 "--help" | "-h" => return Err(usage()),
                 value if value.starts_with('-') => {
                     return Err(format!("Unknown option: {value}"));
@@ -589,6 +638,9 @@ impl ParsedArgs {
             [plan, database] if plan == "plan" && database == "postgres" => {
                 CommandKind::PlanPostgres
             }
+            [release, database] if release == "release" && database == "postgres" => {
+                CommandKind::ReleasePostgres
+            }
             _ => return Err(usage()),
         };
 
@@ -596,9 +648,10 @@ impl ParsedArgs {
             && command != CommandKind::Init
             && command != CommandKind::ExportPostgres
             && command != CommandKind::SyncPostgres
+            && command != CommandKind::ReleasePostgres
         {
             return Err(
-                "--dry-run is only supported for dbstate init, dbstate export postgres, and dbstate sync postgres"
+                "--dry-run is only supported for dbstate init, dbstate export postgres, dbstate sync postgres, and dbstate release postgres"
                     .to_string(),
             );
         }
@@ -609,9 +662,10 @@ impl ParsedArgs {
             && command != CommandKind::SyncPostgres
             && command != CommandKind::ComparePostgres
             && command != CommandKind::PlanPostgres
+            && command != CommandKind::ReleasePostgres
         {
             return Err(
-                "--url is only supported for dbstate inspect postgres, dbstate export postgres, dbstate sync postgres, dbstate compare postgres, and dbstate plan postgres"
+                "--url is only supported for dbstate inspect postgres, dbstate export postgres, dbstate sync postgres, dbstate compare postgres, dbstate plan postgres, and dbstate release postgres"
                     .to_string(),
             );
         }
@@ -621,17 +675,25 @@ impl ParsedArgs {
             && command != CommandKind::SyncPostgres
             && command != CommandKind::ComparePostgres
             && command != CommandKind::PlanPostgres
+            && command != CommandKind::ReleasePostgres
         {
             return Err(
-                "--schema, --table, and --all are only supported for dbstate export postgres, dbstate sync postgres, dbstate compare postgres, and dbstate plan postgres"
+                "--schema, --table, and --all are only supported for dbstate export postgres, dbstate sync postgres, dbstate compare postgres, dbstate plan postgres, and dbstate release postgres"
                     .to_string(),
             );
         }
 
-        if (!includes.is_empty() || !excludes.is_empty()) && command != CommandKind::PlanPostgres {
+        if (!includes.is_empty() || !excludes.is_empty())
+            && command != CommandKind::PlanPostgres
+            && command != CommandKind::ReleasePostgres
+        {
             return Err(
-                "--include and --exclude are only supported for dbstate plan postgres".to_string(),
+                "--include and --exclude are only supported for dbstate plan postgres and dbstate release postgres".to_string(),
             );
+        }
+
+        if release_name.is_some() && command != CommandKind::ReleasePostgres {
+            return Err("--name is only supported for dbstate release postgres".to_string());
         }
 
         Ok(Self {
@@ -644,12 +706,13 @@ impl ParsedArgs {
             all,
             includes,
             excludes,
+            release_name,
         })
     }
 }
 
 fn usage() -> String {
-    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json]".to_string()
+    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json]".to_string()
 }
 
 pub fn status_report(cwd: &Path, command: CommandKind) -> ProjectReport {
@@ -1800,6 +1863,526 @@ fn plan_postgres_command(cwd: &Path, parsed: ParsedArgs) -> PlanReport {
     }
 }
 
+fn release_postgres_command(cwd: &Path, parsed: ParsedArgs) -> ReleaseReport {
+    let mut report = empty_release_report(parsed.dry_run);
+    let release_name = match parsed.release_name.clone() {
+        Some(name) => name,
+        None => {
+            report
+                .errors
+                .push("Release name is required. Provide --name <release-name>.".to_string());
+            return report;
+        }
+    };
+    report.release_name = release_name.clone();
+
+    if let Err(error) = release_slug(&release_name) {
+        report.errors.push(error);
+        return report;
+    }
+
+    let selection = match ExportSelection::from_options(
+        parsed.all,
+        parsed.schema.clone(),
+        parsed.table.clone(),
+    ) {
+        Ok(selection) => selection,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+
+    let plan_selection = match PlanSelection::from_options(parsed.includes, parsed.excludes) {
+        Ok(selection) => selection,
+        Err(error) => {
+            report.release_scope = selection.scope_name();
+            report.selected_schemas = selection.selected_schemas();
+            report.selected_tables = selection.selected_tables();
+            report.errors.push(error);
+            return report;
+        }
+    };
+
+    report.release_scope = selection.scope_name();
+    report.selected_schemas = selection.selected_schemas();
+    report.selected_tables = selection.selected_tables();
+    report.included_objects = plan_selection.included_object_refs();
+    report.excluded_objects = plan_selection.excluded_object_refs();
+
+    let Some(connection_url) =
+        resolve_postgres_url(parsed.url, env::var("DBSTATE_POSTGRES_URL").ok())
+    else {
+        report.errors.push(
+            "Missing PostgreSQL connection URL. Provide --url or DBSTATE_POSTGRES_URL.".to_string(),
+        );
+        return report;
+    };
+
+    match inspect_postgres(&connection_url) {
+        Ok(inventory) => release_postgres_with_inventory(
+            cwd,
+            &inventory,
+            &selection,
+            &plan_selection,
+            &release_name,
+            parsed.dry_run,
+        ),
+        Err(error) => {
+            report.errors.push(redact_message(&error, &connection_url));
+            report
+        }
+    }
+}
+
+pub fn release_postgres_with_inventory(
+    cwd: &Path,
+    inventory: &PostgresInventory,
+    selection: &ExportSelection,
+    plan_selection: &PlanSelection,
+    release_name: &str,
+    dry_run: bool,
+) -> ReleaseReport {
+    let mut report = empty_release_report(dry_run);
+    report.release_name = release_name.to_string();
+    report.release_scope = selection.scope_name();
+    report.selected_schemas = selection.selected_schemas();
+    report.selected_tables = selection.selected_tables();
+    report.included_objects = plan_selection.included_object_refs();
+    report.excluded_objects = plan_selection.excluded_object_refs();
+
+    let slug = match release_slug(release_name) {
+        Ok(slug) => slug,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+
+    let project = status_report(cwd, CommandKind::ReleasePostgres);
+    report.working_tree_status = project.working_tree_status;
+    report.is_dirty = project.is_dirty;
+
+    if !project.is_git_repository {
+        report
+            .errors
+            .push("Current path is not inside a Git repository.".to_string());
+        return report;
+    }
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+        report.errors.push(
+            "DbState PostgreSQL project structure is incomplete. Run dbstate init first."
+                .to_string(),
+        );
+        return report;
+    }
+    if project.is_dirty && !dry_run {
+        report.errors.push(
+            "Release artifact generation is blocked because the working tree has changes. Commit/stash changes or use --dry-run."
+                .to_string(),
+        );
+        return report;
+    }
+
+    let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
+    if !root.join("database/releases").is_dir() {
+        report.errors.push(
+            "database/releases is missing. Run dbstate init before generating release artifacts."
+                .to_string(),
+        );
+        return report;
+    }
+
+    let plan = plan_postgres_with_inventory(cwd, inventory, selection, plan_selection);
+    report.included_objects = plan.included_objects.clone();
+    report.excluded_objects = plan.excluded_objects.clone();
+    report.plan_items = plan.plan_items.clone();
+    report.blocked_items = plan.blocked_items.clone();
+    report.dependency_warnings = plan.dependency_warnings.clone();
+    report.warnings = plan.warnings.clone();
+    report.errors = plan.errors.clone();
+    report.deferred_object_types = plan.deferred_object_types.clone();
+    report.working_tree_status = plan.working_tree_status;
+    report.is_dirty = plan.is_dirty;
+
+    if !report.errors.is_empty() {
+        report.risk_level = risk_level_for_release(&report);
+        return report;
+    }
+    if !report.blocked_items.is_empty() {
+        report.risk_level = "blocked".to_string();
+        report.errors.push(
+            "Release artifact generation is blocked because selected plan items have dependency blockers."
+                .to_string(),
+        );
+        return report;
+    }
+
+    let artifacts = match plan_release_artifact_paths(&root, &slug) {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+    report.planned_artifacts = artifacts.relative_paths();
+    report.risk_level = risk_level_for_release(&report);
+
+    if dry_run {
+        report.success = report.errors.is_empty();
+        return report;
+    }
+
+    let sql = match render_release_sql(&root, &report, &artifacts) {
+        Ok(sql) => sql,
+        Err(error) => {
+            report.errors.push(error);
+            report.risk_level = risk_level_for_release(&report);
+            return report;
+        }
+    };
+    let summary = render_release_summary(&report, &artifacts);
+    let risk = render_release_risk_json(&report, &artifacts);
+
+    for (relative_path, content) in [
+        (&artifacts.sql, sql),
+        (&artifacts.summary, summary),
+        (&artifacts.risk, risk),
+    ] {
+        if let Err(error) = ensure_database_release_path(relative_path) {
+            report.errors.push(error);
+            continue;
+        }
+        let target = root.join(relative_path);
+        if target.exists() {
+            report.errors.push(format!(
+                "Refusing to overwrite existing release artifact {relative_path}."
+            ));
+            continue;
+        }
+        if let Err(error) = fs::write(&target, content) {
+            report
+                .errors
+                .push(format!("Could not write {relative_path}: {error}"));
+            continue;
+        }
+        report.created_artifacts.push(relative_path.to_string());
+    }
+
+    report.success = report.errors.is_empty();
+    report.risk_level = risk_level_for_release(&report);
+    report
+}
+
+#[derive(Debug, Clone)]
+struct ReleaseArtifactPaths {
+    sql: String,
+    summary: String,
+    risk: String,
+}
+
+impl ReleaseArtifactPaths {
+    fn relative_paths(&self) -> Vec<String> {
+        vec![self.sql.clone(), self.summary.clone(), self.risk.clone()]
+    }
+}
+
+fn release_slug(release_name: &str) -> Result<String, String> {
+    let trimmed = release_name.trim();
+    if trimmed.is_empty() {
+        return Err("Release name cannot be empty.".to_string());
+    }
+    if trimmed.contains("..")
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+        || trimmed.contains(' ')
+        || trimmed.contains('\t')
+    {
+        return Err(
+            "Release name must use only letters, numbers, hyphen, or underscore.".to_string(),
+        );
+    }
+    let slug = trimmed.to_ascii_lowercase();
+    if slug
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
+    {
+        Ok(slug)
+    } else {
+        Err("Release name must use only letters, numbers, hyphen, or underscore.".to_string())
+    }
+}
+
+fn plan_release_artifact_paths(root: &Path, slug: &str) -> Result<ReleaseArtifactPaths, String> {
+    for sequence in 1..=9999 {
+        let prefix = format!("{sequence:04}_{slug}");
+        let artifacts = ReleaseArtifactPaths {
+            sql: format!("database/releases/{prefix}.sql"),
+            summary: format!("database/releases/{prefix}.summary.md"),
+            risk: format!("database/releases/{prefix}.risk.json"),
+        };
+        for relative_path in artifacts.relative_paths() {
+            ensure_database_release_path(&relative_path)?;
+        }
+        if !root.join(&artifacts.sql).exists()
+            && !root.join(&artifacts.summary).exists()
+            && !root.join(&artifacts.risk).exists()
+        {
+            return Ok(artifacts);
+        }
+    }
+    Err("Could not choose a release artifact sequence from 0001 to 9999.".to_string())
+}
+
+fn ensure_database_release_path(relative_path: &str) -> Result<(), String> {
+    if relative_path.starts_with("database/releases/")
+        && !relative_path.contains("..")
+        && !relative_path.contains('\\')
+        && !relative_path.contains(':')
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "Refusing to write outside database/releases/: {relative_path}"
+        ))
+    }
+}
+
+fn risk_level_for_release(report: &ReleaseReport) -> String {
+    if !report.blocked_items.is_empty() {
+        return "blocked".to_string();
+    }
+    if report
+        .plan_items
+        .iter()
+        .any(|item| item.plan_intent == "updateDatabaseLater")
+        || !report.dependency_warnings.is_empty()
+        || !report.warnings.is_empty()
+    {
+        "needsReview".to_string()
+    } else {
+        "safe".to_string()
+    }
+}
+
+fn render_release_sql(
+    root: &Path,
+    report: &ReleaseReport,
+    artifacts: &ReleaseArtifactPaths,
+) -> Result<String, String> {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL release artifact").ok();
+    writeln!(sql, "-- Release: {}", report.release_name).ok();
+    writeln!(sql, "-- Artifact: {}", artifacts.sql).ok();
+    writeln!(sql, "-- Generated by: DbState PostgreSQL v0.1 Slice 7").ok();
+    writeln!(
+        sql,
+        "-- Safety: review-only. DbState does not execute this script."
+    )
+    .ok();
+    writeln!(sql, "-- Direct apply: not available through DbState.").ok();
+    writeln!(sql, "-- Scope: {}", report.release_scope).ok();
+    writeln!(sql).ok();
+    writeln!(sql, "-- Selected objects:").ok();
+    if report.plan_items.is_empty() {
+        writeln!(sql, "--   none").ok();
+    } else {
+        for item in &report.plan_items {
+            writeln!(sql, "--   {}", item.object_ref).ok();
+        }
+    }
+    writeln!(sql).ok();
+
+    if !report.dependency_warnings.is_empty() {
+        writeln!(sql, "-- Dependency warnings:").ok();
+        for warning in &report.dependency_warnings {
+            writeln!(
+                sql,
+                "--   [{}] {}: {}",
+                warning.severity, warning.warning_type, warning.message
+            )
+            .ok();
+        }
+        writeln!(sql).ok();
+    }
+
+    for item in &report.plan_items {
+        writeln!(sql, "-- Object: {}", item.object_ref).ok();
+        match item.plan_intent.as_str() {
+            "createInDatabaseLater" => {
+                sql.push_str(&render_create_later_sql(root, item)?);
+            }
+            "updateDatabaseLater" => {
+                writeln!(sql, "-- TODO: Object differs from desired state.").ok();
+                writeln!(
+                    sql,
+                    "-- DbState v0.1 Slice 7 does not generate ALTER TABLE statements yet."
+                )
+                .ok();
+                writeln!(sql, "-- Object: {}", item.object_ref).ok();
+            }
+            "reviewDatabaseOnly" => {
+                writeln!(
+                    sql,
+                    "-- Review only. No SQL generated for database-only object {}.",
+                    item.object_ref
+                )
+                .ok();
+            }
+            _ => {
+                writeln!(
+                    sql,
+                    "-- No SQL generated for object {} with intent {}.",
+                    item.object_ref, item.plan_intent
+                )
+                .ok();
+            }
+        }
+        writeln!(sql).ok();
+    }
+
+    Ok(sql)
+}
+
+fn render_create_later_sql(root: &Path, item: &PlanItem) -> Result<String, String> {
+    let object_ref = ObjectRef::parse(&item.object_ref)?;
+    match object_ref {
+        ObjectRef::Schema(schema) => Ok(format!(
+            "CREATE SCHEMA IF NOT EXISTS {};\n",
+            quote_postgres_identifier(&schema)
+        )),
+        ObjectRef::Table { .. } => {
+            ensure_database_object_path(&item.relative_path)?;
+            let content = fs::read_to_string(root.join(&item.relative_path))
+                .map_err(|error| format!("Could not read {}: {error}", item.relative_path))?;
+            Ok(content.replacen("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1))
+        }
+    }
+}
+
+fn render_release_summary(report: &ReleaseReport, artifacts: &ReleaseArtifactPaths) -> String {
+    let mut summary = String::new();
+    writeln!(summary, "# DbState PostgreSQL Release Summary").ok();
+    writeln!(summary).ok();
+    writeln!(summary, "- Release name: {}", report.release_name).ok();
+    writeln!(summary, "- Command: {}", report.command.as_str()).ok();
+    writeln!(summary, "- Scope: {}", report.release_scope).ok();
+    writeln!(summary, "- Dry run: {}", report.dry_run).ok();
+    writeln!(summary, "- Risk level: {}", report.risk_level).ok();
+    writeln!(summary).ok();
+    writeln!(summary, "## Artifacts").ok();
+    for artifact in artifacts.relative_paths() {
+        writeln!(summary, "- {artifact}").ok();
+    }
+    writeln!(summary).ok();
+    writeln!(summary, "## Included Objects").ok();
+    write_markdown_list(&mut summary, &report.included_objects);
+    writeln!(summary).ok();
+    writeln!(summary, "## Excluded Objects").ok();
+    write_markdown_list(&mut summary, &report.excluded_objects);
+    writeln!(summary).ok();
+    writeln!(summary, "## Plan Items").ok();
+    for item in &report.plan_items {
+        writeln!(
+            summary,
+            "- {}: {}, {}, intent {}",
+            item.object_ref, item.object_type, item.compare_classification, item.plan_intent
+        )
+        .ok();
+    }
+    if report.plan_items.is_empty() {
+        writeln!(summary, "- none").ok();
+    }
+    writeln!(summary).ok();
+    writeln!(summary, "## Blocked Items").ok();
+    for item in &report.blocked_items {
+        writeln!(summary, "- {}: {}", item.object_ref, item.plan_intent).ok();
+    }
+    if report.blocked_items.is_empty() {
+        writeln!(summary, "- none").ok();
+    }
+    writeln!(summary).ok();
+    writeln!(summary, "## Dependency Warnings").ok();
+    for warning in &report.dependency_warnings {
+        writeln!(
+            summary,
+            "- [{}] {}: {}",
+            warning.severity, warning.warning_type, warning.message
+        )
+        .ok();
+    }
+    if report.dependency_warnings.is_empty() {
+        writeln!(summary, "- none").ok();
+    }
+    writeln!(summary).ok();
+    writeln!(summary, "## Deferred Object Types").ok();
+    write_markdown_list(&mut summary, &report.deferred_object_types);
+    writeln!(summary).ok();
+    writeln!(summary, "## Safety").ok();
+    writeln!(
+        summary,
+        "DbState generated these artifacts for review. DbState does not execute generated SQL or apply changes to a database."
+    )
+    .ok();
+    writeln!(summary).ok();
+    writeln!(summary, "## Slice 7 Limitations").ok();
+    writeln!(
+        summary,
+        "- Only schemas and simple ordinary/base tables with columns are handled."
+    )
+    .ok();
+    writeln!(
+        summary,
+        "- Changed simple table items produce review-only comments instead of ALTER TABLE statements."
+    )
+    .ok();
+    writeln!(
+        summary,
+        "- Constraints, indexes, views, functions, triggers, grants, reference-data rows, and destructive SQL are deferred."
+    )
+    .ok();
+    summary
+}
+
+fn write_markdown_list(markdown: &mut String, values: &[String]) {
+    if values.is_empty() {
+        writeln!(markdown, "- none").ok();
+        return;
+    }
+    for value in values {
+        writeln!(markdown, "- {value}").ok();
+    }
+}
+
+fn render_release_risk_json(report: &ReleaseReport, artifacts: &ReleaseArtifactPaths) -> String {
+    let mut json = String::new();
+    json.push('{');
+    write_json_string_field(&mut json, "releaseName", &report.release_name, true);
+    write_json_array_field(&mut json, "artifactPaths", &artifacts.relative_paths());
+    write_json_string_field(&mut json, "riskLevel", &report.risk_level, false);
+    write_json_array_field(&mut json, "selectedObjects", &report.included_objects);
+    write_plan_item_array_field(&mut json, "planItems", &report.plan_items);
+    write_plan_item_array_field(&mut json, "blockedItems", &report.blocked_items);
+    write_dependency_warning_array_field(
+        &mut json,
+        "dependencyWarnings",
+        &report.dependency_warnings,
+    );
+    write_json_array_field(
+        &mut json,
+        "deferredObjectTypes",
+        &report.deferred_object_types,
+    );
+    write_json_bool_field(&mut json, "destructiveSqlGenerated", false);
+    write_json_bool_field(&mut json, "directApplyAvailable", false);
+    write_json_bool_field(&mut json, "generatedSqlExecutionSupported", false);
+    write_json_array_field(&mut json, "warnings", &report.warnings);
+    write_json_array_field(&mut json, "errors", &report.errors);
+    json.push('}');
+    json
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ObjectRef {
     Schema(String),
@@ -2138,17 +2721,23 @@ fn object_ref_from_relative_path(relative_path: &str) -> Result<ObjectRef, Strin
     ensure_database_object_path(relative_path)?;
     if let Some(file_name) = relative_path.strip_prefix("database/objects/schemas/") {
         let Some(schema) = schema_name_from_file(file_name) else {
-            return Err(format!("Invalid schema desired-state file path: {relative_path}"));
+            return Err(format!(
+                "Invalid schema desired-state file path: {relative_path}"
+            ));
         };
         return Ok(ObjectRef::Schema(schema));
     }
     if let Some(file_name) = relative_path.strip_prefix("database/objects/tables/") {
         let Some((schema, table)) = table_name_from_file(file_name) else {
-            return Err(format!("Invalid table desired-state file path: {relative_path}"));
+            return Err(format!(
+                "Invalid table desired-state file path: {relative_path}"
+            ));
         };
         return Ok(ObjectRef::Table { schema, table });
     }
-    Err(format!("Unsupported desired-state file path: {relative_path}"))
+    Err(format!(
+        "Unsupported desired-state file path: {relative_path}"
+    ))
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2537,6 +3126,35 @@ fn empty_plan_report() -> PlanReport {
             database_only: 0,
             skipped: 0,
         },
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        deferred_object_types: DEFERRED_OBJECT_TYPES
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
+        working_tree_status: WorkingTreeStatus::Unknown,
+        is_dirty: false,
+    }
+}
+
+fn empty_release_report(dry_run: bool) -> ReleaseReport {
+    ReleaseReport {
+        command: CommandKind::ReleasePostgres,
+        success: false,
+        database_type: "postgresql".to_string(),
+        release_name: String::new(),
+        release_scope: "<none>".to_string(),
+        dry_run,
+        selected_schemas: Vec::new(),
+        selected_tables: Vec::new(),
+        included_objects: Vec::new(),
+        excluded_objects: Vec::new(),
+        plan_items: Vec::new(),
+        blocked_items: Vec::new(),
+        dependency_warnings: Vec::new(),
+        planned_artifacts: Vec::new(),
+        created_artifacts: Vec::new(),
+        risk_level: "needsReview".to_string(),
         warnings: Vec::new(),
         errors: Vec::new(),
         deferred_object_types: DEFERRED_OBJECT_TYPES
@@ -3048,6 +3666,83 @@ impl PlanReport {
             &self.dependency_warnings,
         );
         write_compare_summary_field(&mut json, "compareSummary", &self.compare_summary);
+        write_json_array_field(&mut json, "warnings", &self.warnings);
+        write_json_array_field(&mut json, "errors", &self.errors);
+        write_json_array_field(
+            &mut json,
+            "deferredObjectTypes",
+            &self.deferred_object_types,
+        );
+        write_json_string_field(
+            &mut json,
+            "workingTreeStatus",
+            self.working_tree_status.as_str(),
+            false,
+        );
+        write_json_bool_field(&mut json, "isDirty", self.is_dirty);
+        json.push('}');
+        json
+    }
+}
+
+impl ReleaseReport {
+    pub fn to_text(&self) -> String {
+        let mut text = String::new();
+        writeln!(text, "Command: {}", self.command.as_str()).ok();
+        writeln!(text, "Success: {}", self.success).ok();
+        writeln!(text, "Database type: {}", self.database_type).ok();
+        writeln!(text, "Release name: {}", self.release_name).ok();
+        writeln!(text, "Release scope: {}", self.release_scope).ok();
+        writeln!(text, "Dry run: {}", self.dry_run).ok();
+        writeln!(text, "Working tree: {}", self.working_tree_status.as_str()).ok();
+        writeln!(text, "Risk level: {}", self.risk_level).ok();
+        write_path_list(&mut text, "Included objects", &self.included_objects);
+        write_path_list(&mut text, "Excluded objects", &self.excluded_objects);
+        write_plan_item_text_list(&mut text, "Plan items", &self.plan_items);
+        write_plan_item_text_list(&mut text, "Blocked items", &self.blocked_items);
+        write_path_list(&mut text, "Planned artifacts", &self.planned_artifacts);
+        write_path_list(&mut text, "Created artifacts", &self.created_artifacts);
+        writeln!(text, "Dependency warnings:").ok();
+        for warning in &self.dependency_warnings {
+            writeln!(
+                text,
+                "  - [{}] {}: {}",
+                warning.severity, warning.warning_type, warning.message
+            )
+            .ok();
+        }
+        for warning in &self.warnings {
+            writeln!(text, "Warning: {warning}").ok();
+        }
+        for error in &self.errors {
+            writeln!(text, "Error: {error}").ok();
+        }
+        text
+    }
+
+    pub fn to_json(&self) -> String {
+        let mut json = String::new();
+        json.push('{');
+        write_json_string_field(&mut json, "command", self.command.as_str(), true);
+        write_json_bool_field(&mut json, "success", self.success);
+        write_json_string_field(&mut json, "databaseType", &self.database_type, false);
+        write_json_string_field(&mut json, "releaseName", &self.release_name, false);
+        write_json_string_field(&mut json, "releaseScope", &self.release_scope, false);
+        write_json_bool_field(&mut json, "dryRun", self.dry_run);
+        write_json_array_field(&mut json, "selectedSchemas", &self.selected_schemas);
+        write_json_array_field(&mut json, "selectedTables", &self.selected_tables);
+        write_json_array_field(&mut json, "includedObjects", &self.included_objects);
+        write_json_array_field(&mut json, "excludedObjects", &self.excluded_objects);
+        write_plan_item_array_field(&mut json, "planItems", &self.plan_items);
+        write_plan_item_array_field(&mut json, "blockedItems", &self.blocked_items);
+        write_dependency_warning_array_field(
+            &mut json,
+            "dependencyWarnings",
+            &self.dependency_warnings,
+        );
+        write_json_array_field(&mut json, "plannedArtifacts", &self.planned_artifacts);
+        write_json_array_field(&mut json, "createdArtifacts", &self.created_artifacts);
+        write_json_string_field(&mut json, "riskLevel", &self.risk_level, false);
         write_json_array_field(&mut json, "warnings", &self.warnings);
         write_json_array_field(&mut json, "errors", &self.errors);
         write_json_array_field(
@@ -4574,11 +5269,9 @@ mod tests {
         .expect("write stale schema");
         commit_all(&dir, "stale schema");
 
-        let selection = PlanSelection::from_options(
-            Vec::new(),
-            vec!["schema:dbstate_slice2".to_string()],
-        )
-        .expect("plan selection");
+        let selection =
+            PlanSelection::from_options(Vec::new(), vec!["schema:dbstate_slice2".to_string()])
+                .expect("plan selection");
         let report = plan_postgres_with_inventory(
             &dir,
             &sample_inventory(),
@@ -4658,9 +5351,10 @@ mod tests {
         );
 
         assert!(report.success);
-        assert!(report.blocked_items.iter().any(|item| {
-            item.object_ref == "table:dbstate_slice2.sample_accounts"
-        }));
+        assert!(report
+            .blocked_items
+            .iter()
+            .any(|item| { item.object_ref == "table:dbstate_slice2.sample_accounts" }));
         assert!(report.dependency_warnings.iter().any(|warning| {
             warning.warning_type == "dependentObjectImpacted"
                 && warning.object_ref == "table:dbstate_slice2.sample_accounts"
@@ -4680,9 +5374,10 @@ mod tests {
             &ExportSelection::All,
             &PlanSelection::include_all(),
         );
-        report
-            .warnings
-            .push(redact_postgres_url(&placeholder_url("user", "sensitive-marker")));
+        report.warnings.push(redact_postgres_url(&placeholder_url(
+            "user",
+            "sensitive-marker",
+        )));
         let json = report.to_json();
 
         for field in [
@@ -4698,6 +5393,369 @@ mod tests {
             "\"blockedItems\"",
             "\"dependencyWarnings\"",
             "\"compareSummary\"",
+            "\"warnings\"",
+            "\"errors\"",
+            "\"deferredObjectTypes\"",
+            "\"workingTreeStatus\"",
+            "\"isDirty\"",
+        ] {
+            assert!(json.contains(field), "missing JSON field {field}");
+        }
+        assert!(!json.contains("postgres://"));
+        assert!(!json.contains("sensitive-marker"));
+    }
+
+    #[test]
+    fn release_missing_name_returns_clear_error() {
+        let dir = create_temp_dir("release-missing-name");
+        let parsed = ParsedArgs::parse(&[
+            "release".to_string(),
+            "postgres".to_string(),
+            "--all".to_string(),
+        ])
+        .expect("parse release");
+
+        let report = release_postgres_command(&dir, parsed);
+
+        assert!(!report.success);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("Release name is required")));
+    }
+
+    #[test]
+    fn release_invalid_name_returns_clear_error() {
+        let dir = create_temp_dir("release-invalid-name");
+        let parsed = ParsedArgs::parse(&[
+            "release".to_string(),
+            "postgres".to_string(),
+            "--all".to_string(),
+            "--name".to_string(),
+            "../bad".to_string(),
+        ])
+        .expect("parse release");
+
+        let report = release_postgres_command(&dir, parsed);
+
+        assert!(!report.success);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("Release name must use only")));
+    }
+
+    #[test]
+    fn release_missing_scope_selection_returns_clear_error() {
+        let dir = create_temp_dir("release-missing-scope");
+        let parsed = ParsedArgs::parse(&[
+            "release".to_string(),
+            "postgres".to_string(),
+            "--name".to_string(),
+            "slice7".to_string(),
+        ])
+        .expect("parse release");
+
+        let report = release_postgres_command(&dir, parsed);
+
+        assert!(!report.success);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("Selection is required")));
+    }
+
+    #[test]
+    fn release_requires_git_repository_and_dbstate_structure() {
+        let non_git = create_temp_dir("release-non-git");
+        let report = release_postgres_with_inventory(
+            &non_git,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::include_all(),
+            "slice7",
+            false,
+        );
+        assert!(!report.success);
+        assert!(report.errors[0].contains("not inside a Git repository"));
+
+        let no_structure = create_temp_dir("release-no-structure");
+        init_git_repo(&no_structure);
+        let report = release_postgres_with_inventory(
+            &no_structure,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::include_all(),
+            "slice7",
+            false,
+        );
+        assert!(!report.success);
+        assert!(report.errors[0].contains("Run dbstate init first"));
+    }
+
+    #[test]
+    fn release_write_is_blocked_when_working_tree_is_dirty() {
+        let dir = create_temp_dir("release-dirty");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+        fs::write(dir.join("dirty.txt"), "dirty").expect("write dirty file");
+
+        let report = release_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::include_all(),
+            "slice7",
+            false,
+        );
+
+        assert!(!report.success);
+        assert!(report.errors[0].contains("working tree has changes"));
+        assert!(report.created_artifacts.is_empty());
+    }
+
+    #[test]
+    fn release_dry_run_writes_no_files_and_plans_artifacts() {
+        let dir = create_temp_dir("release-dry-run");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/schemas/local_only.sql"),
+            render_schema_sql("local_only"),
+        )
+        .expect("write repo-only schema");
+        commit_all(&dir, "repo-only schema");
+
+        let report = release_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::from_options(vec!["schema:local_only".to_string()], Vec::new())
+                .expect("plan selection"),
+            "slice7",
+            true,
+        );
+
+        assert!(report.success);
+        assert!(report
+            .planned_artifacts
+            .contains(&"database/releases/0001_slice7.sql".to_string()));
+        assert!(report.created_artifacts.is_empty());
+        assert!(!dir.join("database/releases/0001_slice7.sql").exists());
+    }
+
+    #[test]
+    fn release_generates_sql_summary_and_risk_json_under_releases() {
+        let dir = create_temp_dir("release-write");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/schemas/local_only.sql"),
+            render_schema_sql("local_only"),
+        )
+        .expect("write repo-only schema");
+        fs::write(
+            dir.join("database/objects/tables/local_only.accounts.sql"),
+            render_table_sql("local_only", "accounts", &sample_inventory().columns),
+        )
+        .expect("write repo-only table");
+        commit_all(&dir, "repo-only objects");
+
+        let report = release_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::from_options(
+                vec![
+                    "schema:local_only".to_string(),
+                    "table:local_only.accounts".to_string(),
+                ],
+                Vec::new(),
+            )
+            .expect("plan selection"),
+            "Slice7_Test",
+            false,
+        );
+
+        assert!(report.success, "{:?}", report.errors);
+        assert_eq!(
+            report.created_artifacts,
+            vec![
+                "database/releases/0001_slice7_test.sql".to_string(),
+                "database/releases/0001_slice7_test.summary.md".to_string(),
+                "database/releases/0001_slice7_test.risk.json".to_string(),
+            ]
+        );
+        let sql =
+            fs::read_to_string(dir.join("database/releases/0001_slice7_test.sql")).expect("sql");
+        let summary = fs::read_to_string(dir.join("database/releases/0001_slice7_test.summary.md"))
+            .expect("summary");
+        let risk = fs::read_to_string(dir.join("database/releases/0001_slice7_test.risk.json"))
+            .expect("risk");
+
+        assert!(sql.contains("DbState does not execute this script"));
+        assert!(sql.contains("CREATE SCHEMA IF NOT EXISTS \"local_only\";"));
+        assert!(sql.contains("CREATE TABLE IF NOT EXISTS \"local_only\".\"accounts\""));
+        for forbidden in [
+            "DROP TABLE",
+            "DROP SCHEMA",
+            "ALTER TABLE DROP",
+            "TRUNCATE",
+            "DELETE FROM",
+            "INSERT INTO",
+        ] {
+            assert!(!sql.contains(forbidden), "forbidden SQL found: {forbidden}");
+        }
+        assert!(summary.contains("DbState does not execute generated SQL"));
+        assert!(risk.contains("\"destructiveSqlGenerated\":false"));
+        assert!(risk.contains("\"directApplyAvailable\":false"));
+        assert!(risk.contains("\"generatedSqlExecutionSupported\":false"));
+        assert!(!sql.contains("postgres://"));
+        assert!(!summary.contains("postgres://"));
+        assert!(!risk.contains("postgres://"));
+    }
+
+    #[test]
+    fn release_does_not_overwrite_existing_artifacts() {
+        let dir = create_temp_dir("release-sequence");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/releases/0001_slice7.sql"),
+            "-- existing\n",
+        )
+        .expect("write existing sql");
+        fs::write(
+            dir.join("database/releases/0001_slice7.summary.md"),
+            "existing\n",
+        )
+        .expect("write existing summary");
+        fs::write(dir.join("database/releases/0001_slice7.risk.json"), "{}\n")
+            .expect("write existing risk");
+        fs::write(
+            dir.join("database/objects/schemas/local_only.sql"),
+            render_schema_sql("local_only"),
+        )
+        .expect("write repo-only schema");
+        commit_all(&dir, "existing artifacts and repo-only schema");
+
+        let report = release_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::from_options(vec!["schema:local_only".to_string()], Vec::new())
+                .expect("plan selection"),
+            "slice7",
+            true,
+        );
+
+        assert!(report.success);
+        assert!(report
+            .planned_artifacts
+            .contains(&"database/releases/0002_slice7.sql".to_string()));
+    }
+
+    #[test]
+    fn release_blocks_when_selected_plan_items_are_blocked() {
+        let dir = create_temp_dir("release-blocked");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
+            "-- local drift\n",
+        )
+        .expect("write table without schema file");
+        commit_all(&dir, "table without schema");
+
+        let report = release_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::Table {
+                schema: "dbstate_slice2".to_string(),
+                table: "sample_accounts".to_string(),
+            },
+            &PlanSelection::include_all(),
+            "slice7",
+            false,
+        );
+
+        assert!(!report.success);
+        assert_eq!(report.risk_level, "blocked");
+        assert!(report.created_artifacts.is_empty());
+        assert!(report
+            .blocked_items
+            .iter()
+            .any(|item| item.object_ref == "table:dbstate_slice2.sample_accounts"));
+    }
+
+    #[test]
+    fn changed_table_release_uses_review_only_comment_not_alter() {
+        let dir = create_temp_dir("release-changed-table");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/schemas/dbstate_slice2.sql"),
+            render_schema_sql("dbstate_slice2"),
+        )
+        .expect("write schema");
+        fs::write(
+            dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
+            "-- local drift\n",
+        )
+        .expect("write changed table");
+        commit_all(&dir, "changed table");
+
+        let report = release_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::Table {
+                schema: "dbstate_slice2".to_string(),
+                table: "sample_accounts".to_string(),
+            },
+            &PlanSelection::include_all(),
+            "slice7",
+            false,
+        );
+
+        assert!(report.success, "{:?}", report.errors);
+        let sql =
+            fs::read_to_string(dir.join("database/releases/0001_slice7.sql")).expect("read sql");
+        assert!(sql.contains("does not generate ALTER TABLE statements yet"));
+        assert!(!sql.contains("\nALTER TABLE "));
+    }
+
+    #[test]
+    fn release_json_includes_expected_fields_and_no_secrets() {
+        let mut report = empty_release_report(true);
+        report.release_name = "slice7".to_string();
+        report.release_scope = "all".to_string();
+        report
+            .planned_artifacts
+            .push("database/releases/0001_slice7.sql".to_string());
+        report.warnings.push(redact_postgres_url(&placeholder_url(
+            "user",
+            "sensitive-marker",
+        )));
+        let json = report.to_json();
+
+        for field in [
+            "\"command\"",
+            "\"success\"",
+            "\"databaseType\"",
+            "\"releaseName\"",
+            "\"releaseScope\"",
+            "\"dryRun\"",
+            "\"selectedSchemas\"",
+            "\"selectedTables\"",
+            "\"includedObjects\"",
+            "\"excludedObjects\"",
+            "\"planItems\"",
+            "\"blockedItems\"",
+            "\"dependencyWarnings\"",
+            "\"plannedArtifacts\"",
+            "\"createdArtifacts\"",
+            "\"riskLevel\"",
             "\"warnings\"",
             "\"errors\"",
             "\"deferredObjectTypes\"",
@@ -4749,6 +5807,15 @@ mod tests {
             "--all".to_string(),
             "--include".to_string(),
             "table:dbstate_slice2.sample_accounts".to_string()
+        ])
+        .is_ok());
+        assert!(ParsedArgs::parse(&[
+            "release".to_string(),
+            "postgres".to_string(),
+            "--all".to_string(),
+            "--name".to_string(),
+            "slice7".to_string(),
+            "--dry-run".to_string()
         ])
         .is_ok());
         assert!(ParsedArgs::parse(&[
