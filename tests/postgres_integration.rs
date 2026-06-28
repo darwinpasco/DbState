@@ -3,8 +3,9 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dbstate::{
-    export_postgres_with_inventory, inspect_postgres, inspect_postgres_command, render_schema_sql,
-    render_table_sql, sync_postgres_with_inventory, ExportSelection,
+    compare_postgres_with_inventory, export_postgres_with_inventory, inspect_postgres,
+    inspect_postgres_command, render_schema_sql, render_table_sql, sync_postgres_with_inventory,
+    ExportSelection,
 };
 use postgres::{Client, NoTls};
 
@@ -259,14 +260,132 @@ fn local_postgres_fixture_sync_plans_creates_updates_and_unchanged_files() {
                 .columns
                 .iter()
                 .filter(|column| {
-                    column.schema_name == "dbstate_slice2"
-                        && column.table_name == "sample_accounts"
+                    column.schema_name == "dbstate_slice2" && column.table_name == "sample_accounts"
                 })
                 .cloned()
                 .collect::<Vec<_>>()
         )
     );
     assert!(!render_schema_sql("dbstate_slice2").contains(&url));
+}
+
+#[test]
+fn local_postgres_fixture_compare_classifies_supported_objects_read_only() {
+    let Some(url) = std::env::var("DBSTATE_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping PostgreSQL integration test: DBSTATE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    assert_safe_test_url(&url);
+
+    let mut client =
+        Client::connect(&url, NoTls).expect("connect to local disposable test database");
+    client
+        .batch_execute(FIXTURE_SQL)
+        .expect("apply test-only fixture SQL");
+
+    let inventory = inspect_postgres(&url).expect("inspect local disposable PostgreSQL fixture");
+    let repo = disposable_git_repo();
+
+    let empty_compare = compare_postgres_with_inventory(&repo, &inventory, &ExportSelection::All);
+    assert!(empty_compare.success);
+    assert!(empty_compare
+        .database_only
+        .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+    assert!(!repo
+        .join("database/objects/schemas/dbstate_slice2.sql")
+        .exists());
+
+    let sync = sync_postgres_with_inventory(&repo, &inventory, &ExportSelection::All, false);
+    assert!(sync.success);
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "synced files",
+        ],
+    );
+
+    let in_sync = compare_postgres_with_inventory(&repo, &inventory, &ExportSelection::All);
+    assert!(in_sync.success);
+    assert!(in_sync
+        .in_sync
+        .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+    assert!(in_sync
+        .in_sync
+        .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert!(in_sync
+        .deferred_object_types
+        .contains(&"indexes".to_string()));
+
+    let table_path = repo.join("database/objects/tables/dbstate_slice2.sample_accounts.sql");
+    std::fs::write(&table_path, "-- local drift\n").expect("write local drift");
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "local drift",
+        ],
+    );
+
+    let different = compare_postgres_with_inventory(
+        &repo,
+        &inventory,
+        &ExportSelection::Table {
+            schema: "dbstate_slice2".to_string(),
+            table: "sample_accounts".to_string(),
+        },
+    );
+    assert!(different.success);
+    assert!(different
+        .repo_different
+        .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+
+    std::fs::write(
+        repo.join("database/objects/tables/dbstate_slice2.repo_only.sql"),
+        "-- repo only table\n",
+    )
+    .expect("write repo-only file");
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "repo-only file",
+        ],
+    );
+
+    let repo_only = compare_postgres_with_inventory(&repo, &inventory, &ExportSelection::All);
+    assert!(repo_only.success);
+    assert!(repo_only
+        .repo_only
+        .contains(&"database/objects/tables/dbstate_slice2.repo_only.sql".to_string()));
+
+    let json = repo_only.to_json();
+    let text = repo_only.to_text();
+    assert!(!json.contains(&url));
+    assert!(!text.contains(&url));
+    assert!(!json.contains("slice2-sensitive-marker"));
+    assert!(!text.contains("slice2-sensitive-marker"));
 }
 
 fn assert_safe_test_url(url: &str) {
