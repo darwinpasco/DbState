@@ -115,7 +115,22 @@ Generated artifacts must not contain secrets, credentials, connection strings, t
 
 ## Current status
 
-This repository currently contains general DbState product-family foundation documents and ADRs. It does not contain product-specific PostgreSQL v0.1 BRD, PRD, SDD, or detailed implementation design.
+This repository contains general DbState product-family foundation documents, PostgreSQL v0.1 planning documents, and the first narrow CLI implementation slices.
+
+Current CLI scope:
+
+- `dbstate repo status` reports Git and DbState project structure status.
+- `dbstate init` initializes missing DbState PostgreSQL project folders and the safe empty reference-data registry.
+- `dbstate inspect postgres` performs read-only PostgreSQL catalog inspection for schemas, tables, and columns.
+- `dbstate export postgres` exports selected inspected schemas and simple ordinary tables to desired-state files under `database/objects/`.
+
+Current implementation limitations:
+
+- No schema compare, data compare, synchronization planning, generated release script, browser UI, Docker product runtime, MCP, or AI integration exists yet.
+- PostgreSQL access is read-only in product commands.
+- No command applies SQL to a database.
+
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, and `docs/postgresql-v0.1/30-slice-3-implementation-notes.md` for command details.
 
 ## High-level principles
 
