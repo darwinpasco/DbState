@@ -127,14 +127,15 @@ Current CLI scope:
 - `dbstate compare postgres` reads supported desired-state files, inspects PostgreSQL read-only, and reports repository-to-database differences without writing files.
 - `dbstate plan postgres` builds an in-memory selected plan from compare results and reports limited table-to-schema dependency warnings without writing files.
 - `dbstate release postgres` generates review-only SQL, summary, and risk artifacts under `database/releases/` from the selected plan. It never executes the generated SQL.
+- `dbstate data-compare postgres` compares explicitly configured reference-data table files against PostgreSQL rows with read-only `SELECT`.
 
 Current implementation limitations:
 
-- No SQL execution, direct target-database apply, data compare, browser UI, Docker product runtime, MCP, or AI integration exists yet.
+- No SQL execution, direct target-database apply, reference-data DML generation, arbitrary transactional data compare, browser UI, Docker product runtime, MCP, or AI integration exists yet.
 - PostgreSQL access is read-only in product commands.
 - No command applies SQL to a database.
 
-See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, and `docs/postgresql-v0.1/34-slice-7-implementation-notes.md` for command details.
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, and `docs/postgresql-v0.1/35-slice-8-implementation-notes.md` for command details.
 
 ## High-level principles
 

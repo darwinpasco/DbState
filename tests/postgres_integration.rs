@@ -4,14 +4,17 @@ use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dbstate::{
-    compare_postgres_with_inventory, export_postgres_with_inventory, inspect_postgres,
-    inspect_postgres_command, plan_postgres_with_inventory, release_postgres_with_inventory,
-    render_schema_sql, render_table_sql, sync_postgres_with_inventory, ExportSelection,
-    PlanSelection,
+    compare_postgres_with_inventory, data_compare_postgres_with_connection,
+    export_postgres_with_inventory, inspect_postgres, inspect_postgres_command,
+    plan_postgres_with_inventory, release_postgres_with_inventory, render_schema_sql,
+    render_table_sql, sync_postgres_with_inventory, ExportSelection, PlanSelection,
+    ReferenceDataSelection,
 };
 use postgres::{Client, NoTls};
 
 const FIXTURE_SQL: &str = include_str!("fixtures/postgresql/slice2-basic.sql");
+const REFERENCE_DATA_FIXTURE_SQL: &str =
+    include_str!("fixtures/postgresql/slice8-reference-data.sql");
 
 static POSTGRES_FIXTURE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -729,6 +732,137 @@ fn local_postgres_fixture_release_generates_artifacts_without_database_apply() {
         .blocked_items
         .iter()
         .any(|item| item.object_ref == "table:dbstate_slice2.sample_accounts"));
+}
+
+#[test]
+fn local_postgres_fixture_reference_data_compare_is_read_only_and_masked() {
+    let Some(url) = std::env::var("DBSTATE_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping PostgreSQL integration test: DBSTATE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let _fixture_guard = lock_postgres_fixture();
+    assert_safe_test_url(&url);
+
+    let mut client =
+        Client::connect(&url, NoTls).expect("connect to local disposable test database");
+    client
+        .batch_execute(REFERENCE_DATA_FIXTURE_SQL)
+        .expect("apply test-only reference-data fixture SQL");
+
+    let repo = disposable_git_repo();
+    std::fs::write(
+        repo.join("database/reference-data/dbstate.reference-data.yml"),
+        "version: 1
+tables:
+  - name: dbstate_ref.payment_methods
+    file: tables/dbstate_ref.payment_methods.yml
+    key:
+      - code
+    ignoreColumns:
+      - updated_at
+    maskedColumns:
+      - secret_note
+    allowDeletes: false
+",
+    )
+    .expect("write reference registry");
+    std::fs::write(
+        repo.join("database/reference-data/tables/dbstate_ref.payment_methods.yml"),
+        "table: dbstate_ref.payment_methods
+key:
+  - code
+rows:
+  - code: CASH
+    name: Cash
+    is_active: true
+    sort_order: 10
+    updated_at: ignored repo value
+    secret_note: slice8-repo-secret-cash
+  - code: QRPH
+    name: QRPh Desired
+    is_active: true
+    sort_order: 20
+    updated_at: ignored repo value
+    secret_note: slice8-repo-secret-qrph
+  - code: WIRE
+    name: Wire
+    is_active: false
+    sort_order: 40
+    updated_at: ignored repo value
+    secret_note: slice8-repo-secret-wire
+",
+    )
+    .expect("write reference table file");
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "configured reference data",
+        ],
+    );
+
+    let report = data_compare_postgres_with_connection(&repo, &url, &ReferenceDataSelection::All)
+        .expect("reference data compare");
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.counts.in_sync, 1);
+    assert_eq!(report.counts.repo_different, 1);
+    assert_eq!(report.counts.repo_only, 1);
+    assert_eq!(report.counts.database_only, 1);
+    assert!(report
+        .repo_different
+        .contains(&"dbstate_ref.payment_methods:code=QRPH".to_string()));
+    assert!(report
+        .repo_only
+        .contains(&"dbstate_ref.payment_methods:code=WIRE".to_string()));
+    assert!(report
+        .database_only
+        .contains(&"dbstate_ref.payment_methods:code=CARD".to_string()));
+
+    let table_only = data_compare_postgres_with_connection(
+        &repo,
+        &url,
+        &ReferenceDataSelection::Table("dbstate_ref.payment_methods".to_string()),
+    )
+    .expect("table reference data compare");
+    assert!(table_only.success);
+    assert_eq!(
+        table_only.selected_tables,
+        vec!["dbstate_ref.payment_methods".to_string()]
+    );
+
+    let unconfigured = data_compare_postgres_with_connection(
+        &repo,
+        &url,
+        &ReferenceDataSelection::Table("dbstate_ref.unconfigured".to_string()),
+    )
+    .expect("unconfigured table report");
+    assert!(!unconfigured.success);
+    assert!(unconfigured
+        .errors
+        .iter()
+        .any(|error| error.contains("not configured")));
+
+    let json = report.to_json();
+    let text = report.to_text();
+    for output in [&json, &text] {
+        assert!(!output.contains(&url));
+        assert!(!output.contains("dbstate_test_only"));
+        assert!(!output.contains("slice8-repo-secret"));
+        assert!(!output.contains("slice8-db-secret"));
+        assert!(!output.contains("ignored repo value"));
+    }
+    assert!(!repo
+        .join("database/releases/0001_data_compare.sql")
+        .exists());
 }
 
 fn assert_safe_test_url(url: &str) {
