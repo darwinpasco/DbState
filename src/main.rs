@@ -1,10 +1,15 @@
 use std::env;
 use std::process::ExitCode;
 
-use dbstate::{run_cli, OutputFormat};
+use dbstate::{run_cli, usage, OutputFormat};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
+    if matches!(args.as_slice(), [arg] if arg == "--help" || arg == "-h") {
+        println!("{}", usage());
+        return ExitCode::SUCCESS;
+    }
+
     let result = run_cli(&args, env::current_dir().as_deref());
 
     match result {

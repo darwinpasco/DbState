@@ -821,7 +821,7 @@ impl ParsedArgs {
     }
 }
 
-fn usage() -> String {
+pub fn usage() -> String {
     "Usage:\n  dbstate repo status [--format json|--json]\n  dbstate init [--dry-run] [--format json|--json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json|--json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json|--json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json|--json]\n  dbstate data-compare postgres (--all | --table <schema.table>) [--url <postgres-url>] [--format json|--json]".to_string()
 }
 
