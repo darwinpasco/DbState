@@ -213,6 +213,12 @@ pub struct InspectionReport {
 pub struct ExportReport {
     pub command: CommandKind,
     pub success: bool,
+    pub repository_path: String,
+    pub git_root: Option<String>,
+    pub is_git_repository: bool,
+    pub branch: Option<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
     pub database_type: String,
     pub export_scope: String,
     pub dry_run: bool,
@@ -230,6 +236,12 @@ pub struct ExportReport {
 pub struct SyncReport {
     pub command: CommandKind,
     pub success: bool,
+    pub repository_path: String,
+    pub git_root: Option<String>,
+    pub is_git_repository: bool,
+    pub branch: Option<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
     pub database_type: String,
     pub sync_scope: String,
     pub dry_run: bool,
@@ -252,6 +264,12 @@ pub struct SyncReport {
 pub struct CompareReport {
     pub command: CommandKind,
     pub success: bool,
+    pub repository_path: String,
+    pub git_root: Option<String>,
+    pub is_git_repository: bool,
+    pub branch: Option<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
     pub database_type: String,
     pub compare_scope: String,
     pub selected_schemas: Vec<String>,
@@ -264,14 +282,18 @@ pub struct CompareReport {
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
     pub deferred_object_types: Vec<String>,
-    pub working_tree_status: WorkingTreeStatus,
-    pub is_dirty: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct PlanReport {
     pub command: CommandKind,
     pub success: bool,
+    pub repository_path: String,
+    pub git_root: Option<String>,
+    pub is_git_repository: bool,
+    pub branch: Option<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
     pub database_type: String,
     pub plan_scope: String,
     pub selected_schemas: Vec<String>,
@@ -285,14 +307,18 @@ pub struct PlanReport {
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
     pub deferred_object_types: Vec<String>,
-    pub working_tree_status: WorkingTreeStatus,
-    pub is_dirty: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct ReleaseReport {
     pub command: CommandKind,
     pub success: bool,
+    pub repository_path: String,
+    pub git_root: Option<String>,
+    pub is_git_repository: bool,
+    pub branch: Option<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
     pub database_type: String,
     pub release_name: String,
     pub release_scope: String,
@@ -310,14 +336,18 @@ pub struct ReleaseReport {
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
     pub deferred_object_types: Vec<String>,
-    pub working_tree_status: WorkingTreeStatus,
-    pub is_dirty: bool,
 }
 
 #[derive(Debug, Clone)]
 pub struct ReferenceDataCompareReport {
     pub command: CommandKind,
     pub success: bool,
+    pub repository_path: String,
+    pub git_root: Option<String>,
+    pub is_git_repository: bool,
+    pub branch: Option<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
     pub database_type: String,
     pub compare_scope: String,
     pub selected_tables: Vec<String>,
@@ -330,8 +360,6 @@ pub struct ReferenceDataCompareReport {
     pub skipped: Vec<String>,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
-    pub working_tree_status: WorkingTreeStatus,
-    pub is_dirty: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -794,7 +822,7 @@ impl ParsedArgs {
 }
 
 fn usage() -> String {
-    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json]\n  dbstate data-compare postgres (--all | --table <schema.table>) [--url <postgres-url>] [--format json]".to_string()
+    "Usage:\n  dbstate repo status [--format json|--json]\n  dbstate init [--dry-run] [--format json|--json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json|--json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json|--json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json|--json]\n  dbstate data-compare postgres (--all | --table <schema.table>) [--url <postgres-url>] [--format json|--json]".to_string()
 }
 
 pub fn status_report(cwd: &Path, command: CommandKind) -> ProjectReport {
@@ -917,6 +945,10 @@ pub fn inspect_postgres_command(
         );
         return report;
     };
+    if !is_postgres_connection_url(&connection_url) {
+        report.errors.push(invalid_postgres_url_message());
+        return report;
+    }
 
     match inspect_postgres(&connection_url) {
         Ok(inventory) => {
@@ -947,6 +979,10 @@ fn resolve_postgres_url(cli_url: Option<String>, env_url: Option<String>) -> Opt
 fn is_postgres_connection_url(value: &str) -> bool {
     let trimmed = value.trim();
     trimmed.starts_with("postgres://") || trimmed.starts_with("postgresql://")
+}
+
+fn invalid_postgres_url_message() -> String {
+    "Invalid PostgreSQL connection URL. Provide a postgres:// or postgresql:// URL.".to_string()
 }
 
 #[derive(Debug, Clone)]
@@ -1084,6 +1120,10 @@ fn export_postgres_command(cwd: &Path, parsed: ParsedArgs) -> ExportReport {
         );
         return report;
     };
+    if !is_postgres_connection_url(&connection_url) {
+        report.errors.push(invalid_postgres_url_message());
+        return report;
+    }
 
     match inspect_postgres(&connection_url) {
         Ok(inventory) => {
@@ -1182,6 +1222,12 @@ pub fn export_postgres_with_inventory(
     report.selected_tables = selection.selected_tables();
 
     let project = status_report(cwd, CommandKind::ExportPostgres);
+    report.repository_path = project.repository_path.clone();
+    report.git_root = project.git_root.clone();
+    report.is_git_repository = project.is_git_repository;
+    report.branch = project.branch.clone();
+    report.working_tree_status = project.working_tree_status;
+    report.is_dirty = project.is_dirty;
     if !project.is_git_repository {
         report
             .errors
@@ -1499,6 +1545,10 @@ fn sync_postgres_command(cwd: &Path, parsed: ParsedArgs) -> SyncReport {
         );
         return report;
     };
+    if !is_postgres_connection_url(&connection_url) {
+        report.errors.push(invalid_postgres_url_message());
+        return report;
+    }
 
     match inspect_postgres(&connection_url) {
         Ok(inventory) => sync_postgres_with_inventory(cwd, &inventory, &selection, parsed.dry_run),
@@ -1521,6 +1571,12 @@ pub fn sync_postgres_with_inventory(
     report.selected_tables = selection.selected_tables();
 
     let project = status_report(cwd, CommandKind::SyncPostgres);
+    report.repository_path = project.repository_path.clone();
+    report.git_root = project.git_root.clone();
+    report.is_git_repository = project.is_git_repository;
+    report.branch = project.branch.clone();
+    report.working_tree_status = project.working_tree_status;
+    report.is_dirty = project.is_dirty;
     if !project.is_git_repository {
         report
             .errors
@@ -1788,6 +1844,10 @@ fn compare_postgres_command(cwd: &Path, parsed: ParsedArgs) -> CompareReport {
         );
         return report;
     };
+    if !is_postgres_connection_url(&connection_url) {
+        report.errors.push(invalid_postgres_url_message());
+        return report;
+    }
 
     match inspect_postgres(&connection_url) {
         Ok(inventory) => compare_postgres_with_inventory(cwd, &inventory, &selection),
@@ -1809,6 +1869,10 @@ pub fn compare_postgres_with_inventory(
     report.selected_tables = selection.selected_tables();
 
     let project = status_report(cwd, CommandKind::ComparePostgres);
+    report.repository_path = project.repository_path.clone();
+    report.git_root = project.git_root.clone();
+    report.is_git_repository = project.is_git_repository;
+    report.branch = project.branch.clone();
     report.working_tree_status = project.working_tree_status;
     report.is_dirty = project.is_dirty;
 
@@ -1940,6 +2004,10 @@ fn plan_postgres_command(cwd: &Path, parsed: ParsedArgs) -> PlanReport {
         );
         return report;
     };
+    if !is_postgres_connection_url(&connection_url) {
+        report.errors.push(invalid_postgres_url_message());
+        return report;
+    }
 
     match inspect_postgres(&connection_url) {
         Ok(inventory) => plan_postgres_with_inventory(cwd, &inventory, &selection, &plan_selection),
@@ -2005,6 +2073,10 @@ fn release_postgres_command(cwd: &Path, parsed: ParsedArgs) -> ReleaseReport {
         );
         return report;
     };
+    if !is_postgres_connection_url(&connection_url) {
+        report.errors.push(invalid_postgres_url_message());
+        return report;
+    }
 
     match inspect_postgres(&connection_url) {
         Ok(inventory) => release_postgres_with_inventory(
@@ -2047,6 +2119,10 @@ pub fn release_postgres_with_inventory(
     };
 
     let project = status_report(cwd, CommandKind::ReleasePostgres);
+    report.repository_path = project.repository_path.clone();
+    report.git_root = project.git_root.clone();
+    report.is_git_repository = project.is_git_repository;
+    report.branch = project.branch.clone();
     report.working_tree_status = project.working_tree_status;
     report.is_dirty = project.is_dirty;
 
@@ -2089,6 +2165,10 @@ pub fn release_postgres_with_inventory(
     report.warnings = plan.warnings.clone();
     report.errors = plan.errors.clone();
     report.deferred_object_types = plan.deferred_object_types.clone();
+    report.repository_path = plan.repository_path.clone();
+    report.git_root = plan.git_root.clone();
+    report.is_git_repository = plan.is_git_repository;
+    report.branch = plan.branch.clone();
     report.working_tree_status = plan.working_tree_status;
     report.is_dirty = plan.is_dirty;
 
@@ -2490,6 +2570,10 @@ fn data_compare_postgres_command(cwd: &Path, parsed: ParsedArgs) -> ReferenceDat
         );
         return report;
     };
+    if !is_postgres_connection_url(&connection_url) {
+        report.errors.push(invalid_postgres_url_message());
+        return report;
+    }
 
     match data_compare_postgres_with_connection(cwd, &connection_url, &selection) {
         Ok(report) => report,
@@ -2585,6 +2669,10 @@ pub fn data_compare_postgres_with_connection(
     report.selected_tables = selection.selected_tables();
 
     let project = status_report(cwd, CommandKind::DataComparePostgres);
+    report.repository_path = project.repository_path.clone();
+    report.git_root = project.git_root.clone();
+    report.is_git_repository = project.is_git_repository;
+    report.branch = project.branch.clone();
     report.working_tree_status = project.working_tree_status;
     report.is_dirty = project.is_dirty;
     if !project.is_git_repository {
@@ -2601,10 +2689,7 @@ pub fn data_compare_postgres_with_connection(
         return Ok(report);
     }
     if !is_postgres_connection_url(connection_url) {
-        report.errors.push(
-            "Invalid PostgreSQL connection URL. Provide a postgres:// or postgresql:// URL."
-                .to_string(),
-        );
+        report.errors.push(invalid_postgres_url_message());
         return Ok(report);
     }
 
@@ -3374,6 +3459,10 @@ pub fn plan_postgres_with_inventory(
     report.warnings = compare.warnings.clone();
     report.errors = compare.errors.clone();
     report.deferred_object_types = compare.deferred_object_types.clone();
+    report.repository_path = compare.repository_path.clone();
+    report.git_root = compare.git_root.clone();
+    report.is_git_repository = compare.is_git_repository;
+    report.branch = compare.branch.clone();
     report.working_tree_status = compare.working_tree_status;
     report.is_dirty = compare.is_dirty;
     report.compare_summary = CompareSummary {
@@ -3895,6 +3984,12 @@ fn empty_export_report(dry_run: bool) -> ExportReport {
     ExportReport {
         command: CommandKind::ExportPostgres,
         success: false,
+        repository_path: String::new(),
+        git_root: None,
+        is_git_repository: false,
+        branch: None,
+        working_tree_status: WorkingTreeStatus::Unknown,
+        is_dirty: false,
         database_type: "postgresql".to_string(),
         export_scope: "<none>".to_string(),
         dry_run,
@@ -3916,6 +4011,12 @@ fn empty_sync_report(dry_run: bool) -> SyncReport {
     SyncReport {
         command: CommandKind::SyncPostgres,
         success: false,
+        repository_path: String::new(),
+        git_root: None,
+        is_git_repository: false,
+        branch: None,
+        working_tree_status: WorkingTreeStatus::Unknown,
+        is_dirty: false,
         database_type: "postgresql".to_string(),
         sync_scope: "<none>".to_string(),
         dry_run,
@@ -3942,6 +4043,12 @@ fn empty_compare_report() -> CompareReport {
     CompareReport {
         command: CommandKind::ComparePostgres,
         success: false,
+        repository_path: String::new(),
+        git_root: None,
+        is_git_repository: false,
+        branch: None,
+        working_tree_status: WorkingTreeStatus::Unknown,
+        is_dirty: false,
         database_type: "postgresql".to_string(),
         compare_scope: "<none>".to_string(),
         selected_schemas: Vec::new(),
@@ -3957,8 +4064,6 @@ fn empty_compare_report() -> CompareReport {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-        working_tree_status: WorkingTreeStatus::Unknown,
-        is_dirty: false,
     }
 }
 
@@ -3966,6 +4071,12 @@ fn empty_plan_report() -> PlanReport {
     PlanReport {
         command: CommandKind::PlanPostgres,
         success: false,
+        repository_path: String::new(),
+        git_root: None,
+        is_git_repository: false,
+        branch: None,
+        working_tree_status: WorkingTreeStatus::Unknown,
+        is_dirty: false,
         database_type: "postgresql".to_string(),
         plan_scope: "<none>".to_string(),
         selected_schemas: Vec::new(),
@@ -3988,8 +4099,6 @@ fn empty_plan_report() -> PlanReport {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-        working_tree_status: WorkingTreeStatus::Unknown,
-        is_dirty: false,
     }
 }
 
@@ -3997,6 +4106,12 @@ fn empty_release_report(dry_run: bool) -> ReleaseReport {
     ReleaseReport {
         command: CommandKind::ReleasePostgres,
         success: false,
+        repository_path: String::new(),
+        git_root: None,
+        is_git_repository: false,
+        branch: None,
+        working_tree_status: WorkingTreeStatus::Unknown,
+        is_dirty: false,
         database_type: "postgresql".to_string(),
         release_name: String::new(),
         release_scope: "<none>".to_string(),
@@ -4017,8 +4132,6 @@ fn empty_release_report(dry_run: bool) -> ReleaseReport {
             .iter()
             .map(|value| value.to_string())
             .collect(),
-        working_tree_status: WorkingTreeStatus::Unknown,
-        is_dirty: false,
     }
 }
 
@@ -4026,6 +4139,12 @@ fn empty_reference_data_compare_report() -> ReferenceDataCompareReport {
     ReferenceDataCompareReport {
         command: CommandKind::DataComparePostgres,
         success: false,
+        repository_path: String::new(),
+        git_root: None,
+        is_git_repository: false,
+        branch: None,
+        working_tree_status: WorkingTreeStatus::Unknown,
+        is_dirty: false,
         database_type: "postgresql".to_string(),
         compare_scope: "<none>".to_string(),
         selected_tables: Vec::new(),
@@ -4038,8 +4157,6 @@ fn empty_reference_data_compare_report() -> ReferenceDataCompareReport {
         skipped: Vec::new(),
         warnings: Vec::new(),
         errors: Vec::new(),
-        working_tree_status: WorkingTreeStatus::Unknown,
-        is_dirty: false,
     }
 }
 
@@ -4354,6 +4471,15 @@ impl ExportReport {
         json.push('{');
         write_json_string_field(&mut json, "command", self.command.as_str(), true);
         write_json_bool_field(&mut json, "success", self.success);
+        write_repository_context_fields(
+            &mut json,
+            &self.repository_path,
+            self.git_root.as_deref(),
+            self.is_git_repository,
+            self.branch.as_deref(),
+            self.working_tree_status,
+            self.is_dirty,
+        );
         write_json_string_field(&mut json, "databaseType", &self.database_type, false);
         write_json_string_field(&mut json, "exportScope", &self.export_scope, false);
         write_json_bool_field(&mut json, "dryRun", self.dry_run);
@@ -4404,6 +4530,15 @@ impl SyncReport {
         json.push('{');
         write_json_string_field(&mut json, "command", self.command.as_str(), true);
         write_json_bool_field(&mut json, "success", self.success);
+        write_repository_context_fields(
+            &mut json,
+            &self.repository_path,
+            self.git_root.as_deref(),
+            self.is_git_repository,
+            self.branch.as_deref(),
+            self.working_tree_status,
+            self.is_dirty,
+        );
         write_json_string_field(&mut json, "databaseType", &self.database_type, false);
         write_json_string_field(&mut json, "syncScope", &self.sync_scope, false);
         write_json_bool_field(&mut json, "dryRun", self.dry_run);
@@ -4456,6 +4591,15 @@ impl CompareReport {
         json.push('{');
         write_json_string_field(&mut json, "command", self.command.as_str(), true);
         write_json_bool_field(&mut json, "success", self.success);
+        write_repository_context_fields(
+            &mut json,
+            &self.repository_path,
+            self.git_root.as_deref(),
+            self.is_git_repository,
+            self.branch.as_deref(),
+            self.working_tree_status,
+            self.is_dirty,
+        );
         write_json_string_field(&mut json, "databaseType", &self.database_type, false);
         write_json_string_field(&mut json, "compareScope", &self.compare_scope, false);
         write_json_array_field(&mut json, "selectedSchemas", &self.selected_schemas);
@@ -4472,13 +4616,6 @@ impl CompareReport {
             "deferredObjectTypes",
             &self.deferred_object_types,
         );
-        write_json_string_field(
-            &mut json,
-            "workingTreeStatus",
-            self.working_tree_status.as_str(),
-            false,
-        );
-        write_json_bool_field(&mut json, "isDirty", self.is_dirty);
         json.push('}');
         json
     }
@@ -4529,6 +4666,15 @@ impl PlanReport {
         json.push('{');
         write_json_string_field(&mut json, "command", self.command.as_str(), true);
         write_json_bool_field(&mut json, "success", self.success);
+        write_repository_context_fields(
+            &mut json,
+            &self.repository_path,
+            self.git_root.as_deref(),
+            self.is_git_repository,
+            self.branch.as_deref(),
+            self.working_tree_status,
+            self.is_dirty,
+        );
         write_json_string_field(&mut json, "databaseType", &self.database_type, false);
         write_json_string_field(&mut json, "planScope", &self.plan_scope, false);
         write_json_array_field(&mut json, "selectedSchemas", &self.selected_schemas);
@@ -4550,13 +4696,6 @@ impl PlanReport {
             "deferredObjectTypes",
             &self.deferred_object_types,
         );
-        write_json_string_field(
-            &mut json,
-            "workingTreeStatus",
-            self.working_tree_status.as_str(),
-            false,
-        );
-        write_json_bool_field(&mut json, "isDirty", self.is_dirty);
         json.push('}');
         json
     }
@@ -4602,6 +4741,15 @@ impl ReleaseReport {
         json.push('{');
         write_json_string_field(&mut json, "command", self.command.as_str(), true);
         write_json_bool_field(&mut json, "success", self.success);
+        write_repository_context_fields(
+            &mut json,
+            &self.repository_path,
+            self.git_root.as_deref(),
+            self.is_git_repository,
+            self.branch.as_deref(),
+            self.working_tree_status,
+            self.is_dirty,
+        );
         write_json_string_field(&mut json, "databaseType", &self.database_type, false);
         write_json_string_field(&mut json, "releaseName", &self.release_name, false);
         write_json_string_field(&mut json, "releaseScope", &self.release_scope, false);
@@ -4627,13 +4775,6 @@ impl ReleaseReport {
             "deferredObjectTypes",
             &self.deferred_object_types,
         );
-        write_json_string_field(
-            &mut json,
-            "workingTreeStatus",
-            self.working_tree_status.as_str(),
-            false,
-        );
-        write_json_bool_field(&mut json, "isDirty", self.is_dirty);
         json.push('}');
         json
     }
@@ -4700,8 +4841,18 @@ impl ReferenceDataCompareReport {
         json.push('{');
         write_json_string_field(&mut json, "command", self.command.as_str(), true);
         write_json_bool_field(&mut json, "success", self.success);
+        write_repository_context_fields(
+            &mut json,
+            &self.repository_path,
+            self.git_root.as_deref(),
+            self.is_git_repository,
+            self.branch.as_deref(),
+            self.working_tree_status,
+            self.is_dirty,
+        );
         write_json_string_field(&mut json, "databaseType", &self.database_type, false);
         write_json_string_field(&mut json, "compareScope", &self.compare_scope, false);
+        write_json_string_field(&mut json, "dataCompareScope", &self.compare_scope, false);
         write_json_array_field(&mut json, "selectedTables", &self.selected_tables);
         write_reference_table_result_array_field(&mut json, "tableResults", &self.table_results);
         write_reference_counts_field(&mut json, "counts", &self.counts);
@@ -4712,13 +4863,6 @@ impl ReferenceDataCompareReport {
         write_json_array_field(&mut json, "skipped", &self.skipped);
         write_json_array_field(&mut json, "warnings", &self.warnings);
         write_json_array_field(&mut json, "errors", &self.errors);
-        write_json_string_field(
-            &mut json,
-            "workingTreeStatus",
-            self.working_tree_status.as_str(),
-            false,
-        );
-        write_json_bool_field(&mut json, "isDirty", self.is_dirty);
         json.push('}');
         json
     }
@@ -4763,6 +4907,28 @@ fn write_json_optional_string_field(json: &mut String, name: &str, value: Option
         Some(value) => write!(json, "\"{}\":\"{}\"", escape_json(name), escape_json(value)).ok(),
         None => write!(json, "\"{}\":null", escape_json(name)).ok(),
     };
+}
+
+fn write_repository_context_fields(
+    json: &mut String,
+    repository_path: &str,
+    git_root: Option<&str>,
+    is_git_repository: bool,
+    branch: Option<&str>,
+    working_tree_status: WorkingTreeStatus,
+    is_dirty: bool,
+) {
+    write_json_string_field(json, "repositoryPath", repository_path, false);
+    write_json_optional_string_field(json, "gitRoot", git_root);
+    write_json_bool_field(json, "isGitRepository", is_git_repository);
+    write_json_optional_string_field(json, "branch", branch);
+    write_json_string_field(
+        json,
+        "workingTreeStatus",
+        working_tree_status.as_str(),
+        false,
+    );
+    write_json_bool_field(json, "isDirty", is_dirty);
 }
 
 fn write_json_bool_field(json: &mut String, name: &str, value: bool) {
@@ -7167,8 +7333,15 @@ rows:
         for field in [
             "\"command\"",
             "\"success\"",
+            "\"repositoryPath\"",
+            "\"gitRoot\"",
+            "\"isGitRepository\"",
+            "\"branch\"",
+            "\"workingTreeStatus\"",
+            "\"isDirty\"",
             "\"databaseType\"",
             "\"compareScope\"",
+            "\"dataCompareScope\"",
             "\"selectedTables\"",
             "\"tableResults\"",
             "\"counts\"",
@@ -7179,13 +7352,233 @@ rows:
             "\"skipped\"",
             "\"warnings\"",
             "\"errors\"",
-            "\"workingTreeStatus\"",
-            "\"isDirty\"",
         ] {
             assert!(json.contains(field), "missing JSON field {field}");
         }
         assert!(!json.contains("postgres://"));
         assert!(!json.contains("sensitive-marker"));
+    }
+
+    fn assert_common_json_contract(json: &str) {
+        for field in ["\"command\"", "\"success\"", "\"warnings\"", "\"errors\""] {
+            assert!(json.contains(field), "missing common JSON field {field}");
+        }
+    }
+
+    fn assert_repository_json_contract(json: &str) {
+        for field in [
+            "\"repositoryPath\"",
+            "\"gitRoot\"",
+            "\"isGitRepository\"",
+            "\"branch\"",
+            "\"workingTreeStatus\"",
+            "\"isDirty\"",
+        ] {
+            assert!(
+                json.contains(field),
+                "missing repository JSON field {field}"
+            );
+        }
+    }
+
+    fn assert_postgres_json_contract(json: &str) {
+        assert!(json.contains("\"databaseType\":\"postgresql\""));
+    }
+
+    #[test]
+    fn slice9_common_json_contract_fields_are_present() {
+        let dir = create_temp_dir("slice9-json-contract");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let project_json = status_report(&dir, CommandKind::RepoStatus).to_json();
+        assert_common_json_contract(&project_json);
+        assert_repository_json_contract(&project_json);
+
+        let inspection_json = empty_inspection_report(CommandKind::InspectPostgres).to_json();
+        assert_common_json_contract(&inspection_json);
+        assert_postgres_json_contract(&inspection_json);
+
+        let export_json =
+            export_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, true)
+                .to_json();
+        assert_common_json_contract(&export_json);
+        assert_repository_json_contract(&export_json);
+        assert_postgres_json_contract(&export_json);
+
+        let sync_json =
+            sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, true)
+                .to_json();
+        assert_common_json_contract(&sync_json);
+        assert_repository_json_contract(&sync_json);
+        assert_postgres_json_contract(&sync_json);
+
+        let compare_json =
+            compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All)
+                .to_json();
+        assert_common_json_contract(&compare_json);
+        assert_repository_json_contract(&compare_json);
+        assert_postgres_json_contract(&compare_json);
+
+        let plan_json = plan_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::include_all(),
+        )
+        .to_json();
+        assert_common_json_contract(&plan_json);
+        assert_repository_json_contract(&plan_json);
+        assert_postgres_json_contract(&plan_json);
+
+        let release_json = release_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::include_all(),
+            "slice9_contract",
+            true,
+        )
+        .to_json();
+        assert_common_json_contract(&release_json);
+        assert_repository_json_contract(&release_json);
+        assert_postgres_json_contract(&release_json);
+
+        let data_compare_json = data_compare_postgres_with_connection(
+            &dir,
+            &placeholder_url("user", "contract-secret"),
+            &ReferenceDataSelection::All,
+        )
+        .expect("data compare report")
+        .to_json();
+        assert_common_json_contract(&data_compare_json);
+        assert_repository_json_contract(&data_compare_json);
+        assert_postgres_json_contract(&data_compare_json);
+        assert!(data_compare_json.contains("\"dataCompareScope\""));
+        assert!(!data_compare_json.contains("contract-secret"));
+        assert!(!data_compare_json.contains("postgres://"));
+    }
+
+    #[test]
+    fn slice9_usage_includes_all_current_commands_and_common_options() {
+        let usage = usage();
+
+        for expected in [
+            "dbstate repo status",
+            "dbstate init",
+            "dbstate inspect postgres",
+            "dbstate export postgres",
+            "dbstate sync postgres",
+            "dbstate compare postgres",
+            "dbstate plan postgres",
+            "dbstate release postgres",
+            "dbstate data-compare postgres",
+            "--format json",
+            "--json",
+            "--url <postgres-url>",
+            "--dry-run",
+            "--all",
+            "--schema",
+            "--table",
+            "--include",
+            "--exclude",
+            "--name",
+        ] {
+            assert!(usage.contains(expected), "usage missing {expected}");
+        }
+    }
+
+    #[test]
+    fn slice9_malformed_postgres_urls_are_rejected_without_leaking_values() {
+        let invalid_url = "not-a-postgres-url-with-sensitive-marker";
+        let export_args = ParsedArgs::parse(&[
+            "export".to_string(),
+            "postgres".to_string(),
+            "--all".to_string(),
+            "--url".to_string(),
+            invalid_url.to_string(),
+        ])
+        .expect("parse export");
+        let export_report = export_postgres_command(Path::new("."), export_args);
+        assert!(!export_report.success);
+        assert!(export_report
+            .errors
+            .iter()
+            .any(|error| error.contains("Invalid PostgreSQL connection URL")));
+        assert!(!export_report.to_json().contains(invalid_url));
+
+        let inspect_report = inspect_postgres_command(Some(invalid_url.to_string()), None);
+        assert!(!inspect_report.success);
+        assert!(inspect_report
+            .errors
+            .iter()
+            .any(|error| error.contains("Invalid PostgreSQL connection URL")));
+        assert!(!inspect_report.to_json().contains(invalid_url));
+    }
+
+    #[test]
+    fn slice9_exit_code_contract_for_key_paths_is_stable() {
+        let dir = create_temp_dir("slice9-exit-codes");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let status_args = vec![
+            "repo".to_string(),
+            "status".to_string(),
+            "--format".to_string(),
+            "json".to_string(),
+        ];
+        let status = run_cli(&status_args, Ok(dir.as_path())).expect("status cli");
+        assert_eq!(status.exit_code, 0);
+
+        let invalid_args = vec!["inspect".to_string(), "mysql".to_string()];
+        assert!(ParsedArgs::parse(&invalid_args).is_err());
+
+        let compare_report =
+            compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
+        assert!(compare_report.success);
+        assert!(!compare_report.database_only.is_empty());
+
+        let (config, state) = reference_config_and_state();
+        let database_rows = vec![reference_row(&[
+            ("code", Some("CASH")),
+            ("name", Some("Cash Live Difference")),
+        ])];
+        let data_result = compare_reference_data_table(
+            &config,
+            &state,
+            &database_rows,
+            &reference_database_columns(),
+        );
+        assert_eq!(data_result.row_counts.repo_different, 1);
+
+        let blocked_plan = plan_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::Table {
+                schema: "dbstate_slice2".to_string(),
+                table: "sample_accounts".to_string(),
+            },
+            &PlanSelection::include_all(),
+        );
+        assert!(blocked_plan.success);
+        assert!(!blocked_plan.blocked_items.is_empty());
+
+        let blocked_release = release_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::Table {
+                schema: "dbstate_slice2".to_string(),
+                table: "sample_accounts".to_string(),
+            },
+            &PlanSelection::include_all(),
+            "slice9_blocked",
+            true,
+        );
+        assert!(!blocked_release.success);
+        assert!(!blocked_release.blocked_items.is_empty());
     }
 
     #[test]

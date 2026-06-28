@@ -128,6 +128,7 @@ Current CLI scope:
 - `dbstate plan postgres` builds an in-memory selected plan from compare results and reports limited table-to-schema dependency warnings without writing files.
 - `dbstate release postgres` generates review-only SQL, summary, and risk artifacts under `database/releases/` from the selected plan. It never executes the generated SQL.
 - `dbstate data-compare postgres` compares explicitly configured reference-data table files against PostgreSQL rows with read-only `SELECT`.
+- CLI JSON output is hardened around common `command`, `success`, `warnings`, and `errors` fields, repository context where relevant, and redaction of connection details and masked values.
 
 Current implementation limitations:
 
@@ -135,7 +136,7 @@ Current implementation limitations:
 - PostgreSQL access is read-only in product commands.
 - No command applies SQL to a database.
 
-See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, and `docs/postgresql-v0.1/35-slice-8-implementation-notes.md` for command details.
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, and `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md` for command details.
 
 ## High-level principles
 
