@@ -1,15 +1,25 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dbstate::{
     compare_postgres_with_inventory, export_postgres_with_inventory, inspect_postgres,
-    inspect_postgres_command, render_schema_sql, render_table_sql, sync_postgres_with_inventory,
-    ExportSelection,
+    inspect_postgres_command, plan_postgres_with_inventory, render_schema_sql, render_table_sql,
+    sync_postgres_with_inventory, ExportSelection, PlanSelection,
 };
 use postgres::{Client, NoTls};
 
 const FIXTURE_SQL: &str = include_str!("fixtures/postgresql/slice2-basic.sql");
+
+static POSTGRES_FIXTURE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+
+fn lock_postgres_fixture() -> MutexGuard<'static, ()> {
+    POSTGRES_FIXTURE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .expect("PostgreSQL fixture lock poisoned")
+}
 
 #[test]
 fn local_postgres_fixture_inspection_is_read_only_and_redacted() {
@@ -20,6 +30,7 @@ fn local_postgres_fixture_inspection_is_read_only_and_redacted() {
         eprintln!("skipping PostgreSQL integration test: DBSTATE_TEST_POSTGRES_URL is not set");
         return;
     };
+    let _fixture_guard = lock_postgres_fixture();
 
     assert!(
         !url.to_ascii_lowercase().contains("prod"),
@@ -99,6 +110,7 @@ fn inspect_command_does_not_create_project_files() {
         eprintln!("skipping PostgreSQL integration test: DBSTATE_TEST_POSTGRES_URL is not set");
         return;
     };
+    let _fixture_guard = lock_postgres_fixture();
 
     let temp = std::env::temp_dir().join(format!(
         "dbstate-slice2-inspect-no-files-{}",
@@ -128,6 +140,7 @@ fn local_postgres_fixture_export_plans_and_writes_expected_files() {
         eprintln!("skipping PostgreSQL integration test: DBSTATE_TEST_POSTGRES_URL is not set");
         return;
     };
+    let _fixture_guard = lock_postgres_fixture();
     assert_safe_test_url(&url);
 
     let mut client =
@@ -173,6 +186,7 @@ fn local_postgres_fixture_sync_plans_creates_updates_and_unchanged_files() {
         eprintln!("skipping PostgreSQL integration test: DBSTATE_TEST_POSTGRES_URL is not set");
         return;
     };
+    let _fixture_guard = lock_postgres_fixture();
     assert_safe_test_url(&url);
 
     let mut client =
@@ -278,6 +292,7 @@ fn local_postgres_fixture_compare_classifies_supported_objects_read_only() {
         eprintln!("skipping PostgreSQL integration test: DBSTATE_TEST_POSTGRES_URL is not set");
         return;
     };
+    let _fixture_guard = lock_postgres_fixture();
     assert_safe_test_url(&url);
 
     let mut client =
@@ -386,6 +401,162 @@ fn local_postgres_fixture_compare_classifies_supported_objects_read_only() {
     assert!(!text.contains(&url));
     assert!(!json.contains("slice2-sensitive-marker"));
     assert!(!text.contains("slice2-sensitive-marker"));
+}
+
+#[test]
+fn local_postgres_fixture_plan_generates_selected_items_and_dependency_warnings() {
+    let Some(url) = std::env::var("DBSTATE_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping PostgreSQL integration test: DBSTATE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let _fixture_guard = lock_postgres_fixture();
+    assert_safe_test_url(&url);
+
+    let mut client =
+        Client::connect(&url, NoTls).expect("connect to local disposable test database");
+    client
+        .batch_execute(FIXTURE_SQL)
+        .expect("apply test-only fixture SQL");
+
+    let inventory = inspect_postgres(&url).expect("inspect local disposable PostgreSQL fixture");
+    let repo = disposable_git_repo();
+
+    let sync = sync_postgres_with_inventory(&repo, &inventory, &ExportSelection::All, false);
+    assert!(sync.success);
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "synced files",
+        ],
+    );
+
+    let in_sync_plan = plan_postgres_with_inventory(
+        &repo,
+        &inventory,
+        &ExportSelection::All,
+        &PlanSelection::include_all(),
+    );
+    assert!(in_sync_plan.success);
+    assert!(in_sync_plan.plan_items.is_empty());
+    assert!(in_sync_plan.blocked_items.is_empty());
+
+    let table_path = repo.join("database/objects/tables/dbstate_slice2.sample_accounts.sql");
+    std::fs::write(&table_path, "-- local drift\n").expect("write local drift");
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "local drift",
+        ],
+    );
+
+    let table_only_selection = PlanSelection::from_options(
+        vec!["table:dbstate_slice2.sample_accounts".to_string()],
+        Vec::new(),
+    )
+    .expect("plan selection");
+    let table_plan = plan_postgres_with_inventory(
+        &repo,
+        &inventory,
+        &ExportSelection::All,
+        &table_only_selection,
+    );
+    assert!(table_plan.success);
+    assert_eq!(table_plan.plan_items.len(), 1);
+    assert_eq!(
+        table_plan.plan_items[0].plan_intent,
+        "updateDatabaseLater"
+    );
+
+    std::fs::write(
+        repo.join("database/objects/schemas/local_only.sql"),
+        render_schema_sql("local_only"),
+    )
+    .expect("write repo-only schema");
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "repo-only schema",
+        ],
+    );
+
+    let repo_only_plan = plan_postgres_with_inventory(
+        &repo,
+        &inventory,
+        &ExportSelection::All,
+        &PlanSelection::include_all(),
+    );
+    assert!(repo_only_plan.success);
+    assert!(repo_only_plan.plan_items.iter().any(|item| {
+        item.object_ref == "schema:local_only" && item.plan_intent == "createInDatabaseLater"
+    }));
+
+    std::fs::remove_file(repo.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"))
+        .expect("remove table file");
+    std::fs::remove_file(repo.join("database/objects/schemas/dbstate_slice2.sql"))
+        .expect("remove schema file");
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "remove dbstate_slice2 files",
+        ],
+    );
+
+    let missing_schema_plan = plan_postgres_with_inventory(
+        &repo,
+        &inventory,
+        &ExportSelection::Table {
+            schema: "dbstate_slice2".to_string(),
+            table: "sample_accounts".to_string(),
+        },
+        &PlanSelection::include_all(),
+    );
+    assert!(missing_schema_plan.success);
+    assert!(missing_schema_plan.blocked_items.iter().any(|item| {
+        item.object_ref == "table:dbstate_slice2.sample_accounts"
+    }));
+    assert!(missing_schema_plan
+        .dependency_warnings
+        .iter()
+        .any(|warning| warning.warning_type == "missingDependency"));
+
+    let json = missing_schema_plan.to_json();
+    let text = missing_schema_plan.to_text();
+    assert!(!json.contains(&url));
+    assert!(!text.contains(&url));
+    assert!(!json.contains("slice2-sensitive-marker"));
+    assert!(!text.contains("slice2-sensitive-marker"));
+    assert!(!repo.join("database/releases").join("slice6.sql").exists());
 }
 
 fn assert_safe_test_url(url: &str) {

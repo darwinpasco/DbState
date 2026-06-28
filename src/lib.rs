@@ -39,6 +39,7 @@ pub enum CommandKind {
     ExportPostgres,
     SyncPostgres,
     ComparePostgres,
+    PlanPostgres,
 }
 
 impl CommandKind {
@@ -50,6 +51,7 @@ impl CommandKind {
             Self::ExportPostgres => "export postgres",
             Self::SyncPostgres => "sync postgres",
             Self::ComparePostgres => "compare postgres",
+            Self::PlanPostgres => "plan postgres",
         }
     }
 }
@@ -61,6 +63,7 @@ pub enum CommandOutput {
     Export(ExportReport),
     Sync(SyncReport),
     Compare(CompareReport),
+    Plan(PlanReport),
 }
 
 impl CommandOutput {
@@ -71,6 +74,7 @@ impl CommandOutput {
             Self::Export(report) => report.to_text(),
             Self::Sync(report) => report.to_text(),
             Self::Compare(report) => report.to_text(),
+            Self::Plan(report) => report.to_text(),
         }
     }
 
@@ -81,6 +85,7 @@ impl CommandOutput {
             Self::Export(report) => report.to_json(),
             Self::Sync(report) => report.to_json(),
             Self::Compare(report) => report.to_json(),
+            Self::Plan(report) => report.to_json(),
         }
     }
 }
@@ -252,6 +257,57 @@ pub struct CompareReport {
     pub is_dirty: bool,
 }
 
+#[derive(Debug, Clone)]
+pub struct PlanReport {
+    pub command: CommandKind,
+    pub success: bool,
+    pub database_type: String,
+    pub plan_scope: String,
+    pub selected_schemas: Vec<String>,
+    pub selected_tables: Vec<String>,
+    pub included_objects: Vec<String>,
+    pub excluded_objects: Vec<String>,
+    pub plan_items: Vec<PlanItem>,
+    pub blocked_items: Vec<PlanItem>,
+    pub dependency_warnings: Vec<DependencyWarning>,
+    pub compare_summary: CompareSummary,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub deferred_object_types: Vec<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanItem {
+    pub object_ref: String,
+    pub object_type: String,
+    pub relative_path: String,
+    pub compare_classification: String,
+    pub plan_intent: String,
+    pub selected: bool,
+    pub blocked: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct DependencyWarning {
+    pub warning_type: String,
+    pub object_ref: String,
+    pub required_object_ref: Option<String>,
+    pub message: String,
+    pub severity: String,
+}
+
+#[derive(Debug, Clone)]
+pub struct CompareSummary {
+    pub in_sync: usize,
+    pub repo_different: usize,
+    pub repo_only: usize,
+    pub database_only: usize,
+    pub skipped: usize,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExpectedPath {
     relative: &'static str,
@@ -401,6 +457,16 @@ pub fn run_cli(
                 exit_code,
             })
         }
+        CommandKind::PlanPostgres => {
+            let format = parsed.format;
+            let report = plan_postgres_command(cwd, parsed);
+            let exit_code = if report.success { 0 } else { 2 };
+            Ok(CliResult {
+                format,
+                output: CommandOutput::Plan(report),
+                exit_code,
+            })
+        }
     }
 }
 
@@ -413,6 +479,8 @@ struct ParsedArgs {
     schema: Option<String>,
     table: Option<String>,
     all: bool,
+    includes: Vec<String>,
+    excludes: Vec<String>,
 }
 
 impl ParsedArgs {
@@ -427,6 +495,8 @@ impl ParsedArgs {
         let mut schema = None;
         let mut table = None;
         let mut all = false;
+        let mut includes = Vec::new();
+        let mut excludes = Vec::new();
         let mut positional = Vec::new();
         let mut index = 0;
 
@@ -476,6 +546,20 @@ impl ParsedArgs {
                     all = true;
                     index += 1;
                 }
+                "--include" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or_else(|| "--include requires a value".to_string())?;
+                    includes.push(value.to_string());
+                    index += 2;
+                }
+                "--exclude" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or_else(|| "--exclude requires a value".to_string())?;
+                    excludes.push(value.to_string());
+                    index += 2;
+                }
                 "--help" | "-h" => return Err(usage()),
                 value if value.starts_with('-') => {
                     return Err(format!("Unknown option: {value}"));
@@ -502,6 +586,9 @@ impl ParsedArgs {
             [compare, database] if compare == "compare" && database == "postgres" => {
                 CommandKind::ComparePostgres
             }
+            [plan, database] if plan == "plan" && database == "postgres" => {
+                CommandKind::PlanPostgres
+            }
             _ => return Err(usage()),
         };
 
@@ -521,9 +608,10 @@ impl ParsedArgs {
             && command != CommandKind::ExportPostgres
             && command != CommandKind::SyncPostgres
             && command != CommandKind::ComparePostgres
+            && command != CommandKind::PlanPostgres
         {
             return Err(
-                "--url is only supported for dbstate inspect postgres, dbstate export postgres, dbstate sync postgres, and dbstate compare postgres"
+                "--url is only supported for dbstate inspect postgres, dbstate export postgres, dbstate sync postgres, dbstate compare postgres, and dbstate plan postgres"
                     .to_string(),
             );
         }
@@ -532,10 +620,17 @@ impl ParsedArgs {
             && command != CommandKind::ExportPostgres
             && command != CommandKind::SyncPostgres
             && command != CommandKind::ComparePostgres
+            && command != CommandKind::PlanPostgres
         {
             return Err(
-                "--schema, --table, and --all are only supported for dbstate export postgres, dbstate sync postgres, and dbstate compare postgres"
+                "--schema, --table, and --all are only supported for dbstate export postgres, dbstate sync postgres, dbstate compare postgres, and dbstate plan postgres"
                     .to_string(),
+            );
+        }
+
+        if (!includes.is_empty() || !excludes.is_empty()) && command != CommandKind::PlanPostgres {
+            return Err(
+                "--include and --exclude are only supported for dbstate plan postgres".to_string(),
             );
         }
 
@@ -547,12 +642,14 @@ impl ParsedArgs {
             schema,
             table,
             all,
+            includes,
+            excludes,
         })
     }
 }
 
 fn usage() -> String {
-    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json]".to_string()
+    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json]".to_string()
 }
 
 pub fn status_report(cwd: &Path, command: CommandKind) -> ProjectReport {
@@ -1654,6 +1751,406 @@ pub fn compare_postgres_with_inventory(
     report
 }
 
+fn plan_postgres_command(cwd: &Path, parsed: ParsedArgs) -> PlanReport {
+    let mut report = empty_plan_report();
+    let selection = match ExportSelection::from_options(
+        parsed.all,
+        parsed.schema.clone(),
+        parsed.table.clone(),
+    ) {
+        Ok(selection) => selection,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+
+    let plan_selection = match PlanSelection::from_options(parsed.includes, parsed.excludes) {
+        Ok(selection) => selection,
+        Err(error) => {
+            report.plan_scope = selection.scope_name();
+            report.selected_schemas = selection.selected_schemas();
+            report.selected_tables = selection.selected_tables();
+            report.errors.push(error);
+            return report;
+        }
+    };
+
+    report.plan_scope = selection.scope_name();
+    report.selected_schemas = selection.selected_schemas();
+    report.selected_tables = selection.selected_tables();
+    report.included_objects = plan_selection.included_object_refs();
+    report.excluded_objects = plan_selection.excluded_object_refs();
+
+    let Some(connection_url) =
+        resolve_postgres_url(parsed.url, env::var("DBSTATE_POSTGRES_URL").ok())
+    else {
+        report.errors.push(
+            "Missing PostgreSQL connection URL. Provide --url or DBSTATE_POSTGRES_URL.".to_string(),
+        );
+        return report;
+    };
+
+    match inspect_postgres(&connection_url) {
+        Ok(inventory) => plan_postgres_with_inventory(cwd, &inventory, &selection, &plan_selection),
+        Err(error) => {
+            report.errors.push(redact_message(&error, &connection_url));
+            report
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum ObjectRef {
+    Schema(String),
+    Table { schema: String, table: String },
+}
+
+impl ObjectRef {
+    fn parse(value: &str) -> Result<Self, String> {
+        let Some((object_type, identity)) = value.split_once(':') else {
+            return Err(format!(
+                "Invalid object reference '{value}'. Use schema:<schema> or table:<schema>.<table>."
+            ));
+        };
+        match object_type {
+            "schema" => {
+                if identity.trim().is_empty() {
+                    return Err("Schema object reference cannot be empty.".to_string());
+                }
+                safe_file_component(identity)?;
+                Ok(Self::Schema(identity.to_string()))
+            }
+            "table" => {
+                let Some((schema, table)) = identity.split_once('.') else {
+                    return Err(format!(
+                        "Invalid table object reference '{value}'. Use table:<schema>.<table>."
+                    ));
+                };
+                if schema.trim().is_empty() || table.trim().is_empty() {
+                    return Err(format!(
+                        "Invalid table object reference '{value}'. Use table:<schema>.<table>."
+                    ));
+                }
+                safe_file_component(schema)?;
+                safe_file_component(table)?;
+                Ok(Self::Table {
+                    schema: schema.to_string(),
+                    table: table.to_string(),
+                })
+            }
+            _ => Err(format!(
+                "Invalid object reference '{value}'. Use schema:<schema> or table:<schema>.<table>."
+            )),
+        }
+    }
+
+    fn as_str(&self) -> String {
+        match self {
+            Self::Schema(schema) => format!("schema:{schema}"),
+            Self::Table { schema, table } => format!("table:{schema}.{table}"),
+        }
+    }
+
+    fn object_type(&self) -> &'static str {
+        match self {
+            Self::Schema(_) => "schema",
+            Self::Table { .. } => "table",
+        }
+    }
+
+    fn required_schema_ref(&self) -> Option<Self> {
+        match self {
+            Self::Schema(_) => None,
+            Self::Table { schema, .. } => Some(Self::Schema(schema.clone())),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct PlanSelection {
+    includes: Vec<ObjectRef>,
+    excludes: Vec<ObjectRef>,
+}
+
+impl PlanSelection {
+    pub fn from_options(includes: Vec<String>, excludes: Vec<String>) -> Result<Self, String> {
+        let mut parsed_includes = Vec::new();
+        for include in includes {
+            parsed_includes.push(ObjectRef::parse(&include)?);
+        }
+        parsed_includes.sort();
+        parsed_includes.dedup();
+
+        let mut parsed_excludes = Vec::new();
+        for exclude in excludes {
+            parsed_excludes.push(ObjectRef::parse(&exclude)?);
+        }
+        parsed_excludes.sort();
+        parsed_excludes.dedup();
+
+        Ok(Self {
+            includes: parsed_includes,
+            excludes: parsed_excludes,
+        })
+    }
+
+    pub fn include_all() -> Self {
+        Self {
+            includes: Vec::new(),
+            excludes: Vec::new(),
+        }
+    }
+
+    fn included_object_refs(&self) -> Vec<String> {
+        self.includes.iter().map(ObjectRef::as_str).collect()
+    }
+
+    fn excluded_object_refs(&self) -> Vec<String> {
+        self.excludes.iter().map(ObjectRef::as_str).collect()
+    }
+
+    fn is_included(&self, object_ref: &ObjectRef) -> bool {
+        self.includes.is_empty() || self.includes.contains(object_ref)
+    }
+
+    fn is_excluded(&self, object_ref: &ObjectRef) -> bool {
+        self.excludes.contains(object_ref)
+    }
+}
+
+pub fn plan_postgres_with_inventory(
+    cwd: &Path,
+    inventory: &PostgresInventory,
+    selection: &ExportSelection,
+    plan_selection: &PlanSelection,
+) -> PlanReport {
+    let compare = compare_postgres_with_inventory(cwd, inventory, selection);
+    let mut report = empty_plan_report();
+    report.plan_scope = selection.scope_name();
+    report.selected_schemas = selection.selected_schemas();
+    report.selected_tables = selection.selected_tables();
+    report.included_objects = plan_selection.included_object_refs();
+    report.excluded_objects = plan_selection.excluded_object_refs();
+    report.warnings = compare.warnings.clone();
+    report.errors = compare.errors.clone();
+    report.deferred_object_types = compare.deferred_object_types.clone();
+    report.working_tree_status = compare.working_tree_status;
+    report.is_dirty = compare.is_dirty;
+    report.compare_summary = CompareSummary {
+        in_sync: compare.in_sync.len(),
+        repo_different: compare.repo_different.len(),
+        repo_only: compare.repo_only.len(),
+        database_only: compare.database_only.len(),
+        skipped: compare.skipped.len(),
+    };
+
+    if !compare.success {
+        return report;
+    }
+
+    let root = match git_root(cwd) {
+        Some(root) => root,
+        None => {
+            report
+                .errors
+                .push("Current path is not inside a Git repository.".to_string());
+            return report;
+        }
+    };
+
+    let mut candidate_refs = BTreeMap::new();
+    add_plan_candidates(
+        &mut candidate_refs,
+        &compare.repo_different,
+        "repoDifferent",
+        "updateDatabaseLater",
+    );
+    add_plan_candidates(
+        &mut candidate_refs,
+        &compare.repo_only,
+        "repoOnly",
+        "createInDatabaseLater",
+    );
+    add_plan_candidates(
+        &mut candidate_refs,
+        &compare.database_only,
+        "databaseOnly",
+        "reviewDatabaseOnly",
+    );
+
+    let in_sync_refs: BTreeSet<ObjectRef> = compare
+        .in_sync
+        .iter()
+        .filter_map(|path| object_ref_from_relative_path(path).ok())
+        .collect();
+
+    for included in &plan_selection.includes {
+        if !candidate_refs.contains_key(included) {
+            if in_sync_refs.contains(included) {
+                report.warnings.push(format!(
+                    "Included object '{}' has no actionable difference.",
+                    included.as_str()
+                ));
+            } else {
+                report.errors.push(format!(
+                    "Included object '{}' was not found in the selected compare scope.",
+                    included.as_str()
+                ));
+            }
+        }
+    }
+    for excluded in &plan_selection.excludes {
+        if !candidate_refs.contains_key(excluded) && !in_sync_refs.contains(excluded) {
+            report.warnings.push(format!(
+                "Excluded object '{}' was not found in the selected compare scope.",
+                excluded.as_str()
+            ));
+        }
+    }
+    if !report.errors.is_empty() {
+        return report;
+    }
+
+    let mut selected_refs = BTreeSet::new();
+    for object_ref in candidate_refs.keys() {
+        if plan_selection.is_excluded(object_ref) {
+            continue;
+        }
+        if plan_selection.is_included(object_ref) {
+            selected_refs.insert(object_ref.clone());
+        }
+    }
+    if plan_selection.includes.is_empty() {
+        report.included_objects = selected_refs.iter().map(ObjectRef::as_str).collect();
+    }
+
+    for object_ref in &selected_refs {
+        let Some((relative_path, classification, intent)) = candidate_refs.get(object_ref) else {
+            continue;
+        };
+        let mut item_warnings = Vec::new();
+        let mut blocked = false;
+
+        if let Some(required_schema) = object_ref.required_schema_ref() {
+            let required_schema_path = match &required_schema {
+                ObjectRef::Schema(schema) => schema_file_path(schema).unwrap_or_default(),
+                ObjectRef::Table { .. } => String::new(),
+            };
+            if !required_schema_path.is_empty() && !root.join(&required_schema_path).is_file() {
+                let warning = DependencyWarning {
+                    warning_type: "missingDependency".to_string(),
+                    object_ref: object_ref.as_str(),
+                    required_object_ref: Some(required_schema.as_str()),
+                    message: format!(
+                        "Selected table '{}' requires schema desired-state file '{}'.",
+                        object_ref.as_str(),
+                        required_schema_path
+                    ),
+                    severity: "blocked".to_string(),
+                };
+                item_warnings.push(warning.message.clone());
+                report.dependency_warnings.push(warning);
+                blocked = true;
+            }
+            if plan_selection.is_excluded(&required_schema) {
+                let warning = DependencyWarning {
+                    warning_type: "excludedRequiredDependency".to_string(),
+                    object_ref: object_ref.as_str(),
+                    required_object_ref: Some(required_schema.as_str()),
+                    message: format!(
+                        "Selected table '{}' depends on excluded schema '{}'.",
+                        object_ref.as_str(),
+                        required_schema.as_str()
+                    ),
+                    severity: "blocked".to_string(),
+                };
+                item_warnings.push(warning.message.clone());
+                report.dependency_warnings.push(warning);
+                report.dependency_warnings.push(DependencyWarning {
+                    warning_type: "dependentObjectImpacted".to_string(),
+                    object_ref: object_ref.as_str(),
+                    required_object_ref: Some(required_schema.as_str()),
+                    message: format!(
+                        "Excluded schema '{}' impacts selected table '{}'.",
+                        required_schema.as_str(),
+                        object_ref.as_str()
+                    ),
+                    severity: "blocked".to_string(),
+                });
+                blocked = true;
+            }
+        }
+
+        let item = PlanItem {
+            object_ref: object_ref.as_str(),
+            object_type: object_ref.object_type().to_string(),
+            relative_path: relative_path.clone(),
+            compare_classification: classification.to_string(),
+            plan_intent: if blocked {
+                "blocked".to_string()
+            } else {
+                intent.to_string()
+            },
+            selected: true,
+            blocked,
+            warnings: item_warnings,
+        };
+
+        if item.blocked {
+            report.blocked_items.push(item);
+        } else {
+            report.plan_items.push(item);
+        }
+    }
+
+    report.plan_items.sort_by(|left, right| {
+        left.object_ref
+            .cmp(&right.object_ref)
+            .then(left.relative_path.cmp(&right.relative_path))
+    });
+    report.blocked_items.sort_by(|left, right| {
+        left.object_ref
+            .cmp(&right.object_ref)
+            .then(left.relative_path.cmp(&right.relative_path))
+    });
+    report
+        .dependency_warnings
+        .sort_by(|left, right| left.object_ref.cmp(&right.object_ref));
+    report.success = report.errors.is_empty();
+    report
+}
+
+fn add_plan_candidates(
+    candidates: &mut BTreeMap<ObjectRef, (String, &'static str, &'static str)>,
+    paths: &[String],
+    classification: &'static str,
+    intent: &'static str,
+) {
+    for path in paths {
+        if let Ok(object_ref) = object_ref_from_relative_path(path) {
+            candidates.insert(object_ref, (path.clone(), classification, intent));
+        }
+    }
+}
+
+fn object_ref_from_relative_path(relative_path: &str) -> Result<ObjectRef, String> {
+    ensure_database_object_path(relative_path)?;
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/schemas/") {
+        let Some(schema) = schema_name_from_file(file_name) else {
+            return Err(format!("Invalid schema desired-state file path: {relative_path}"));
+        };
+        return Ok(ObjectRef::Schema(schema));
+    }
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/tables/") {
+        let Some((schema, table)) = table_name_from_file(file_name) else {
+            return Err(format!("Invalid table desired-state file path: {relative_path}"));
+        };
+        return Ok(ObjectRef::Table { schema, table });
+    }
+    Err(format!("Unsupported desired-state file path: {relative_path}"))
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum RepositoryObjectType {
     Schema,
@@ -2009,6 +2506,37 @@ fn empty_compare_report() -> CompareReport {
         repo_only: Vec::new(),
         database_only: Vec::new(),
         skipped: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        deferred_object_types: DEFERRED_OBJECT_TYPES
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
+        working_tree_status: WorkingTreeStatus::Unknown,
+        is_dirty: false,
+    }
+}
+
+fn empty_plan_report() -> PlanReport {
+    PlanReport {
+        command: CommandKind::PlanPostgres,
+        success: false,
+        database_type: "postgresql".to_string(),
+        plan_scope: "<none>".to_string(),
+        selected_schemas: Vec::new(),
+        selected_tables: Vec::new(),
+        included_objects: Vec::new(),
+        excluded_objects: Vec::new(),
+        plan_items: Vec::new(),
+        blocked_items: Vec::new(),
+        dependency_warnings: Vec::new(),
+        compare_summary: CompareSummary {
+            in_sync: 0,
+            repo_different: 0,
+            repo_only: 0,
+            database_only: 0,
+            skipped: 0,
+        },
         warnings: Vec::new(),
         errors: Vec::new(),
         deferred_object_types: DEFERRED_OBJECT_TYPES
@@ -2461,10 +2989,107 @@ impl CompareReport {
     }
 }
 
+impl PlanReport {
+    pub fn to_text(&self) -> String {
+        let mut text = String::new();
+        writeln!(text, "Command: {}", self.command.as_str()).ok();
+        writeln!(text, "Success: {}", self.success).ok();
+        writeln!(text, "Database type: {}", self.database_type).ok();
+        writeln!(text, "Plan scope: {}", self.plan_scope).ok();
+        writeln!(text, "Working tree: {}", self.working_tree_status.as_str()).ok();
+        write_path_list(&mut text, "Included objects", &self.included_objects);
+        write_path_list(&mut text, "Excluded objects", &self.excluded_objects);
+        write_plan_item_text_list(&mut text, "Ready plan items", &self.plan_items);
+        write_plan_item_text_list(&mut text, "Blocked items", &self.blocked_items);
+        writeln!(text, "Dependency warnings:").ok();
+        for warning in &self.dependency_warnings {
+            writeln!(
+                text,
+                "  - [{}] {}: {}",
+                warning.severity, warning.warning_type, warning.message
+            )
+            .ok();
+        }
+        writeln!(
+            text,
+            "Compare summary: inSync={}, repoDifferent={}, repoOnly={}, databaseOnly={}, skipped={}",
+            self.compare_summary.in_sync,
+            self.compare_summary.repo_different,
+            self.compare_summary.repo_only,
+            self.compare_summary.database_only,
+            self.compare_summary.skipped
+        )
+        .ok();
+        for warning in &self.warnings {
+            writeln!(text, "Warning: {warning}").ok();
+        }
+        for error in &self.errors {
+            writeln!(text, "Error: {error}").ok();
+        }
+        text
+    }
+
+    pub fn to_json(&self) -> String {
+        let mut json = String::new();
+        json.push('{');
+        write_json_string_field(&mut json, "command", self.command.as_str(), true);
+        write_json_bool_field(&mut json, "success", self.success);
+        write_json_string_field(&mut json, "databaseType", &self.database_type, false);
+        write_json_string_field(&mut json, "planScope", &self.plan_scope, false);
+        write_json_array_field(&mut json, "selectedSchemas", &self.selected_schemas);
+        write_json_array_field(&mut json, "selectedTables", &self.selected_tables);
+        write_json_array_field(&mut json, "includedObjects", &self.included_objects);
+        write_json_array_field(&mut json, "excludedObjects", &self.excluded_objects);
+        write_plan_item_array_field(&mut json, "planItems", &self.plan_items);
+        write_plan_item_array_field(&mut json, "blockedItems", &self.blocked_items);
+        write_dependency_warning_array_field(
+            &mut json,
+            "dependencyWarnings",
+            &self.dependency_warnings,
+        );
+        write_compare_summary_field(&mut json, "compareSummary", &self.compare_summary);
+        write_json_array_field(&mut json, "warnings", &self.warnings);
+        write_json_array_field(&mut json, "errors", &self.errors);
+        write_json_array_field(
+            &mut json,
+            "deferredObjectTypes",
+            &self.deferred_object_types,
+        );
+        write_json_string_field(
+            &mut json,
+            "workingTreeStatus",
+            self.working_tree_status.as_str(),
+            false,
+        );
+        write_json_bool_field(&mut json, "isDirty", self.is_dirty);
+        json.push('}');
+        json
+    }
+}
+
 fn write_path_list(text: &mut String, title: &str, paths: &[String]) {
     writeln!(text, "{title}:").ok();
     for path in paths {
         writeln!(text, "  - {path}").ok();
+    }
+}
+
+fn write_plan_item_text_list(text: &mut String, title: &str, items: &[PlanItem]) {
+    writeln!(text, "{title}:").ok();
+    for item in items {
+        writeln!(
+            text,
+            "  - {} ({}, {}, intent={}, blocked={})",
+            item.object_ref,
+            item.object_type,
+            item.compare_classification,
+            item.plan_intent,
+            item.blocked
+        )
+        .ok();
+        for warning in &item.warnings {
+            writeln!(text, "    Warning: {warning}").ok();
+        }
     }
 }
 
@@ -2566,6 +3191,73 @@ fn write_counts_field(json: &mut String, name: &str, counts: &InspectionCounts) 
         counts.schemas,
         counts.tables,
         counts.columns
+    )
+    .ok();
+}
+
+fn write_plan_item_array_field(json: &mut String, name: &str, values: &[PlanItem]) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "objectRef", &value.object_ref, true);
+        write_json_string_field(json, "objectType", &value.object_type, false);
+        write_json_string_field(json, "relativePath", &value.relative_path, false);
+        write_json_string_field(
+            json,
+            "compareClassification",
+            &value.compare_classification,
+            false,
+        );
+        write_json_string_field(json, "planIntent", &value.plan_intent, false);
+        write_json_bool_field(json, "selected", value.selected);
+        write_json_bool_field(json, "blocked", value.blocked);
+        write_json_array_field(json, "warnings", &value.warnings);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+fn write_dependency_warning_array_field(
+    json: &mut String,
+    name: &str,
+    values: &[DependencyWarning],
+) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "warningType", &value.warning_type, true);
+        write_json_string_field(json, "objectRef", &value.object_ref, false);
+        write_json_optional_string_field(
+            json,
+            "requiredObjectRef",
+            value.required_object_ref.as_deref(),
+        );
+        write_json_string_field(json, "message", &value.message, false);
+        write_json_string_field(json, "severity", &value.severity, false);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+fn write_compare_summary_field(json: &mut String, name: &str, summary: &CompareSummary) {
+    json.push(',');
+    write!(
+        json,
+        "\"{}\":{{\"inSync\":{},\"repoDifferent\":{},\"repoOnly\":{},\"databaseOnly\":{},\"skipped\":{}}}",
+        escape_json(name),
+        summary.in_sync,
+        summary.repo_different,
+        summary.repo_only,
+        summary.database_only,
+        summary.skipped
     )
     .ok();
 }
@@ -3680,6 +4372,345 @@ mod tests {
     }
 
     #[test]
+    fn plan_missing_scope_selection_returns_clear_error() {
+        let dir = create_temp_dir("plan-missing-selection");
+        let parsed =
+            ParsedArgs::parse(&["plan".to_string(), "postgres".to_string()]).expect("parse");
+
+        let report = plan_postgres_command(&dir, parsed);
+
+        assert!(!report.success);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("Selection is required")));
+    }
+
+    #[test]
+    fn plan_invalid_object_ref_returns_clear_error() {
+        let error = PlanSelection::from_options(vec!["bad-ref".to_string()], Vec::new())
+            .expect_err("invalid object ref");
+
+        assert!(error.contains("Invalid object reference"));
+    }
+
+    #[test]
+    fn plan_requires_git_repository_and_dbstate_structure() {
+        let non_git = create_temp_dir("plan-non-git");
+        let report = plan_postgres_with_inventory(
+            &non_git,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::include_all(),
+        );
+        assert!(!report.success);
+        assert!(report.errors[0].contains("not inside a Git repository"));
+
+        let no_structure = create_temp_dir("plan-no-structure");
+        init_git_repo(&no_structure);
+        let report = plan_postgres_with_inventory(
+            &no_structure,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::include_all(),
+        );
+        assert!(!report.success);
+        assert!(report.errors[0].contains("Run dbstate init first"));
+    }
+
+    #[test]
+    fn plan_is_read_only_and_can_run_with_dirty_working_tree() {
+        let dir = create_temp_dir("plan-dirty-readonly");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+        fs::write(dir.join("dirty.txt"), "dirty").expect("write dirty file");
+
+        let report = plan_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::include_all(),
+        );
+
+        assert!(report.success);
+        assert!(report.is_dirty);
+        assert!(!dir
+            .join("database/objects/schemas/dbstate_slice2.sql")
+            .exists());
+        assert!(report
+            .plan_items
+            .iter()
+            .any(|item| item.plan_intent == "reviewDatabaseOnly"));
+    }
+
+    #[test]
+    fn plan_builds_item_from_repo_different_object() {
+        let dir = create_temp_dir("plan-repo-different");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/schemas/dbstate_slice2.sql"),
+            render_schema_sql("dbstate_slice2"),
+        )
+        .expect("write schema");
+        fs::write(
+            dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
+            "-- stale table\n",
+        )
+        .expect("write stale table");
+        commit_all(&dir, "stale table");
+
+        let report = plan_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::include_all(),
+        );
+
+        assert!(report.success);
+        assert!(report.plan_items.iter().any(|item| {
+            item.object_ref == "table:dbstate_slice2.sample_accounts"
+                && item.compare_classification == "repoDifferent"
+                && item.plan_intent == "updateDatabaseLater"
+        }));
+    }
+
+    #[test]
+    fn plan_builds_item_from_repo_only_object() {
+        let dir = create_temp_dir("plan-repo-only");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/schemas/local_only.sql"),
+            render_schema_sql("local_only"),
+        )
+        .expect("write repo-only schema");
+        commit_all(&dir, "repo-only schema");
+
+        let report = plan_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::include_all(),
+        );
+
+        assert!(report.success);
+        assert!(report.plan_items.iter().any(|item| {
+            item.object_ref == "schema:local_only"
+                && item.compare_classification == "repoOnly"
+                && item.plan_intent == "createInDatabaseLater"
+        }));
+    }
+
+    #[test]
+    fn plan_builds_review_item_from_database_only_object() {
+        let dir = create_temp_dir("plan-database-only");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let report = plan_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::include_all(),
+        );
+
+        assert!(report.success);
+        assert!(report.plan_items.iter().any(|item| {
+            item.object_ref == "schema:dbstate_slice2"
+                && item.compare_classification == "databaseOnly"
+                && item.plan_intent == "reviewDatabaseOnly"
+        }));
+    }
+
+    #[test]
+    fn plan_include_limits_selected_plan_items() {
+        let dir = create_temp_dir("plan-include");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/schemas/dbstate_slice2.sql"),
+            "-- stale schema\n",
+        )
+        .expect("write stale schema");
+        fs::write(
+            dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
+            "-- stale table\n",
+        )
+        .expect("write stale table");
+        commit_all(&dir, "stale files");
+
+        let selection = PlanSelection::from_options(
+            vec!["table:dbstate_slice2.sample_accounts".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection");
+        let report = plan_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &selection,
+        );
+
+        assert!(report.success);
+        assert_eq!(report.plan_items.len(), 1);
+        assert_eq!(
+            report.plan_items[0].object_ref,
+            "table:dbstate_slice2.sample_accounts"
+        );
+    }
+
+    #[test]
+    fn plan_exclude_excludes_selected_objects() {
+        let dir = create_temp_dir("plan-exclude");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/schemas/dbstate_slice2.sql"),
+            "-- stale schema\n",
+        )
+        .expect("write stale schema");
+        commit_all(&dir, "stale schema");
+
+        let selection = PlanSelection::from_options(
+            Vec::new(),
+            vec!["schema:dbstate_slice2".to_string()],
+        )
+        .expect("plan selection");
+        let report = plan_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &selection,
+        );
+
+        assert!(report.success);
+        assert!(!report
+            .plan_items
+            .iter()
+            .any(|item| item.object_ref == "schema:dbstate_slice2"));
+        assert!(report
+            .excluded_objects
+            .contains(&"schema:dbstate_slice2".to_string()));
+    }
+
+    #[test]
+    fn plan_blocks_table_when_required_schema_file_is_missing() {
+        let dir = create_temp_dir("plan-missing-schema");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
+            "-- stale table\n",
+        )
+        .expect("write stale table");
+        commit_all(&dir, "table without schema");
+
+        let report = plan_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::Table {
+                schema: "dbstate_slice2".to_string(),
+                table: "sample_accounts".to_string(),
+            },
+            &PlanSelection::include_all(),
+        );
+
+        assert!(report.success);
+        assert!(report.blocked_items.iter().any(|item| {
+            item.object_ref == "table:dbstate_slice2.sample_accounts"
+                && item.plan_intent == "blocked"
+        }));
+        assert!(report.dependency_warnings.iter().any(|warning| {
+            warning.warning_type == "missingDependency" && warning.severity == "blocked"
+        }));
+    }
+
+    #[test]
+    fn plan_warns_when_schema_is_excluded_for_selected_table() {
+        let dir = create_temp_dir("plan-excluded-schema");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/schemas/dbstate_slice2.sql"),
+            "-- stale schema\n",
+        )
+        .expect("write stale schema");
+        fs::write(
+            dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
+            "-- stale table\n",
+        )
+        .expect("write stale table");
+        commit_all(&dir, "stale files");
+
+        let selection = PlanSelection::from_options(
+            vec!["table:dbstate_slice2.sample_accounts".to_string()],
+            vec!["schema:dbstate_slice2".to_string()],
+        )
+        .expect("plan selection");
+        let report = plan_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &selection,
+        );
+
+        assert!(report.success);
+        assert!(report.blocked_items.iter().any(|item| {
+            item.object_ref == "table:dbstate_slice2.sample_accounts"
+        }));
+        assert!(report.dependency_warnings.iter().any(|warning| {
+            warning.warning_type == "dependentObjectImpacted"
+                && warning.object_ref == "table:dbstate_slice2.sample_accounts"
+        }));
+    }
+
+    #[test]
+    fn plan_json_includes_expected_fields_and_no_secrets() {
+        let dir = create_temp_dir("plan-json");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let mut report = plan_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            &PlanSelection::include_all(),
+        );
+        report
+            .warnings
+            .push(redact_postgres_url(&placeholder_url("user", "sensitive-marker")));
+        let json = report.to_json();
+
+        for field in [
+            "\"command\"",
+            "\"success\"",
+            "\"databaseType\"",
+            "\"planScope\"",
+            "\"selectedSchemas\"",
+            "\"selectedTables\"",
+            "\"includedObjects\"",
+            "\"excludedObjects\"",
+            "\"planItems\"",
+            "\"blockedItems\"",
+            "\"dependencyWarnings\"",
+            "\"compareSummary\"",
+            "\"warnings\"",
+            "\"errors\"",
+            "\"deferredObjectTypes\"",
+            "\"workingTreeStatus\"",
+            "\"isDirty\"",
+        ] {
+            assert!(json.contains(field), "missing JSON field {field}");
+        }
+        assert!(!json.contains("postgres://"));
+        assert!(!json.contains("sensitive-marker"));
+    }
+
+    #[test]
     fn cli_rejects_apply_and_database_mutation_commands() {
         let invalid_commands = [
             vec!["apply".to_string()],
@@ -3712,5 +4743,21 @@ mod tests {
             "--all".to_string()
         ])
         .is_ok());
+        assert!(ParsedArgs::parse(&[
+            "plan".to_string(),
+            "postgres".to_string(),
+            "--all".to_string(),
+            "--include".to_string(),
+            "table:dbstate_slice2.sample_accounts".to_string()
+        ])
+        .is_ok());
+        assert!(ParsedArgs::parse(&[
+            "compare".to_string(),
+            "postgres".to_string(),
+            "--all".to_string(),
+            "--include".to_string(),
+            "schema:dbstate_slice2".to_string()
+        ])
+        .is_err());
     }
 }
