@@ -129,14 +129,37 @@ Current CLI scope:
 - `dbstate release postgres` generates review-only SQL, summary, and risk artifacts under `database/releases/` from the selected plan. It never executes the generated SQL.
 - `dbstate data-compare postgres` compares explicitly configured reference-data table files against PostgreSQL rows with read-only `SELECT`.
 - CLI JSON output is hardened around common `command`, `success`, `warnings`, and `errors` fields, repository context where relevant, and redaction of connection details and masked values.
+- Docker packaging is available for headless CLI automation against mounted repositories.
 
 Current implementation limitations:
 
-- No SQL execution, direct target-database apply, reference-data DML generation, arbitrary transactional data compare, browser UI, Docker product runtime, MCP, or AI integration exists yet.
+- No SQL execution, direct target-database apply, reference-data DML generation, arbitrary transactional data compare, browser UI, Docker Compose, CI workflow, MCP, or AI integration exists yet.
 - PostgreSQL access is read-only in product commands.
 - No command applies SQL to a database.
 
-See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, and `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md` for command details.
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, and `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md` for command details.
+
+## Docker CLI Automation
+
+Build the local CLI image:
+
+```powershell
+docker build -t dbstate-postgres:dev .
+```
+
+Run against the current repository:
+
+```powershell
+docker run --rm `
+  -v "${PWD}:/workspace" `
+  -w /workspace `
+  dbstate-postgres:dev `
+  dbstate repo status --format json
+```
+
+Use `DBSTATE_POSTGRES_URL` for session-only PostgreSQL access. Do not put credentials in the image or repository.
+
+Docker packaging is CLI automation only. It does not add browser UI, service mode, Docker Compose, CI, SQL execution, or direct database apply.
 
 ## High-level principles
 
