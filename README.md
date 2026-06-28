@@ -124,14 +124,15 @@ Current CLI scope:
 - `dbstate inspect postgres` performs read-only PostgreSQL catalog inspection for schemas, tables, and columns.
 - `dbstate export postgres` exports selected inspected schemas and simple ordinary tables to desired-state files under `database/objects/`.
 - `dbstate sync postgres` compares selected source PostgreSQL objects against local desired-state files and creates or updates local files after explicit command invocation.
+- `dbstate compare postgres` reads supported desired-state files, inspects PostgreSQL read-only, and reports repository-to-database differences without writing files.
 
 Current implementation limitations:
 
-- No schema compare, data compare, synchronization planning, generated release script, browser UI, Docker product runtime, MCP, or AI integration exists yet.
+- No target deployment planning, data compare, synchronization script generation, generated release script, browser UI, Docker product runtime, MCP, or AI integration exists yet.
 - PostgreSQL access is read-only in product commands.
 - No command applies SQL to a database.
 
-See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, and `docs/postgresql-v0.1/31-slice-4-implementation-notes.md` for command details.
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, and `docs/postgresql-v0.1/32-slice-5-implementation-notes.md` for command details.
 
 ## High-level principles
 

@@ -1,3 +1,4 @@
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
@@ -37,6 +38,7 @@ pub enum CommandKind {
     InspectPostgres,
     ExportPostgres,
     SyncPostgres,
+    ComparePostgres,
 }
 
 impl CommandKind {
@@ -47,6 +49,7 @@ impl CommandKind {
             Self::InspectPostgres => "inspect postgres",
             Self::ExportPostgres => "export postgres",
             Self::SyncPostgres => "sync postgres",
+            Self::ComparePostgres => "compare postgres",
         }
     }
 }
@@ -57,6 +60,7 @@ pub enum CommandOutput {
     Inspection(InspectionReport),
     Export(ExportReport),
     Sync(SyncReport),
+    Compare(CompareReport),
 }
 
 impl CommandOutput {
@@ -66,6 +70,7 @@ impl CommandOutput {
             Self::Inspection(report) => report.to_text(),
             Self::Export(report) => report.to_text(),
             Self::Sync(report) => report.to_text(),
+            Self::Compare(report) => report.to_text(),
         }
     }
 
@@ -75,6 +80,7 @@ impl CommandOutput {
             Self::Inspection(report) => report.to_json(),
             Self::Export(report) => report.to_json(),
             Self::Sync(report) => report.to_json(),
+            Self::Compare(report) => report.to_json(),
         }
     }
 }
@@ -226,6 +232,26 @@ pub struct SyncReport {
     pub deferred_object_types: Vec<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct CompareReport {
+    pub command: CommandKind,
+    pub success: bool,
+    pub database_type: String,
+    pub compare_scope: String,
+    pub selected_schemas: Vec<String>,
+    pub selected_tables: Vec<String>,
+    pub in_sync: Vec<String>,
+    pub repo_different: Vec<String>,
+    pub repo_only: Vec<String>,
+    pub database_only: Vec<String>,
+    pub skipped: Vec<String>,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub deferred_object_types: Vec<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
+}
+
 #[derive(Debug, Clone, Copy)]
 struct ExpectedPath {
     relative: &'static str,
@@ -365,6 +391,16 @@ pub fn run_cli(
                 exit_code,
             })
         }
+        CommandKind::ComparePostgres => {
+            let format = parsed.format;
+            let report = compare_postgres_command(cwd, parsed);
+            let exit_code = if report.success { 0 } else { 2 };
+            Ok(CliResult {
+                format,
+                output: CommandOutput::Compare(report),
+                exit_code,
+            })
+        }
     }
 }
 
@@ -463,6 +499,9 @@ impl ParsedArgs {
             [sync, database] if sync == "sync" && database == "postgres" => {
                 CommandKind::SyncPostgres
             }
+            [compare, database] if compare == "compare" && database == "postgres" => {
+                CommandKind::ComparePostgres
+            }
             _ => return Err(usage()),
         };
 
@@ -481,9 +520,10 @@ impl ParsedArgs {
             && command != CommandKind::InspectPostgres
             && command != CommandKind::ExportPostgres
             && command != CommandKind::SyncPostgres
+            && command != CommandKind::ComparePostgres
         {
             return Err(
-                "--url is only supported for dbstate inspect postgres, dbstate export postgres, and dbstate sync postgres"
+                "--url is only supported for dbstate inspect postgres, dbstate export postgres, dbstate sync postgres, and dbstate compare postgres"
                     .to_string(),
             );
         }
@@ -491,9 +531,10 @@ impl ParsedArgs {
         if (schema.is_some() || table.is_some() || all)
             && command != CommandKind::ExportPostgres
             && command != CommandKind::SyncPostgres
+            && command != CommandKind::ComparePostgres
         {
             return Err(
-                "--schema, --table, and --all are only supported for dbstate export postgres and dbstate sync postgres"
+                "--schema, --table, and --all are only supported for dbstate export postgres, dbstate sync postgres, and dbstate compare postgres"
                     .to_string(),
             );
         }
@@ -511,7 +552,7 @@ impl ParsedArgs {
 }
 
 fn usage() -> String {
-    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]".to_string()
+    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json]".to_string()
 }
 
 pub fn status_report(cwd: &Path, command: CommandKind) -> ProjectReport {
@@ -825,9 +866,7 @@ impl ExportSelection {
             + if schema.is_some() { 1 } else { 0 }
             + if table.is_some() { 1 } else { 0 };
         if selected == 0 {
-            return Err(
-                "Selection is required. Provide --schema, --table, or --all.".to_string(),
-            );
+            return Err("Selection is required. Provide --schema, --table, or --all.".to_string());
         }
         if selected > 1 {
             return Err(
@@ -1362,7 +1401,11 @@ fn plan_sync(
                 ));
             }
             schema_names.push(schema.clone());
-            for table in inventory.tables.iter().filter(|table| table.schema_name == *schema) {
+            for table in inventory
+                .tables
+                .iter()
+                .filter(|table| table.schema_name == *schema)
+            {
                 if table.table_type == "BASE TABLE" {
                     table_names.push((table.schema_name.clone(), table.table_name.clone()));
                 } else {
@@ -1414,12 +1457,7 @@ fn plan_sync(
     for schema in schema_names {
         let relative_path = schema_file_path(&schema)?;
         ensure_database_object_path(&relative_path)?;
-        classify_sync_file(
-            root,
-            &relative_path,
-            render_schema_sql(&schema),
-            &mut plan,
-        )?;
+        classify_sync_file(root, &relative_path, render_schema_sql(&schema), &mut plan)?;
     }
 
     for (schema, table) in table_names {
@@ -1475,6 +1513,413 @@ fn classify_sync_file(
         });
     }
     Ok(())
+}
+
+fn compare_postgres_command(cwd: &Path, parsed: ParsedArgs) -> CompareReport {
+    let mut report = empty_compare_report();
+    let selection = match ExportSelection::from_options(
+        parsed.all,
+        parsed.schema.clone(),
+        parsed.table.clone(),
+    ) {
+        Ok(selection) => selection,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+
+    report.compare_scope = selection.scope_name();
+    report.selected_schemas = selection.selected_schemas();
+    report.selected_tables = selection.selected_tables();
+
+    let Some(connection_url) =
+        resolve_postgres_url(parsed.url, env::var("DBSTATE_POSTGRES_URL").ok())
+    else {
+        report.errors.push(
+            "Missing PostgreSQL connection URL. Provide --url or DBSTATE_POSTGRES_URL.".to_string(),
+        );
+        return report;
+    };
+
+    match inspect_postgres(&connection_url) {
+        Ok(inventory) => compare_postgres_with_inventory(cwd, &inventory, &selection),
+        Err(error) => {
+            report.errors.push(redact_message(&error, &connection_url));
+            report
+        }
+    }
+}
+
+pub fn compare_postgres_with_inventory(
+    cwd: &Path,
+    inventory: &PostgresInventory,
+    selection: &ExportSelection,
+) -> CompareReport {
+    let mut report = empty_compare_report();
+    report.compare_scope = selection.scope_name();
+    report.selected_schemas = selection.selected_schemas();
+    report.selected_tables = selection.selected_tables();
+
+    let project = status_report(cwd, CommandKind::ComparePostgres);
+    report.working_tree_status = project.working_tree_status;
+    report.is_dirty = project.is_dirty;
+
+    if !project.is_git_repository {
+        report
+            .errors
+            .push("Current path is not inside a Git repository.".to_string());
+        return report;
+    }
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+        report.errors.push(
+            "DbState PostgreSQL project structure is incomplete. Run dbstate init first."
+                .to_string(),
+        );
+        return report;
+    }
+
+    let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
+    let repo_import = match discover_repository_objects(&root) {
+        Ok(import) => import,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+
+    let database_objects = match render_database_objects_for_selection(&root, inventory, selection)
+    {
+        Ok(objects) => objects,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+    let repo_objects = select_repository_objects(&repo_import.objects, selection);
+
+    report.skipped = repo_import.skipped;
+    report.warnings = repo_import.warnings;
+    report.errors.extend(repo_import.errors);
+    if !report.errors.is_empty() {
+        return report;
+    }
+
+    if let ExportSelection::Table { schema, table } = selection {
+        let schema_path = schema_file_path(schema).unwrap_or_else(|_| String::new());
+        if !schema_path.is_empty() && !root.join(&schema_path).is_file() {
+            report.warnings.push(format!(
+                "Selected table '{schema}.{table}' has missing local schema file {schema_path}."
+            ));
+        }
+    }
+
+    let mut keys = BTreeSet::new();
+    keys.extend(database_objects.keys().cloned());
+    keys.extend(repo_objects.keys().cloned());
+    if keys.is_empty() {
+        report.errors.push(
+            "Selected schema or table was not found in the repository or PostgreSQL inventory."
+                .to_string(),
+        );
+        return report;
+    }
+
+    for key in keys {
+        match (repo_objects.get(&key), database_objects.get(&key)) {
+            (Some(repo_object), Some(database_object)) => {
+                if normalize_desired_state_text(&repo_object.content)
+                    == normalize_desired_state_text(&database_object.content)
+                {
+                    report.in_sync.push(repo_object.relative_path.clone());
+                } else {
+                    report
+                        .repo_different
+                        .push(repo_object.relative_path.clone());
+                }
+            }
+            (Some(repo_object), None) => {
+                report.repo_only.push(repo_object.relative_path.clone());
+            }
+            (None, Some(database_object)) => {
+                report
+                    .database_only
+                    .push(database_object.relative_path.clone());
+            }
+            (None, None) => {}
+        }
+    }
+
+    report.success = true;
+    report
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum RepositoryObjectType {
+    Schema,
+    Table,
+}
+
+#[derive(Debug, Clone)]
+struct DesiredStateObject {
+    object_type: RepositoryObjectType,
+    schema_name: String,
+    table_name: Option<String>,
+    relative_path: String,
+    content: String,
+}
+
+#[derive(Debug, Clone)]
+struct RepositoryImport {
+    objects: BTreeMap<String, DesiredStateObject>,
+    skipped: Vec<String>,
+    warnings: Vec<String>,
+    errors: Vec<String>,
+}
+
+fn discover_repository_objects(root: &Path) -> Result<RepositoryImport, String> {
+    let mut import = RepositoryImport {
+        objects: BTreeMap::new(),
+        skipped: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+    };
+
+    discover_schema_files(root, &mut import)?;
+    discover_table_files(root, &mut import)?;
+    import.skipped.sort();
+    import.skipped.dedup();
+    Ok(import)
+}
+
+fn discover_schema_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    let dir = root.join("database/objects/schemas");
+    for entry in fs::read_dir(&dir)
+        .map_err(|error| format!("Could not read database/objects/schemas: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("Could not read schema file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("database/objects/schemas/{file_name}");
+        let Some(schema) = schema_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&schema).is_err() {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        import.objects.insert(
+            schema_key(&schema),
+            DesiredStateObject {
+                object_type: RepositoryObjectType::Schema,
+                schema_name: schema,
+                table_name: None,
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn discover_table_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    let dir = root.join("database/objects/tables");
+    for entry in fs::read_dir(&dir)
+        .map_err(|error| format!("Could not read database/objects/tables: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("Could not read table file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("database/objects/tables/{file_name}");
+        let Some((schema, table)) = table_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&schema).is_err() || safe_file_component(&table).is_err() {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        import.objects.insert(
+            table_key(&schema, &table),
+            DesiredStateObject {
+                object_type: RepositoryObjectType::Table,
+                schema_name: schema,
+                table_name: Some(table),
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn schema_name_from_file(file_name: &str) -> Option<String> {
+    file_name
+        .strip_suffix(".sql")
+        .filter(|stem| !stem.is_empty())
+        .map(|stem| stem.to_string())
+}
+
+fn table_name_from_file(file_name: &str) -> Option<(String, String)> {
+    let stem = file_name.strip_suffix(".sql")?;
+    let parts: Vec<&str> = stem.split('.').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return None;
+    }
+    Some((parts[0].to_string(), parts[1].to_string()))
+}
+
+fn render_database_objects_for_selection(
+    _root: &Path,
+    inventory: &PostgresInventory,
+    selection: &ExportSelection,
+) -> Result<BTreeMap<String, DesiredStateObject>, String> {
+    let mut objects = BTreeMap::new();
+
+    let mut schema_names = Vec::new();
+    let mut table_names = Vec::new();
+    match selection {
+        ExportSelection::All => {
+            schema_names.extend(inventory.schemas.iter().map(|schema| schema.name.clone()));
+            table_names.extend(
+                inventory
+                    .tables
+                    .iter()
+                    .filter(|table| table.table_type == "BASE TABLE")
+                    .map(|table| (table.schema_name.clone(), table.table_name.clone())),
+            );
+        }
+        ExportSelection::Schema(schema) => {
+            if inventory
+                .schemas
+                .iter()
+                .any(|candidate| candidate.name == *schema)
+            {
+                schema_names.push(schema.clone());
+            }
+            table_names.extend(
+                inventory
+                    .tables
+                    .iter()
+                    .filter(|table| {
+                        table.schema_name == *schema && table.table_type == "BASE TABLE"
+                    })
+                    .map(|table| (table.schema_name.clone(), table.table_name.clone())),
+            );
+        }
+        ExportSelection::Table { schema, table } => {
+            if inventory.tables.iter().any(|candidate| {
+                candidate.schema_name == *schema
+                    && candidate.table_name == *table
+                    && candidate.table_type == "BASE TABLE"
+            }) {
+                table_names.push((schema.clone(), table.clone()));
+            }
+        }
+    }
+
+    schema_names.sort();
+    schema_names.dedup();
+    table_names.sort();
+    table_names.dedup();
+
+    for schema in schema_names {
+        let relative_path = schema_file_path(&schema)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Schema,
+            schema_name: schema.clone(),
+            table_name: None,
+            relative_path,
+            content: render_schema_sql(&schema),
+        };
+        objects.insert(object_key(&object), object);
+    }
+
+    for (schema, table) in table_names {
+        let relative_path = table_file_path(&schema, &table)?;
+        let columns: Vec<ColumnInfo> = inventory
+            .columns
+            .iter()
+            .filter(|column| column.schema_name == schema && column.table_name == table)
+            .cloned()
+            .collect();
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Table,
+            schema_name: schema.clone(),
+            table_name: Some(table.clone()),
+            relative_path,
+            content: render_table_sql(&schema, &table, &columns),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    Ok(objects)
+}
+
+fn select_repository_objects(
+    objects: &BTreeMap<String, DesiredStateObject>,
+    selection: &ExportSelection,
+) -> BTreeMap<String, DesiredStateObject> {
+    let mut selected = BTreeMap::new();
+    for (key, object) in objects {
+        let include = match selection {
+            ExportSelection::All => true,
+            ExportSelection::Schema(schema) => object.schema_name == *schema,
+            ExportSelection::Table { schema, table } => {
+                object.object_type == RepositoryObjectType::Table
+                    && object.schema_name == *schema
+                    && object.table_name.as_deref() == Some(table.as_str())
+            }
+        };
+        if include {
+            selected.insert(key.clone(), object.clone());
+        }
+    }
+    selected
+}
+
+fn object_key(object: &DesiredStateObject) -> String {
+    match object.object_type {
+        RepositoryObjectType::Schema => schema_key(&object.schema_name),
+        RepositoryObjectType::Table => table_key(
+            &object.schema_name,
+            object.table_name.as_deref().unwrap_or(""),
+        ),
+    }
+}
+
+fn schema_key(schema: &str) -> String {
+    format!("schema:{schema}")
+}
+
+fn table_key(schema: &str, table: &str) -> String {
+    format!("table:{schema}.{table}")
+}
+
+pub fn normalize_desired_state_text(value: &str) -> String {
+    let normalized = value.replace("\r\n", "\n").replace('\r', "\n");
+    let mut lines: Vec<String> = normalized
+        .split('\n')
+        .map(|line| line.trim_end().to_string())
+        .collect();
+    while matches!(lines.last(), Some(line) if line.is_empty()) {
+        lines.pop();
+    }
+    if lines.is_empty() {
+        String::new()
+    } else {
+        format!("{}\n", lines.join("\n"))
+    }
 }
 
 fn empty_inspection_report(command: CommandKind) -> InspectionReport {
@@ -1548,6 +1993,30 @@ fn empty_sync_report(dry_run: bool) -> SyncReport {
             .iter()
             .map(|value| value.to_string())
             .collect(),
+    }
+}
+
+fn empty_compare_report() -> CompareReport {
+    CompareReport {
+        command: CommandKind::ComparePostgres,
+        success: false,
+        database_type: "postgresql".to_string(),
+        compare_scope: "<none>".to_string(),
+        selected_schemas: Vec::new(),
+        selected_tables: Vec::new(),
+        in_sync: Vec::new(),
+        repo_different: Vec::new(),
+        repo_only: Vec::new(),
+        database_only: Vec::new(),
+        skipped: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        deferred_object_types: DEFERRED_OBJECT_TYPES
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
+        working_tree_status: WorkingTreeStatus::Unknown,
+        is_dirty: false,
     }
 }
 
@@ -1932,6 +2401,61 @@ impl SyncReport {
             "deferredObjectTypes",
             &self.deferred_object_types,
         );
+        json.push('}');
+        json
+    }
+}
+
+impl CompareReport {
+    pub fn to_text(&self) -> String {
+        let mut text = String::new();
+        writeln!(text, "Command: {}", self.command.as_str()).ok();
+        writeln!(text, "Success: {}", self.success).ok();
+        writeln!(text, "Database type: {}", self.database_type).ok();
+        writeln!(text, "Compare scope: {}", self.compare_scope).ok();
+        writeln!(text, "Working tree: {}", self.working_tree_status.as_str()).ok();
+        write_path_list(&mut text, "In-sync objects", &self.in_sync);
+        write_path_list(&mut text, "Repo-different objects", &self.repo_different);
+        write_path_list(&mut text, "Repo-only objects", &self.repo_only);
+        write_path_list(&mut text, "Database-only objects", &self.database_only);
+        write_path_list(&mut text, "Skipped objects", &self.skipped);
+        for warning in &self.warnings {
+            writeln!(text, "Warning: {warning}").ok();
+        }
+        for error in &self.errors {
+            writeln!(text, "Error: {error}").ok();
+        }
+        text
+    }
+
+    pub fn to_json(&self) -> String {
+        let mut json = String::new();
+        json.push('{');
+        write_json_string_field(&mut json, "command", self.command.as_str(), true);
+        write_json_bool_field(&mut json, "success", self.success);
+        write_json_string_field(&mut json, "databaseType", &self.database_type, false);
+        write_json_string_field(&mut json, "compareScope", &self.compare_scope, false);
+        write_json_array_field(&mut json, "selectedSchemas", &self.selected_schemas);
+        write_json_array_field(&mut json, "selectedTables", &self.selected_tables);
+        write_json_array_field(&mut json, "inSync", &self.in_sync);
+        write_json_array_field(&mut json, "repoDifferent", &self.repo_different);
+        write_json_array_field(&mut json, "repoOnly", &self.repo_only);
+        write_json_array_field(&mut json, "databaseOnly", &self.database_only);
+        write_json_array_field(&mut json, "skipped", &self.skipped);
+        write_json_array_field(&mut json, "warnings", &self.warnings);
+        write_json_array_field(&mut json, "errors", &self.errors);
+        write_json_array_field(
+            &mut json,
+            "deferredObjectTypes",
+            &self.deferred_object_types,
+        );
+        write_json_string_field(
+            &mut json,
+            "workingTreeStatus",
+            self.working_tree_status.as_str(),
+            false,
+        );
+        write_json_bool_field(&mut json, "isDirty", self.is_dirty);
         json.push('}');
         json
     }
@@ -2814,7 +3338,11 @@ mod tests {
             .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
         assert_eq!(
             fs::read_to_string(table_path).expect("read updated table"),
-            render_table_sql("dbstate_slice2", "sample_accounts", &sample_inventory().columns)
+            render_table_sql(
+                "dbstate_slice2",
+                "sample_accounts",
+                &sample_inventory().columns
+            )
         );
     }
 
@@ -2899,6 +3427,259 @@ mod tests {
     }
 
     #[test]
+    fn compare_missing_selection_returns_clear_error() {
+        let dir = create_temp_dir("compare-missing-selection");
+        let parsed =
+            ParsedArgs::parse(&["compare".to_string(), "postgres".to_string()]).expect("parse");
+
+        let report = compare_postgres_command(&dir, parsed);
+
+        assert!(!report.success);
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("Selection is required")));
+    }
+
+    #[test]
+    fn compare_requires_git_repository_and_dbstate_structure() {
+        let non_git = create_temp_dir("compare-non-git");
+        let report =
+            compare_postgres_with_inventory(&non_git, &sample_inventory(), &ExportSelection::All);
+        assert!(!report.success);
+        assert!(report.errors[0].contains("not inside a Git repository"));
+
+        let no_structure = create_temp_dir("compare-no-structure");
+        init_git_repo(&no_structure);
+        let report = compare_postgres_with_inventory(
+            &no_structure,
+            &sample_inventory(),
+            &ExportSelection::All,
+        );
+        assert!(!report.success);
+        assert!(report.errors[0].contains("Run dbstate init first"));
+    }
+
+    #[test]
+    fn compare_is_read_only_and_can_run_with_dirty_working_tree() {
+        let dir = create_temp_dir("compare-dirty-readonly");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+        fs::write(dir.join("dirty.txt"), "dirty").expect("write dirty file");
+
+        let report =
+            compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
+
+        assert!(report.success);
+        assert!(report.is_dirty);
+        assert!(report.in_sync.is_empty());
+        assert!(report.repo_different.is_empty());
+        assert!(report.repo_only.is_empty());
+        assert!(!report.database_only.is_empty());
+        assert!(!dir
+            .join("database/objects/schemas/dbstate_slice2.sql")
+            .exists());
+    }
+
+    #[test]
+    fn repository_schema_and_table_files_are_discovered() {
+        let dir = create_temp_dir("compare-discover");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/schemas/dbstate_slice2.sql"),
+            render_schema_sql("dbstate_slice2"),
+        )
+        .expect("write schema");
+        fs::write(
+            dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
+            render_table_sql(
+                "dbstate_slice2",
+                "sample_accounts",
+                &sample_inventory().columns,
+            ),
+        )
+        .expect("write table");
+
+        let import = discover_repository_objects(&dir).expect("discover objects");
+
+        assert!(import.objects.contains_key("schema:dbstate_slice2"));
+        assert!(import
+            .objects
+            .contains_key("table:dbstate_slice2.sample_accounts"));
+        assert!(import.skipped.is_empty());
+    }
+
+    #[test]
+    fn repository_invalid_file_names_are_reported_as_skipped() {
+        let dir = create_temp_dir("compare-invalid-names");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(dir.join("database/objects/tables/bad.txt"), "-- bad\n")
+            .expect("write bad table file");
+        fs::write(dir.join("database/objects/tables/a.b.c.sql"), "-- bad\n")
+            .expect("write bad table file");
+
+        let import = discover_repository_objects(&dir).expect("discover objects");
+
+        assert!(import
+            .skipped
+            .contains(&"database/objects/tables/bad.txt".to_string()));
+        assert!(import
+            .skipped
+            .contains(&"database/objects/tables/a.b.c.sql".to_string()));
+    }
+
+    #[test]
+    fn compare_text_normalization_is_deterministic() {
+        assert_eq!(
+            normalize_desired_state_text("line one  \r\nline two\r\n\r\n"),
+            "line one\nline two\n"
+        );
+        assert_eq!(normalize_desired_state_text(""), "");
+    }
+
+    #[test]
+    fn compare_classifies_in_sync_objects() {
+        let dir = create_temp_dir("compare-in-sync");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/schemas/dbstate_slice2.sql"),
+            render_schema_sql("dbstate_slice2"),
+        )
+        .expect("write schema");
+        fs::write(
+            dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
+            render_table_sql(
+                "dbstate_slice2",
+                "sample_accounts",
+                &sample_inventory().columns,
+            ),
+        )
+        .expect("write table");
+        commit_all(&dir, "desired state files");
+
+        let report =
+            compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
+
+        assert!(report.success);
+        assert!(report
+            .in_sync
+            .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+        assert!(report
+            .in_sync
+            .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    }
+
+    #[test]
+    fn compare_classifies_repo_different_objects() {
+        let dir = create_temp_dir("compare-different");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
+            "-- stale table\n",
+        )
+        .expect("write stale table");
+        commit_all(&dir, "stale desired state");
+
+        let report = compare_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::Table {
+                schema: "dbstate_slice2".to_string(),
+                table: "sample_accounts".to_string(),
+            },
+        );
+
+        assert!(report.success);
+        assert!(report
+            .repo_different
+            .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    }
+
+    #[test]
+    fn compare_classifies_repo_only_objects() {
+        let dir = create_temp_dir("compare-repo-only");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::write(
+            dir.join("database/objects/tables/dbstate_slice2.local_only.sql"),
+            "-- local only\n",
+        )
+        .expect("write local only table");
+        commit_all(&dir, "local only desired state");
+
+        let report =
+            compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
+
+        assert!(report.success);
+        assert!(report
+            .repo_only
+            .contains(&"database/objects/tables/dbstate_slice2.local_only.sql".to_string()));
+    }
+
+    #[test]
+    fn compare_classifies_database_only_objects() {
+        let dir = create_temp_dir("compare-database-only");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let report =
+            compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
+
+        assert!(report.success);
+        assert!(report
+            .database_only
+            .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+        assert!(report
+            .database_only
+            .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    }
+
+    #[test]
+    fn compare_json_includes_expected_fields_and_no_secrets() {
+        let dir = create_temp_dir("compare-json");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let mut report =
+            compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
+        report.warnings.push(redact_postgres_url(&placeholder_url(
+            "user",
+            "sensitive-marker",
+        )));
+        let json = report.to_json();
+
+        for field in [
+            "\"command\"",
+            "\"success\"",
+            "\"databaseType\"",
+            "\"compareScope\"",
+            "\"selectedSchemas\"",
+            "\"selectedTables\"",
+            "\"inSync\"",
+            "\"repoDifferent\"",
+            "\"repoOnly\"",
+            "\"databaseOnly\"",
+            "\"skipped\"",
+            "\"warnings\"",
+            "\"errors\"",
+            "\"deferredObjectTypes\"",
+            "\"workingTreeStatus\"",
+            "\"isDirty\"",
+        ] {
+            assert!(json.contains(field), "missing JSON field {field}");
+        }
+        assert!(!json.contains("postgres://"));
+        assert!(!json.contains("sensitive-marker"));
+    }
+
+    #[test]
     fn cli_rejects_apply_and_database_mutation_commands() {
         let invalid_commands = [
             vec!["apply".to_string()],
@@ -2921,6 +3702,12 @@ mod tests {
         .is_ok());
         assert!(ParsedArgs::parse(&[
             "sync".to_string(),
+            "postgres".to_string(),
+            "--all".to_string()
+        ])
+        .is_ok());
+        assert!(ParsedArgs::parse(&[
+            "compare".to_string(),
             "postgres".to_string(),
             "--all".to_string()
         ])
