@@ -36,6 +36,7 @@ pub enum CommandKind {
     Init,
     InspectPostgres,
     ExportPostgres,
+    SyncPostgres,
 }
 
 impl CommandKind {
@@ -45,6 +46,7 @@ impl CommandKind {
             Self::Init => "init",
             Self::InspectPostgres => "inspect postgres",
             Self::ExportPostgres => "export postgres",
+            Self::SyncPostgres => "sync postgres",
         }
     }
 }
@@ -54,6 +56,7 @@ pub enum CommandOutput {
     Project(ProjectReport),
     Inspection(InspectionReport),
     Export(ExportReport),
+    Sync(SyncReport),
 }
 
 impl CommandOutput {
@@ -62,6 +65,7 @@ impl CommandOutput {
             Self::Project(report) => report.to_text(),
             Self::Inspection(report) => report.to_text(),
             Self::Export(report) => report.to_text(),
+            Self::Sync(report) => report.to_text(),
         }
     }
 
@@ -70,6 +74,7 @@ impl CommandOutput {
             Self::Project(report) => report.to_json(),
             Self::Inspection(report) => report.to_json(),
             Self::Export(report) => report.to_json(),
+            Self::Sync(report) => report.to_json(),
         }
     }
 }
@@ -194,6 +199,28 @@ pub struct ExportReport {
     pub planned_files: Vec<String>,
     pub created_files: Vec<String>,
     pub skipped_files: Vec<String>,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+    pub deferred_object_types: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct SyncReport {
+    pub command: CommandKind,
+    pub success: bool,
+    pub database_type: String,
+    pub sync_scope: String,
+    pub dry_run: bool,
+    pub selected_schemas: Vec<String>,
+    pub selected_tables: Vec<String>,
+    pub added_files: Vec<String>,
+    pub changed_files: Vec<String>,
+    pub unchanged_files: Vec<String>,
+    pub skipped_files: Vec<String>,
+    pub planned_creates: Vec<String>,
+    pub planned_updates: Vec<String>,
+    pub created_files: Vec<String>,
+    pub updated_files: Vec<String>,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
     pub deferred_object_types: Vec<String>,
@@ -328,6 +355,16 @@ pub fn run_cli(
                 exit_code,
             })
         }
+        CommandKind::SyncPostgres => {
+            let format = parsed.format;
+            let report = sync_postgres_command(cwd, parsed);
+            let exit_code = if report.success { 0 } else { 2 };
+            Ok(CliResult {
+                format,
+                output: CommandOutput::Sync(report),
+                exit_code,
+            })
+        }
     }
 }
 
@@ -423,12 +460,19 @@ impl ParsedArgs {
             [export, database] if export == "export" && database == "postgres" => {
                 CommandKind::ExportPostgres
             }
+            [sync, database] if sync == "sync" && database == "postgres" => {
+                CommandKind::SyncPostgres
+            }
             _ => return Err(usage()),
         };
 
-        if dry_run && command != CommandKind::Init && command != CommandKind::ExportPostgres {
+        if dry_run
+            && command != CommandKind::Init
+            && command != CommandKind::ExportPostgres
+            && command != CommandKind::SyncPostgres
+        {
             return Err(
-                "--dry-run is only supported for dbstate init and dbstate export postgres"
+                "--dry-run is only supported for dbstate init, dbstate export postgres, and dbstate sync postgres"
                     .to_string(),
             );
         }
@@ -436,16 +480,20 @@ impl ParsedArgs {
         if url.is_some()
             && command != CommandKind::InspectPostgres
             && command != CommandKind::ExportPostgres
+            && command != CommandKind::SyncPostgres
         {
             return Err(
-                "--url is only supported for dbstate inspect postgres and dbstate export postgres"
+                "--url is only supported for dbstate inspect postgres, dbstate export postgres, and dbstate sync postgres"
                     .to_string(),
             );
         }
 
-        if (schema.is_some() || table.is_some() || all) && command != CommandKind::ExportPostgres {
+        if (schema.is_some() || table.is_some() || all)
+            && command != CommandKind::ExportPostgres
+            && command != CommandKind::SyncPostgres
+        {
             return Err(
-                "--schema, --table, and --all are only supported for dbstate export postgres"
+                "--schema, --table, and --all are only supported for dbstate export postgres and dbstate sync postgres"
                     .to_string(),
             );
         }
@@ -463,7 +511,7 @@ impl ParsedArgs {
 }
 
 fn usage() -> String {
-    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]".to_string()
+    "Usage:\n  dbstate repo status [--format json]\n  dbstate init [--dry-run] [--format json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json]".to_string()
 }
 
 pub fn status_report(cwd: &Path, command: CommandKind) -> ProjectReport {
@@ -778,7 +826,7 @@ impl ExportSelection {
             + if table.is_some() { 1 } else { 0 };
         if selected == 0 {
             return Err(
-                "Export selection is required. Provide --schema, --table, or --all.".to_string(),
+                "Selection is required. Provide --schema, --table, or --all.".to_string(),
             );
         }
         if selected > 1 {
@@ -1139,6 +1187,296 @@ pub fn render_table_sql(schema: &str, table: &str, columns: &[ColumnInfo]) -> St
     sql
 }
 
+fn sync_postgres_command(cwd: &Path, parsed: ParsedArgs) -> SyncReport {
+    let mut report = empty_sync_report(parsed.dry_run);
+    let selection = match ExportSelection::from_options(
+        parsed.all,
+        parsed.schema.clone(),
+        parsed.table.clone(),
+    ) {
+        Ok(selection) => selection,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+
+    report.sync_scope = selection.scope_name();
+    report.selected_schemas = selection.selected_schemas();
+    report.selected_tables = selection.selected_tables();
+
+    let Some(connection_url) =
+        resolve_postgres_url(parsed.url, env::var("DBSTATE_POSTGRES_URL").ok())
+    else {
+        report.errors.push(
+            "Missing PostgreSQL connection URL. Provide --url or DBSTATE_POSTGRES_URL.".to_string(),
+        );
+        return report;
+    };
+
+    match inspect_postgres(&connection_url) {
+        Ok(inventory) => sync_postgres_with_inventory(cwd, &inventory, &selection, parsed.dry_run),
+        Err(error) => {
+            report.errors.push(redact_message(&error, &connection_url));
+            report
+        }
+    }
+}
+
+pub fn sync_postgres_with_inventory(
+    cwd: &Path,
+    inventory: &PostgresInventory,
+    selection: &ExportSelection,
+    dry_run: bool,
+) -> SyncReport {
+    let mut report = empty_sync_report(dry_run);
+    report.sync_scope = selection.scope_name();
+    report.selected_schemas = selection.selected_schemas();
+    report.selected_tables = selection.selected_tables();
+
+    let project = status_report(cwd, CommandKind::SyncPostgres);
+    if !project.is_git_repository {
+        report
+            .errors
+            .push("Current path is not inside a Git repository.".to_string());
+        return report;
+    }
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+        report.errors.push(
+            "DbState PostgreSQL project structure is incomplete. Run dbstate init first."
+                .to_string(),
+        );
+        return report;
+    }
+    if project.is_dirty && !dry_run {
+        report.errors.push(
+            "Synchronization is blocked because the working tree has changes. Commit/stash changes or use --dry-run."
+                .to_string(),
+        );
+        return report;
+    }
+
+    let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
+    let plan = match plan_sync(&root, inventory, selection) {
+        Ok(plan) => plan,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+
+    report.added_files = plan.added_files.clone();
+    report.changed_files = plan.changed_files.clone();
+    report.unchanged_files = plan.unchanged_files.clone();
+    report.skipped_files = plan.skipped_files.clone();
+    report.planned_creates = plan.planned_creates.clone();
+    report.planned_updates = plan.planned_updates.clone();
+    report.warnings = plan.warnings.clone();
+
+    if dry_run {
+        report.success = report.errors.is_empty();
+        return report;
+    }
+
+    for write in plan.writes {
+        let target = root.join(&write.relative_path);
+        if let Some(parent) = target.parent() {
+            if let Err(error) = fs::create_dir_all(parent) {
+                report.errors.push(format!(
+                    "Could not create parent directory for {}: {error}",
+                    write.relative_path
+                ));
+                continue;
+            }
+        }
+        if let Err(error) = fs::write(&target, write.content) {
+            report
+                .errors
+                .push(format!("Could not write {}: {error}", write.relative_path));
+            continue;
+        }
+        match write.action {
+            SyncWriteAction::Create => report.created_files.push(write.relative_path),
+            SyncWriteAction::Update => report.updated_files.push(write.relative_path),
+        }
+    }
+
+    report.success = report.errors.is_empty();
+    report
+}
+
+#[derive(Debug, Clone)]
+struct SyncPlan {
+    added_files: Vec<String>,
+    changed_files: Vec<String>,
+    unchanged_files: Vec<String>,
+    skipped_files: Vec<String>,
+    planned_creates: Vec<String>,
+    planned_updates: Vec<String>,
+    warnings: Vec<String>,
+    writes: Vec<SyncWrite>,
+}
+
+#[derive(Debug, Clone)]
+struct SyncWrite {
+    relative_path: String,
+    content: String,
+    action: SyncWriteAction,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SyncWriteAction {
+    Create,
+    Update,
+}
+
+fn plan_sync(
+    root: &Path,
+    inventory: &PostgresInventory,
+    selection: &ExportSelection,
+) -> Result<SyncPlan, String> {
+    let mut schema_names = Vec::new();
+    let mut table_names = Vec::new();
+    let mut warnings = Vec::new();
+    let mut skipped_files = Vec::new();
+
+    match selection {
+        ExportSelection::All => {
+            schema_names.extend(inventory.schemas.iter().map(|schema| schema.name.clone()));
+            for table in &inventory.tables {
+                if table.table_type == "BASE TABLE" {
+                    table_names.push((table.schema_name.clone(), table.table_name.clone()));
+                } else {
+                    skipped_files.push(table_file_path(&table.schema_name, &table.table_name)?);
+                }
+            }
+        }
+        ExportSelection::Schema(schema) => {
+            if !inventory
+                .schemas
+                .iter()
+                .any(|candidate| candidate.name == *schema)
+            {
+                return Err(format!(
+                    "Selected schema '{schema}' was not found in the PostgreSQL inventory."
+                ));
+            }
+            schema_names.push(schema.clone());
+            for table in inventory.tables.iter().filter(|table| table.schema_name == *schema) {
+                if table.table_type == "BASE TABLE" {
+                    table_names.push((table.schema_name.clone(), table.table_name.clone()));
+                } else {
+                    skipped_files.push(table_file_path(&table.schema_name, &table.table_name)?);
+                }
+            }
+        }
+        ExportSelection::Table { schema, table } => {
+            let Some(selected_table) = inventory.tables.iter().find(|candidate| {
+                candidate.schema_name == *schema && candidate.table_name == *table
+            }) else {
+                return Err(format!(
+                    "Selected table '{schema}.{table}' was not found in the PostgreSQL inventory."
+                ));
+            };
+            if selected_table.table_type != "BASE TABLE" {
+                return Err(format!(
+                    "Selected table '{schema}.{table}' is not an ordinary/base table and is deferred for Slice 4."
+                ));
+            }
+            table_names.push((schema.clone(), table.clone()));
+            let schema_path = schema_file_path(schema)?;
+            if !root.join(&schema_path).is_file() {
+                warnings.push(format!(
+                    "Selected table '{schema}.{table}' has missing local schema file {schema_path}."
+                ));
+            }
+        }
+    }
+
+    schema_names.sort();
+    schema_names.dedup();
+    table_names.sort();
+    table_names.dedup();
+    skipped_files.sort();
+    skipped_files.dedup();
+
+    let mut plan = SyncPlan {
+        added_files: Vec::new(),
+        changed_files: Vec::new(),
+        unchanged_files: Vec::new(),
+        skipped_files,
+        planned_creates: Vec::new(),
+        planned_updates: Vec::new(),
+        warnings,
+        writes: Vec::new(),
+    };
+
+    for schema in schema_names {
+        let relative_path = schema_file_path(&schema)?;
+        ensure_database_object_path(&relative_path)?;
+        classify_sync_file(
+            root,
+            &relative_path,
+            render_schema_sql(&schema),
+            &mut plan,
+        )?;
+    }
+
+    for (schema, table) in table_names {
+        let relative_path = table_file_path(&schema, &table)?;
+        ensure_database_object_path(&relative_path)?;
+        let columns: Vec<ColumnInfo> = inventory
+            .columns
+            .iter()
+            .filter(|column| column.schema_name == schema && column.table_name == table)
+            .cloned()
+            .collect();
+        classify_sync_file(
+            root,
+            &relative_path,
+            render_table_sql(&schema, &table, &columns),
+            &mut plan,
+        )?;
+    }
+
+    Ok(plan)
+}
+
+fn classify_sync_file(
+    root: &Path,
+    relative_path: &str,
+    content: String,
+    plan: &mut SyncPlan,
+) -> Result<(), String> {
+    ensure_database_object_path(relative_path)?;
+    let target = root.join(relative_path);
+    if !target.exists() {
+        plan.added_files.push(relative_path.to_string());
+        plan.planned_creates.push(relative_path.to_string());
+        plan.writes.push(SyncWrite {
+            relative_path: relative_path.to_string(),
+            content,
+            action: SyncWriteAction::Create,
+        });
+        return Ok(());
+    }
+
+    let existing = fs::read_to_string(&target)
+        .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+    if existing == content {
+        plan.unchanged_files.push(relative_path.to_string());
+    } else {
+        plan.changed_files.push(relative_path.to_string());
+        plan.planned_updates.push(relative_path.to_string());
+        plan.writes.push(SyncWrite {
+            relative_path: relative_path.to_string(),
+            content,
+            action: SyncWriteAction::Update,
+        });
+    }
+    Ok(())
+}
+
 fn empty_inspection_report(command: CommandKind) -> InspectionReport {
     InspectionReport {
         command,
@@ -1178,6 +1516,32 @@ fn empty_export_report(dry_run: bool) -> ExportReport {
         planned_files: Vec::new(),
         created_files: Vec::new(),
         skipped_files: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        deferred_object_types: DEFERRED_OBJECT_TYPES
+            .iter()
+            .map(|value| value.to_string())
+            .collect(),
+    }
+}
+
+fn empty_sync_report(dry_run: bool) -> SyncReport {
+    SyncReport {
+        command: CommandKind::SyncPostgres,
+        success: false,
+        database_type: "postgresql".to_string(),
+        sync_scope: "<none>".to_string(),
+        dry_run,
+        selected_schemas: Vec::new(),
+        selected_tables: Vec::new(),
+        added_files: Vec::new(),
+        changed_files: Vec::new(),
+        unchanged_files: Vec::new(),
+        skipped_files: Vec::new(),
+        planned_creates: Vec::new(),
+        planned_updates: Vec::new(),
+        created_files: Vec::new(),
+        updated_files: Vec::new(),
         warnings: Vec::new(),
         errors: Vec::new(),
         deferred_object_types: DEFERRED_OBJECT_TYPES
@@ -1515,6 +1879,68 @@ impl ExportReport {
         );
         json.push('}');
         json
+    }
+}
+
+impl SyncReport {
+    pub fn to_text(&self) -> String {
+        let mut text = String::new();
+        writeln!(text, "Command: {}", self.command.as_str()).ok();
+        writeln!(text, "Success: {}", self.success).ok();
+        writeln!(text, "Database type: {}", self.database_type).ok();
+        writeln!(text, "Sync scope: {}", self.sync_scope).ok();
+        writeln!(text, "Dry run: {}", self.dry_run).ok();
+        write_path_list(&mut text, "Added files", &self.added_files);
+        write_path_list(&mut text, "Changed files", &self.changed_files);
+        write_path_list(&mut text, "Unchanged files", &self.unchanged_files);
+        write_path_list(&mut text, "Skipped files", &self.skipped_files);
+        write_path_list(&mut text, "Planned creates", &self.planned_creates);
+        write_path_list(&mut text, "Planned updates", &self.planned_updates);
+        write_path_list(&mut text, "Created files", &self.created_files);
+        write_path_list(&mut text, "Updated files", &self.updated_files);
+        for warning in &self.warnings {
+            writeln!(text, "Warning: {warning}").ok();
+        }
+        for error in &self.errors {
+            writeln!(text, "Error: {error}").ok();
+        }
+        text
+    }
+
+    pub fn to_json(&self) -> String {
+        let mut json = String::new();
+        json.push('{');
+        write_json_string_field(&mut json, "command", self.command.as_str(), true);
+        write_json_bool_field(&mut json, "success", self.success);
+        write_json_string_field(&mut json, "databaseType", &self.database_type, false);
+        write_json_string_field(&mut json, "syncScope", &self.sync_scope, false);
+        write_json_bool_field(&mut json, "dryRun", self.dry_run);
+        write_json_array_field(&mut json, "selectedSchemas", &self.selected_schemas);
+        write_json_array_field(&mut json, "selectedTables", &self.selected_tables);
+        write_json_array_field(&mut json, "addedFiles", &self.added_files);
+        write_json_array_field(&mut json, "changedFiles", &self.changed_files);
+        write_json_array_field(&mut json, "unchangedFiles", &self.unchanged_files);
+        write_json_array_field(&mut json, "skippedFiles", &self.skipped_files);
+        write_json_array_field(&mut json, "plannedCreates", &self.planned_creates);
+        write_json_array_field(&mut json, "plannedUpdates", &self.planned_updates);
+        write_json_array_field(&mut json, "createdFiles", &self.created_files);
+        write_json_array_field(&mut json, "updatedFiles", &self.updated_files);
+        write_json_array_field(&mut json, "warnings", &self.warnings);
+        write_json_array_field(&mut json, "errors", &self.errors);
+        write_json_array_field(
+            &mut json,
+            "deferredObjectTypes",
+            &self.deferred_object_types,
+        );
+        json.push('}');
+        json
+    }
+}
+
+fn write_path_list(text: &mut String, title: &str, paths: &[String]) {
+    writeln!(text, "{title}:").ok();
+    for path in paths {
+        writeln!(text, "  - {path}").ok();
     }
 }
 
@@ -2078,7 +2504,7 @@ mod tests {
     #[test]
     fn missing_export_selection_returns_clear_error() {
         let error = ExportSelection::from_options(false, None, None).expect_err("selection error");
-        assert!(error.contains("Export selection is required"));
+        assert!(error.contains("Selection is required"));
     }
 
     #[test]
@@ -2283,6 +2709,196 @@ mod tests {
     }
 
     #[test]
+    fn sync_dry_run_creates_or_updates_no_files() {
+        let dir = create_temp_dir("sync-dry-run");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let report =
+            sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, true);
+
+        assert!(report.success);
+        assert!(report
+            .planned_creates
+            .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+        assert!(report.created_files.is_empty());
+        assert!(report.updated_files.is_empty());
+        assert!(!dir
+            .join("database/objects/schemas/dbstate_slice2.sql")
+            .exists());
+    }
+
+    #[test]
+    fn sync_requires_git_repository_and_dbstate_structure() {
+        let non_git = create_temp_dir("sync-non-git");
+        let report = sync_postgres_with_inventory(
+            &non_git,
+            &sample_inventory(),
+            &ExportSelection::All,
+            false,
+        );
+        assert!(!report.success);
+        assert!(report.errors[0].contains("not inside a Git repository"));
+
+        let no_structure = create_temp_dir("sync-no-structure");
+        init_git_repo(&no_structure);
+        let report = sync_postgres_with_inventory(
+            &no_structure,
+            &sample_inventory(),
+            &ExportSelection::All,
+            false,
+        );
+        assert!(!report.success);
+        assert!(report.errors[0].contains("Run dbstate init first"));
+    }
+
+    #[test]
+    fn sync_write_is_blocked_when_working_tree_is_dirty() {
+        let dir = create_temp_dir("sync-dirty");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+        fs::write(dir.join("dirty.txt"), "dirty").expect("write dirty file");
+
+        let report =
+            sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
+
+        assert!(!report.success);
+        assert!(report.errors[0].contains("working tree has changes"));
+        assert!(report.created_files.is_empty());
+        assert!(report.updated_files.is_empty());
+    }
+
+    #[test]
+    fn sync_creates_added_object_files() {
+        let dir = create_temp_dir("sync-create");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let report =
+            sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
+
+        assert!(report.success);
+        assert!(report
+            .created_files
+            .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+        assert!(report
+            .created_files
+            .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    }
+
+    #[test]
+    fn sync_updates_changed_object_files() {
+        let dir = create_temp_dir("sync-update");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        let table_path = dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql");
+        fs::write(&table_path, "-- stale table definition\n").expect("write stale table file");
+        commit_all(&dir, "stale table");
+
+        let report = sync_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::Table {
+                schema: "dbstate_slice2".to_string(),
+                table: "sample_accounts".to_string(),
+            },
+            false,
+        );
+
+        assert!(report.success);
+        assert!(report
+            .updated_files
+            .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+        assert_eq!(
+            fs::read_to_string(table_path).expect("read updated table"),
+            render_table_sql("dbstate_slice2", "sample_accounts", &sample_inventory().columns)
+        );
+    }
+
+    #[test]
+    fn sync_leaves_unchanged_files_untouched() {
+        let dir = create_temp_dir("sync-unchanged");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        let schema_path = dir.join("database/objects/schemas/dbstate_slice2.sql");
+        fs::write(&schema_path, render_schema_sql("dbstate_slice2")).expect("write schema file");
+        commit_all(&dir, "schema file");
+
+        let report = sync_postgres_with_inventory(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::Schema("dbstate_slice2".to_string()),
+            true,
+        );
+
+        assert!(report.success);
+        assert!(report
+            .unchanged_files
+            .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+    }
+
+    #[test]
+    fn sync_never_writes_under_releases() {
+        let dir = create_temp_dir("sync-no-releases");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let report =
+            sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
+
+        assert!(report.success);
+        assert!(report
+            .created_files
+            .iter()
+            .all(|path| path.starts_with("database/objects/")));
+        assert!(fs::read_dir(dir.join("database/releases"))
+            .expect("read releases")
+            .next()
+            .is_none());
+    }
+
+    #[test]
+    fn sync_json_includes_expected_fields_and_no_secrets() {
+        let dir = create_temp_dir("sync-json");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let report =
+            sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, true);
+        let json = report.to_json();
+
+        for field in [
+            "\"command\"",
+            "\"success\"",
+            "\"databaseType\"",
+            "\"syncScope\"",
+            "\"dryRun\"",
+            "\"selectedSchemas\"",
+            "\"selectedTables\"",
+            "\"addedFiles\"",
+            "\"changedFiles\"",
+            "\"unchangedFiles\"",
+            "\"skippedFiles\"",
+            "\"plannedCreates\"",
+            "\"plannedUpdates\"",
+            "\"createdFiles\"",
+            "\"updatedFiles\"",
+            "\"warnings\"",
+            "\"errors\"",
+            "\"deferredObjectTypes\"",
+        ] {
+            assert!(json.contains(field), "missing JSON field {field}");
+        }
+        assert!(!json.contains("postgres://"));
+        assert!(!json.contains("sensitive-marker"));
+    }
+
+    #[test]
     fn cli_rejects_apply_and_database_mutation_commands() {
         let invalid_commands = [
             vec!["apply".to_string()],
@@ -2299,6 +2915,12 @@ mod tests {
         assert!(ParsedArgs::parse(&["inspect".to_string(), "postgres".to_string()]).is_ok());
         assert!(ParsedArgs::parse(&[
             "export".to_string(),
+            "postgres".to_string(),
+            "--all".to_string()
+        ])
+        .is_ok());
+        assert!(ParsedArgs::parse(&[
+            "sync".to_string(),
             "postgres".to_string(),
             "--all".to_string()
         ])

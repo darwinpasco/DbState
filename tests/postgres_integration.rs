@@ -3,7 +3,8 @@ use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use dbstate::{
-    export_postgres_with_inventory, inspect_postgres, inspect_postgres_command, ExportSelection,
+    export_postgres_with_inventory, inspect_postgres, inspect_postgres_command, render_schema_sql,
+    render_table_sql, sync_postgres_with_inventory, ExportSelection,
 };
 use postgres::{Client, NoTls};
 
@@ -160,6 +161,112 @@ fn local_postgres_fixture_export_plans_and_writes_expected_files() {
     assert!(table_file.contains("CREATE TABLE \"dbstate_slice2\".\"sample_accounts\""));
     assert!(!schema_file.contains(&url));
     assert!(!table_file.contains(&url));
+}
+
+#[test]
+fn local_postgres_fixture_sync_plans_creates_updates_and_unchanged_files() {
+    let Some(url) = std::env::var("DBSTATE_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping PostgreSQL integration test: DBSTATE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    assert_safe_test_url(&url);
+
+    let mut client =
+        Client::connect(&url, NoTls).expect("connect to local disposable test database");
+    client
+        .batch_execute(FIXTURE_SQL)
+        .expect("apply test-only fixture SQL");
+
+    let inventory = inspect_postgres(&url).expect("inspect local disposable PostgreSQL fixture");
+    let repo = disposable_git_repo();
+
+    let dry_run = sync_postgres_with_inventory(&repo, &inventory, &ExportSelection::All, true);
+    assert!(dry_run.success);
+    assert!(dry_run
+        .planned_creates
+        .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+    assert!(!repo
+        .join("database/objects/schemas/dbstate_slice2.sql")
+        .exists());
+
+    let create = sync_postgres_with_inventory(&repo, &inventory, &ExportSelection::All, false);
+    assert!(create.success);
+    assert!(create
+        .created_files
+        .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+    assert!(create
+        .created_files
+        .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "synced files",
+        ],
+    );
+
+    let unchanged = sync_postgres_with_inventory(&repo, &inventory, &ExportSelection::All, true);
+    assert!(unchanged.success);
+    assert!(unchanged
+        .unchanged_files
+        .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+
+    let table_path = repo.join("database/objects/tables/dbstate_slice2.sample_accounts.sql");
+    std::fs::write(&table_path, "-- changed locally\n").expect("write changed table");
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "local table change",
+        ],
+    );
+
+    let update = sync_postgres_with_inventory(
+        &repo,
+        &inventory,
+        &ExportSelection::Table {
+            schema: "dbstate_slice2".to_string(),
+            table: "sample_accounts".to_string(),
+        },
+        false,
+    );
+    assert!(update.success);
+    assert!(update
+        .updated_files
+        .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert_eq!(
+        std::fs::read_to_string(table_path).expect("read updated table"),
+        render_table_sql(
+            "dbstate_slice2",
+            "sample_accounts",
+            &inventory
+                .columns
+                .iter()
+                .filter(|column| {
+                    column.schema_name == "dbstate_slice2"
+                        && column.table_name == "sample_accounts"
+                })
+                .cloned()
+                .collect::<Vec<_>>()
+        )
+    );
+    assert!(!render_schema_sql("dbstate_slice2").contains(&url));
 }
 
 fn assert_safe_test_url(url: &str) {
