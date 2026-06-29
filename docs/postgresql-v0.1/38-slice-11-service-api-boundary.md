@@ -60,7 +60,18 @@ Not exposed:
 
 Requests use JSON bodies for `POST` endpoints.
 
-Repository path switching is not supported in Slice 11. Start the service from the repository root. If `repositoryPath` is provided, the request is rejected.
+Slice 11 originally used the service process working directory only. Slice 13 adds an optional session-only `repositoryPath` field for safe service endpoints:
+
+```json
+{
+  "repositoryPath": "D:/work/example",
+  "scope": "all"
+}
+```
+
+If `repositoryPath` is omitted or empty, the service uses its current working directory. If it is provided, it must be a local directory that exists and is inside a Git working tree. DbState canonicalizes it before use, does not persist it, does not keep a recent-project list, and does not clone, fetch, pull, push, stage, or commit repositories from service endpoints.
+
+URL-like values such as `https://example.com/repo.git`, `ssh://...`, `git@...`, or `postgres://...` are rejected as repository paths.
 
 PostgreSQL endpoints may use `postgresUrl` for the current request only:
 
@@ -160,6 +171,8 @@ Repository-bound responses include repository context when available:
   "isDirty": false
 }
 ```
+
+When `repositoryPath` is supplied, responses report the normalized local repository context for that selected workspace. The repo status endpoint can report Git status even when the DbState project structure is incomplete. Project operations return a clear project-structure error when the selected Git repository has not been initialized with `dbstate init`.
 
 PostgreSQL responses include:
 

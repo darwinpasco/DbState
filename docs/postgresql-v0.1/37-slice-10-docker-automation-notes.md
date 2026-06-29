@@ -74,6 +74,16 @@ docker run --rm `
   dbstate init --dry-run --format json
 ```
 
+## Workspace Path Selection In Service Mode
+
+After Slice 13, the Service API and browser UI can accept a session-only `repositoryPath` field. In Docker, that path must be a path inside the container, not the host path. If the host repository is mounted at `/workspace`, use:
+
+```text
+/workspace
+```
+
+Additional host repositories must be mounted explicitly. The service cannot access arbitrary host paths that were not mounted into the container. DbState does not persist workspace paths, maintain a recent-project list, clone repositories, fetch, pull, push, stage, or commit from service endpoints.
+
 ## PostgreSQL Connection URL
 
 Use the session-only `DBSTATE_POSTGRES_URL` environment variable. Do not bake credentials into the image or commit them to the repository.
