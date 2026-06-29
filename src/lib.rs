@@ -675,6 +675,15 @@ const UI_HTML: &str = r#"<!doctype html>
         <dl id="repo-summary"></dl>
       </article>
 
+      <article class="panel workspace-panel">
+        <h2>Workspace</h2>
+        <label for="workspace-path">Local repository path</label>
+        <input id="workspace-path" type="text" autocomplete="off" spellcheck="false" placeholder="Leave empty to use the service working directory">
+        <p>Session-only. DbState does not clone, fetch, or persist workspace paths. The service must already have filesystem access.</p>
+        <button type="button" data-action="workspace-status">Check Workspace</button>
+        <dl id="workspace-summary"></dl>
+      </article>
+
       <article class="panel">
         <h2>Init Plan</h2>
         <p>Dry-run only. The UI does not initialize or write project files.</p>
@@ -977,6 +986,18 @@ const UI_JS: &str = r#"(function () {
     return value("postgres-url");
   }
 
+  function workspacePath() {
+    return value("workspace-path");
+  }
+
+  function attachWorkspacePath(body) {
+    const path = workspacePath();
+    if (path) {
+      body.repositoryPath = path;
+    }
+    return body;
+  }
+
   function commaList(raw) {
     return raw.split(",").map(function (item) {
       return item.trim();
@@ -1080,8 +1101,12 @@ const UI_JS: &str = r#"(function () {
         updateSummary(summaryId, {
           success: data.success,
           status: data.httpStatus,
+          repository: data.repositoryPath || "",
+          gitRoot: data.gitRoot || "",
           branch: data.branch || "",
           tree: data.workingTreeStatus || "",
+          project: data.dbstateProjectStatus || "",
+          missingPaths: Array.isArray(data.missingPaths) ? data.missingPaths.length : 0,
           warnings: Array.isArray(data.warnings) ? data.warnings.length : 0,
           errors: Array.isArray(data.errors) ? data.errors.length : 0
         });
@@ -1104,23 +1129,27 @@ const UI_JS: &str = r#"(function () {
   });
 
   document.querySelector("[data-action='repo-status']").addEventListener("click", function () {
-    run("Repository status", approvedEndpoints.repoStatus, {}, "repo-summary");
+    run("Repository status", approvedEndpoints.repoStatus, attachWorkspacePath({}), "repo-summary");
+  });
+
+  document.querySelector("[data-action='workspace-status']").addEventListener("click", function () {
+    run("Workspace status", approvedEndpoints.repoStatus, attachWorkspacePath({}), "workspace-summary");
   });
 
   document.querySelector("[data-action='init-plan']").addEventListener("click", function () {
-    run("Init plan", approvedEndpoints.initPlan, { dryRun: true }, "init-summary");
+    run("Init plan", approvedEndpoints.initPlan, attachWorkspacePath({ dryRun: true }), "init-summary");
   });
 
   document.querySelector("[data-action='inspect']").addEventListener("click", function () {
-    run("Inspect", approvedEndpoints.inspect, attachPostgresUrl(buildScope("inspect")));
+    run("Inspect", approvedEndpoints.inspect, attachWorkspacePath(attachPostgresUrl(buildScope("inspect"))));
   });
 
   document.querySelector("[data-action='compare']").addEventListener("click", function () {
-    run("Compare", approvedEndpoints.compare, attachPostgresUrl(buildScope("compare")));
+    run("Compare", approvedEndpoints.compare, attachWorkspacePath(attachPostgresUrl(buildScope("compare"))));
   });
 
   document.querySelector("[data-action='plan']").addEventListener("click", function () {
-    const body = attachPostgresUrl(buildScope("plan"));
+    const body = attachWorkspacePath(attachPostgresUrl(buildScope("plan")));
     body.include = commaList(value("plan-include"));
     body.exclude = commaList(value("plan-exclude"));
     run("Plan", approvedEndpoints.plan, body);
@@ -1137,7 +1166,7 @@ const UI_JS: &str = r#"(function () {
       }
       body.table = table;
     }
-    run("Reference-data compare", approvedEndpoints.dataCompare, attachPostgresUrl(body));
+    run("Reference-data compare", approvedEndpoints.dataCompare, attachWorkspacePath(attachPostgresUrl(body)));
   });
 
   run("Health", approvedEndpoints.health, null, "health-summary");
@@ -1488,6 +1517,10 @@ fn service_init_plan_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
     if let Err(error) = validate_service_request_is_safe(&request) {
         return service_error_response(400, "init plan", &error);
     }
+    let workspace = match resolve_service_workspace(&request, cwd) {
+        Ok(workspace) => workspace,
+        Err(error) => return service_error_response(400, "init plan", &error),
+    };
     if matches!(request_bool(&request, "dryRun"), Some(false)) {
         return service_error_response(
             400,
@@ -1501,7 +1534,7 @@ fn service_init_plan_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
         "--format".to_string(),
         "json".to_string(),
     ];
-    service_run_cli("init plan", cwd, args)
+    service_run_cli("init plan", &workspace, args)
 }
 
 fn service_cli_endpoint(
@@ -1517,9 +1550,13 @@ fn service_cli_endpoint(
     if let Err(error) = validate_service_request_is_safe(&request) {
         return service_error_response(400, command, &error);
     }
+    let workspace = match resolve_service_workspace(&request, cwd) {
+        Ok(workspace) => workspace,
+        Err(error) => return service_error_response(400, command, &error),
+    };
     let mut args: Vec<String> = base_args.iter().map(|value| (*value).to_string()).collect();
     args.extend(["--format".to_string(), "json".to_string()]);
-    service_run_cli(command, cwd, args)
+    service_run_cli(command, &workspace, args)
 }
 
 fn service_postgres_endpoint(
@@ -1537,6 +1574,10 @@ fn service_postgres_endpoint(
     if let Err(error) = validate_service_request_is_safe(&request) {
         return service_error_response(400, command, &error);
     }
+    let workspace = match resolve_service_workspace(&request, cwd) {
+        Ok(workspace) => workspace,
+        Err(error) => return service_error_response(400, command, &error),
+    };
 
     let mut args: Vec<String> = base_args.iter().map(|value| (*value).to_string()).collect();
     if let Some(url) = request_string(&request, "postgresUrl") {
@@ -1559,7 +1600,7 @@ fn service_postgres_endpoint(
     }
 
     args.extend(["--format".to_string(), "json".to_string()]);
-    service_run_cli(command, cwd, args)
+    service_run_cli(command, &workspace, args)
 }
 
 fn service_run_cli(command: &str, cwd: &Path, args: Vec<String>) -> ServiceHttpResponse {
@@ -1603,15 +1644,53 @@ fn parse_service_request(body: &str) -> Result<Value, String> {
 }
 
 fn validate_service_request_is_safe(request: &Value) -> Result<(), String> {
-    if request_has_key(request, "repositoryPath") {
-        return Err("repositoryPath is not supported by the Slice 11 service API. Start the service from the repository root.".to_string());
-    }
     for key in ["write", "apply", "execute", "directApply", "mutateDatabase"] {
         if matches!(request_bool(request, key), Some(true)) {
             return Err("Slice 11 service endpoints are read-only or plan-only and do not support write, apply, execute, or database mutation requests.".to_string());
         }
     }
     Ok(())
+}
+
+fn resolve_service_workspace(request: &Value, fallback: &Path) -> Result<PathBuf, String> {
+    let Some(repository_path) = request_string(request, "repositoryPath") else {
+        return Ok(fallback.to_path_buf());
+    };
+    let trimmed = repository_path.trim();
+    if trimmed.is_empty() {
+        return Ok(fallback.to_path_buf());
+    }
+    validate_repository_path_value(trimmed)
+}
+
+fn validate_repository_path_value(value: &str) -> Result<PathBuf, String> {
+    if value.contains('\0') {
+        return Err("repositoryPath contains an invalid null byte.".to_string());
+    }
+    if is_url_like_repository_path(value) {
+        return Err("repositoryPath must be a local filesystem path, not a URL or remote repository reference.".to_string());
+    }
+
+    let path = PathBuf::from(value);
+    let canonical = fs::canonicalize(&path)
+        .map_err(|_| "repositoryPath does not exist or cannot be accessed.".to_string())?;
+    if !canonical.is_dir() {
+        return Err("repositoryPath must point to a directory.".to_string());
+    }
+    if git_root(&canonical).is_none() {
+        return Err("repositoryPath must be inside a local Git working tree.".to_string());
+    }
+    Ok(canonical)
+}
+
+fn is_url_like_repository_path(value: &str) -> bool {
+    let lower = value.trim().to_ascii_lowercase();
+    lower.starts_with("http://")
+        || lower.starts_with("https://")
+        || lower.starts_with("ssh://")
+        || lower.starts_with("postgres://")
+        || lower.starts_with("postgresql://")
+        || lower.starts_with("git@")
 }
 
 fn service_scope_args(
@@ -1672,10 +1751,6 @@ fn service_scope_args(
     } else {
         Ok(Vec::new())
     }
-}
-
-fn request_has_key(request: &Value, key: &str) -> bool {
-    mapping_get(request, key).is_some()
 }
 
 fn request_string(request: &Value, key: &str) -> Option<String> {
@@ -8762,6 +8837,10 @@ rows:
         assert!(html.contains("PostgreSQL Compare"));
         assert!(html.contains("PostgreSQL Plan"));
         assert!(html.contains("Reference-data Compare"));
+        assert!(html.contains("Workspace"));
+        assert!(html.contains("workspace-path"));
+        assert!(html.contains("Session-only"));
+        assert!(html.contains("does not clone, fetch, or persist workspace paths"));
         assert!(html.contains("Raw JSON"));
         assert!(!html.contains("http://"));
         assert!(!html.contains("https://"));
@@ -8801,12 +8880,176 @@ rows:
             "execute generated SQL",
             "directApply",
             "mutateDatabase",
+            "clone",
+            "git fetch",
+            "git pull",
+            "git push",
+            "git add",
+            "git commit",
         ] {
             assert!(
                 !js.contains(forbidden),
                 "UI JavaScript contains forbidden pattern {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn slice13_valid_repository_path_is_accepted_by_service() {
+        let fallback = create_temp_dir("slice13-fallback");
+        let selected = create_temp_dir("slice13-selected");
+        init_git_repo(&selected);
+        create_complete_structure(&selected);
+        commit_all(&selected, "complete structure");
+        let body = format!(r#"{{ "repositoryPath": "{}" }}"#, display_path(&selected));
+
+        let response = service_response("POST", "/api/v1/repo/status", &body, &fallback);
+
+        assert_eq!(response.status_code, 200);
+        assert_common_json_contract(&response.body);
+        assert_repository_json_contract(&response.body);
+        assert!(response.body.contains(&escape_json(&display_path(
+            &selected.canonicalize().unwrap()
+        ))));
+        assert!(response
+            .body
+            .contains("\"dbstateProjectStatus\":\"completeDbStateStructure\""));
+    }
+
+    #[test]
+    fn slice13_missing_or_empty_repository_path_falls_back_to_service_cwd() {
+        let fallback = create_temp_dir("slice13-service-cwd");
+        init_git_repo(&fallback);
+        create_complete_structure(&fallback);
+        commit_all(&fallback, "complete structure");
+
+        let omitted = service_response("POST", "/api/v1/repo/status", "{}", &fallback);
+        let empty = service_response(
+            "POST",
+            "/api/v1/repo/status",
+            r#"{ "repositoryPath": "   " }"#,
+            &fallback,
+        );
+
+        assert_eq!(omitted.status_code, 200);
+        assert_eq!(empty.status_code, 200);
+        assert!(omitted
+            .body
+            .contains(&escape_json(&display_path(&fallback))));
+        assert!(empty.body.contains(&escape_json(&display_path(&fallback))));
+    }
+
+    #[test]
+    fn slice13_invalid_repository_paths_are_rejected() {
+        let fallback = create_temp_dir("slice13-invalid-paths");
+        init_git_repo(&fallback);
+        let file_path = fallback.join("not-a-directory.txt");
+        fs::write(&file_path, "not a directory").expect("write test file");
+        let nonexistent = fallback.join("missing");
+
+        for (body, expected) in [
+            (
+                format!(
+                    r#"{{ "repositoryPath": "{}" }}"#,
+                    display_path(&nonexistent)
+                ),
+                "does not exist",
+            ),
+            (
+                format!(r#"{{ "repositoryPath": "{}" }}"#, display_path(&file_path)),
+                "must point to a directory",
+            ),
+            (
+                r#"{ "repositoryPath": "https://example.com/repo.git" }"#.to_string(),
+                "local filesystem path",
+            ),
+            (
+                r#"{ "repositoryPath": "git@example.com:repo.git" }"#.to_string(),
+                "local filesystem path",
+            ),
+        ] {
+            let response = service_response("POST", "/api/v1/repo/status", &body, &fallback);
+            assert_eq!(response.status_code, 400);
+            assert!(
+                response.body.contains(expected),
+                "response was {}",
+                response.body
+            );
+        }
+    }
+
+    #[test]
+    fn slice13_non_git_directory_is_rejected_as_workspace() {
+        let fallback = create_temp_dir("slice13-fallback-git");
+        init_git_repo(&fallback);
+        let non_git = create_temp_dir("slice13-non-git");
+        let body = format!(r#"{{ "repositoryPath": "{}" }}"#, display_path(&non_git));
+
+        let response = service_response("POST", "/api/v1/repo/status", &body, &fallback);
+
+        assert_eq!(response.status_code, 400);
+        assert!(response.body.contains("Git working tree"));
+    }
+
+    #[test]
+    fn slice13_git_without_dbstate_structure_returns_useful_status() {
+        let fallback = create_temp_dir("slice13-fallback-status");
+        init_git_repo(&fallback);
+        let selected = create_temp_dir("slice13-git-no-structure");
+        init_git_repo(&selected);
+        let body = format!(r#"{{ "repositoryPath": "{}" }}"#, display_path(&selected));
+
+        let response = service_response("POST", "/api/v1/repo/status", &body, &fallback);
+
+        assert_eq!(response.status_code, 200);
+        assert!(response
+            .body
+            .contains("\"dbstateProjectStatus\":\"gitRepositoryWithoutDbStateStructure\""));
+        assert!(response.body.contains("\"missingPaths\""));
+    }
+
+    #[test]
+    fn slice13_project_operations_use_selected_repository_path() {
+        let fallback = create_temp_dir("slice13-fallback-operation");
+        init_git_repo(&fallback);
+        create_complete_structure(&fallback);
+        commit_all(&fallback, "fallback structure");
+
+        let selected = create_temp_dir("slice13-selected-operation");
+        init_git_repo(&selected);
+        create_complete_structure(&selected);
+        commit_all(&selected, "selected structure");
+        let body = format!(
+            r#"{{ "repositoryPath": "{}", "dryRun": true }}"#,
+            display_path(&selected)
+        );
+
+        let response = service_response("POST", "/api/v1/init/plan", &body, &fallback);
+
+        assert_eq!(response.status_code, 200);
+        assert!(response.body.contains(&escape_json(&display_path(
+            &selected.canonicalize().unwrap()
+        ))));
+        assert!(!response
+            .body
+            .contains(&escape_json(&display_path(&fallback))));
+    }
+
+    #[test]
+    fn slice13_ui_javascript_includes_repository_path_without_persistence() {
+        let js = ui_js();
+
+        assert!(js.contains("repositoryPath"));
+        assert!(js.contains("workspace-path"));
+        assert!(js.contains("attachWorkspacePath"));
+        assert!(!js.contains("localStorage"));
+        assert!(!js.contains("sessionStorage"));
+        assert!(!js.contains("clone"));
+        assert!(!js.contains("git fetch"));
+        assert!(!js.contains("git pull"));
+        assert!(!js.contains("git push"));
+        assert!(!js.contains("git add"));
+        assert!(!js.contains("git commit"));
     }
 
     #[test]
@@ -8883,14 +9126,14 @@ rows:
         assert_eq!(write_request.status_code, 400);
         assert!(write_request.body.contains("read-only or plan-only"));
 
-        let repo_switch = service_response(
+        let remote_workspace = service_response(
             "POST",
             "/api/v1/repo/status",
-            r#"{ "repositoryPath": "D:/other/repo" }"#,
+            r#"{ "repositoryPath": "https://example.com/repo.git" }"#,
             &dir,
         );
-        assert_eq!(repo_switch.status_code, 400);
-        assert!(repo_switch.body.contains("repositoryPath is not supported"));
+        assert_eq!(remote_workspace.status_code, 400);
+        assert!(remote_workspace.body.contains("local filesystem path"));
     }
 
     #[test]

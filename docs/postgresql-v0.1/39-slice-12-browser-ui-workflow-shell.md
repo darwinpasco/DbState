@@ -54,6 +54,7 @@ The Slice 12 shell includes:
 - Safety banner for no SQL execution, no direct database apply, and no write workflows
 - Service health panel
 - Repository status panel
+- Workspace path panel
 - Init plan panel
 - PostgreSQL connection input panel
 - PostgreSQL inspect panel
@@ -63,6 +64,10 @@ The Slice 12 shell includes:
 - Raw JSON response viewer
 
 The UI is intentionally small. It is not the full DbState browser product.
+
+After Slice 13, the workspace path panel lets the user enter a session-only local repository path. The path is sent as `repositoryPath` to approved service endpoints when present. It is not stored in local storage, session storage, a URL query string, a project database, or a recent-project list.
+
+The selected path must already be accessible to the local service process. DbState does not clone, fetch, pull, push, stage, or commit repositories from the UI.
 
 ## Service Endpoints Used By The UI
 
@@ -88,6 +93,8 @@ The UI does not call or expose:
 - Generated SQL execution
 - Database mutation
 - Arbitrary SQL execution
+
+The UI also does not call repository clone, fetch, pull, push, stage, or commit operations.
 
 ## PostgreSQL URL Handling
 

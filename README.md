@@ -132,6 +132,7 @@ Current CLI scope:
 - Docker packaging is available for headless CLI automation against mounted repositories.
 - `dbstate serve` starts a minimal local-only HTTP JSON Service API boundary for selected read-only and plan-only operations.
 - The local service serves a minimal static browser UI workflow shell at `/` and `/ui`.
+- Service and UI workflows can use a session-only selected local repository path through `repositoryPath`.
 
 Current implementation limitations:
 
@@ -139,7 +140,7 @@ Current implementation limitations:
 - PostgreSQL access is read-only in product commands.
 - No command applies SQL to a database.
 
-See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, and `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md` for command details.
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md`, and `docs/postgresql-v0.1/40-slice-13-workspace-selection.md` for command details.
 
 ## Docker CLI Automation
 
@@ -197,6 +198,16 @@ http://127.0.0.1:4587/
 ```
 
 The Slice 12 UI is a static local workflow shell over the service API. It includes panels for health, repository status, init planning, PostgreSQL inspect, compare, plan, and configured reference-data compare. It has no frontend framework, no Node build pipeline, no write workflows, no SQL execution, and no direct database apply.
+
+## Workspace Selection
+
+Service and UI requests may include a session-only local repository path:
+
+```json
+{ "repositoryPath": "D:\\SourceCodes\\DbState" }
+```
+
+The path must exist, be a directory, and be inside a local Git working tree. DbState does not persist workspace paths, maintain a recent-project list, clone repositories, fetch, pull, push, stage, or commit from service endpoints. Docker users must enter a path inside the container, such as `/workspace`.
 
 ## High-level principles
 
