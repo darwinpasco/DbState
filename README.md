@@ -131,14 +131,15 @@ Current CLI scope:
 - CLI JSON output is hardened around common `command`, `success`, `warnings`, and `errors` fields, repository context where relevant, and redaction of connection details and masked values.
 - Docker packaging is available for headless CLI automation against mounted repositories.
 - `dbstate serve` starts a minimal local-only HTTP JSON Service API boundary for selected read-only and plan-only operations.
+- The local service serves a minimal static browser UI workflow shell at `/` and `/ui`.
 
 Current implementation limitations:
 
-- No SQL execution, direct target-database apply, reference-data DML generation, arbitrary transactional data compare, browser UI, service write endpoints, Docker Compose, CI workflow, MCP, or AI integration exists yet.
+- No SQL execution, direct target-database apply, reference-data DML generation, arbitrary transactional data compare, full browser UI product, service write endpoints, Docker Compose, CI workflow, MCP, or AI integration exists yet.
 - PostgreSQL access is read-only in product commands.
 - No command applies SQL to a database.
 
-See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, and `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md` for command details.
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, and `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md` for command details.
 
 ## Docker CLI Automation
 
@@ -182,6 +183,20 @@ Invoke-RestMethod http://127.0.0.1:4587/health
 ```
 
 Slice 11 service mode exposes selected JSON endpoints for status, init planning, PostgreSQL inspect, compare, plan, and configured reference-data compare. It does not include a browser UI, authentication, user accounts, write endpoints, SQL execution, or database apply. Do not expose it publicly.
+
+## Browser UI Shell
+
+Start the local service and open the UI:
+
+```powershell
+cargo run -- serve
+```
+
+```text
+http://127.0.0.1:4587/
+```
+
+The Slice 12 UI is a static local workflow shell over the service API. It includes panels for health, repository status, init planning, PostgreSQL inspect, compare, plan, and configured reference-data compare. It has no frontend framework, no Node build pipeline, no write workflows, no SQL execution, and no direct database apply.
 
 ## High-level principles
 

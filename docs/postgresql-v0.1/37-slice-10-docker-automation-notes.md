@@ -2,7 +2,7 @@
 
 Slice 10 adds Docker packaging for headless DbState PostgreSQL CLI automation.
 
-The Docker image runs the existing `dbstate` binary. In Slice 10 it was CLI-only. After Slice 11, the same image can also run the minimal local Service API boundary. It is not a browser UI, Docker Compose stack, CI workflow, MCP server, AI integration, Deployment Rehearsal, or deployment engine.
+The Docker image runs the existing `dbstate` binary. In Slice 10 it was CLI-only. After Slice 11, the same image can also run the minimal local Service API boundary. After Slice 12, service mode also serves the static local browser UI shell. It is not a full browser UI product, Docker Compose stack, CI workflow, MCP server, AI integration, Deployment Rehearsal, or deployment engine.
 
 Docker does not change DbState safety boundaries. DbState still does not execute generated SQL, apply database changes, mutate PostgreSQL, or hide deployment behavior.
 
@@ -182,7 +182,15 @@ docker run --rm \
   dbstate serve --host 0.0.0.0 --port 4587
 ```
 
-The published port should stay bound to `127.0.0.1` on the host. Do not expose the Slice 11 service publicly.
+The published port should stay bound to `127.0.0.1` on the host. Do not expose the local service publicly.
+
+Open the Slice 12 UI shell:
+
+```text
+http://127.0.0.1:4587/
+```
+
+The UI is static and served by the local service. It does not add write workflows, direct database apply, SQL execution, or database mutation behavior.
 
 ## Write Behavior
 
@@ -288,12 +296,12 @@ docker network rm dbstate-slice10-net
 
 ## Current Limitations
 
-- Docker packages the CLI and the minimal local Service API boundary.
-- No browser UI, hosted service mode, or multi-user server mode is included.
+- Docker packages the CLI, the minimal local Service API boundary, and the static browser UI shell.
+- No full browser UI product, hosted service mode, or multi-user server mode is included.
 - No Docker Compose file is provided.
 - No CI workflow is provided.
 - No Kubernetes deployment is provided.
 - No generated SQL is executed by DbState.
 - No direct database apply exists.
-- PostgreSQL object coverage remains limited to existing Slice 1 through Slice 11 behavior.
+- PostgreSQL object coverage remains limited to existing Slice 1 through Slice 12 behavior.
 - `--repo <path>` remains an open decision. Current behavior uses the mounted working directory.
