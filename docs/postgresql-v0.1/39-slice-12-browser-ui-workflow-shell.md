@@ -47,21 +47,22 @@ The UI is embedded in the Rust binary. There is no frontend build pipeline.
 
 ## UI Panels
 
-The Slice 12 shell includes:
+Slice 12 originally introduced a compact panel shell. Slice 13A refactors that shell into a schema compare workflow with left navigation and one active step at a time.
+
+The current shell includes:
 
 - Product title: `DbState PostgreSQL v0.1`
 - Local-only banner
 - Safety banner for no SQL execution, no direct database apply, and no write workflows
-- Service health panel
-- Repository status panel
-- Workspace path panel
-- Init plan panel
-- PostgreSQL connection input panel
-- PostgreSQL inspect panel
-- PostgreSQL compare panel
-- PostgreSQL plan panel
-- Reference-data compare panel
-- Raw JSON response viewer
+- Workspace step
+- Source & Target step
+- Compare Options step
+- Results grid
+- Object Diff step
+- Warnings step
+- Release Plan review area
+- Reports / Raw JSON step
+- About / Safety step
 
 The UI is intentionally small. It is not the full DbState browser product.
 

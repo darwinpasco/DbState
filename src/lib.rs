@@ -644,132 +644,253 @@ const UI_HTML: &str = r#"<!doctype html>
   <link rel="stylesheet" href="/ui/app.css">
 </head>
 <body>
-  <header class="topbar">
-    <div>
+  <header class="app-header">
+    <div class="brand-block">
       <h1>DbState PostgreSQL v0.1</h1>
-      <p>Local workflow shell over the DbState Service API.</p>
+      <p>Schema compare workflow shell over the local DbState Service API.</p>
     </div>
-    <span class="status-pill" id="service-pill">Service not checked</span>
+    <div class="header-status">
+      <span class="status-pill" id="service-pill">Service not checked</span>
+      <span class="status-pill local-only">Local only</span>
+    </div>
   </header>
 
-  <main>
-    <section class="banner local">
-      <strong>Local only.</strong>
-      This UI is served by the local DbState Service. Do not expose it publicly.
-    </section>
-    <section class="banner safety">
-      <strong>Safety boundary.</strong>
-      No SQL execution, no direct database apply, and no write workflows are available in Slice 12.
-    </section>
+  <section class="safety-strip">
+    <strong>Safety boundary:</strong>
+    No SQL execution. No direct database apply. Reviewable artifacts only. This UI exposes no write workflows.
+  </section>
 
-    <section class="grid">
-      <article class="panel">
-        <h2>Service Health</h2>
-        <button type="button" data-action="health">Check Health</button>
-        <dl id="health-summary"></dl>
-      </article>
+  <section class="context-strip" aria-label="Workspace summary">
+    <span>Workspace: <strong id="header-workspace">service working directory</strong></span>
+    <span>Branch: <strong id="header-branch">unknown</strong></span>
+    <span>Working tree: <strong id="header-tree">unknown</strong></span>
+  </section>
 
-      <article class="panel">
-        <h2>Repository Status</h2>
-        <button type="button" data-action="repo-status">Refresh Status</button>
-        <dl id="repo-summary"></dl>
-      </article>
+  <div class="app-layout">
+    <nav class="workflow-nav" aria-label="Schema compare workflow">
+      <button type="button" class="workflow-step active" data-step="workspace">1. Workspace</button>
+      <button type="button" class="workflow-step" data-step="source-target">2. Source &amp; Target</button>
+      <button type="button" class="workflow-step" data-step="compare-options">3. Compare Options</button>
+      <button type="button" class="workflow-step" data-step="results">4. Results</button>
+      <button type="button" class="workflow-step" data-step="object-diff">5. Object Diff</button>
+      <button type="button" class="workflow-step" data-step="warnings">6. Warnings</button>
+      <button type="button" class="workflow-step" data-step="release-plan">7. Release Plan</button>
+      <button type="button" class="workflow-step" data-step="reports">8. Reports / Raw JSON</button>
+      <button type="button" class="workflow-step" data-step="about">9. About / Safety</button>
+    </nav>
 
-      <article class="panel workspace-panel">
-        <h2>Workspace</h2>
-        <label for="workspace-path">Local repository path</label>
-        <input id="workspace-path" type="text" autocomplete="off" spellcheck="false" placeholder="Leave empty to use the service working directory">
-        <p>Session-only. DbState does not clone, fetch, or persist workspace paths. The service must already have filesystem access.</p>
-        <button type="button" data-action="workspace-status">Check Workspace</button>
-        <dl id="workspace-summary"></dl>
-      </article>
-
-      <article class="panel">
-        <h2>Init Plan</h2>
-        <p>Dry-run only. The UI does not initialize or write project files.</p>
-        <button type="button" data-action="init-plan">Plan Init</button>
-        <dl id="init-summary"></dl>
-      </article>
-
-      <article class="panel connection-panel">
-        <h2>PostgreSQL Connection</h2>
-        <label for="postgres-url">Session-only URL</label>
-        <input id="postgres-url" type="password" autocomplete="off" spellcheck="false" placeholder="Prefer DBSTATE_POSTGRES_URL in the service environment">
-        <p>The URL is sent only with the clicked operation. It is not stored by this UI.</p>
-      </article>
-
-      <article class="panel">
-        <h2>PostgreSQL Inspect</h2>
-        <div class="controls">
-          <label>Scope
-            <select id="inspect-scope">
-              <option value="all">All</option>
-              <option value="schema">Schema</option>
-              <option value="table">Table</option>
-            </select>
-          </label>
-          <label>Schema <input id="inspect-schema" type="text" autocomplete="off"></label>
-          <label>Table <input id="inspect-table" type="text" autocomplete="off" placeholder="schema.table"></label>
+    <main class="workflow-main">
+      <section class="workflow-panel active" id="step-workspace">
+        <div class="panel-heading">
+          <h2>Workspace</h2>
+          <p>Select the local DbState project repository that the service can access.</p>
         </div>
-        <button type="button" data-action="inspect">Inspect</button>
-      </article>
+        <div class="form-grid">
+          <label for="workspace-path">Local repository path
+            <input id="workspace-path" type="text" autocomplete="off" spellcheck="false" placeholder="Leave empty to use the service working directory">
+          </label>
+        </div>
+        <p class="note">Session-only. The path is not persisted. DbState does not clone or fetch repositories. The service must already have filesystem access.</p>
+        <div class="button-row">
+          <button type="button" data-action="health">Health</button>
+          <button type="button" data-action="workspace-status">Check Workspace</button>
+          <button type="button" data-action="repo-status">Repo Status</button>
+          <button type="button" data-action="init-plan">Init Plan</button>
+        </div>
+        <dl class="summary-list" id="workspace-summary"></dl>
+      </section>
 
-      <article class="panel">
-        <h2>PostgreSQL Compare</h2>
-        <div class="controls">
-          <label>Scope
+      <section class="workflow-panel" id="step-source-target">
+        <div class="panel-heading">
+          <h2>Source &amp; Target</h2>
+          <p>DbState compares repository desired state to a PostgreSQL database through read-only service operations.</p>
+        </div>
+        <div class="split-pane">
+          <section class="subsection">
+            <h3>Source</h3>
+            <p><strong>Repository desired state</strong></p>
+            <dl class="summary-list compact" id="source-summary">
+              <dt>Workspace</dt><dd id="source-workspace">service working directory</dd>
+              <dt>Git root</dt><dd id="source-git-root">unknown</dd>
+            </dl>
+          </section>
+          <section class="subsection">
+            <h3>Target</h3>
+            <label for="postgres-url">PostgreSQL session-only URL
+              <input id="postgres-url" type="password" autocomplete="off" spellcheck="false" placeholder="Prefer DBSTATE_POSTGRES_URL in the service environment">
+            </label>
+            <p class="note">The URL is sent only with the operation you click. It is not persisted, logged by the UI, or displayed in response panels.</p>
+          </section>
+        </div>
+        <div class="subsection">
+          <h3>Workflow Mode</h3>
+          <select id="workflow-mode">
+            <option value="compare">Repo state to PostgreSQL compare</option>
+            <option value="inspect">PostgreSQL inspect only</option>
+            <option value="data">Reference-data compare</option>
+          </select>
+        </div>
+      </section>
+
+      <section class="workflow-panel" id="step-compare-options">
+        <div class="panel-heading">
+          <h2>Compare Options</h2>
+          <p>Choose the scope and run a read-only compare, plan, inspect, or configured reference-data compare.</p>
+        </div>
+        <div class="form-grid">
+          <label for="compare-scope">Scope
             <select id="compare-scope">
               <option value="all">All</option>
               <option value="schema">Schema</option>
               <option value="table">Table</option>
             </select>
           </label>
-          <label>Schema <input id="compare-schema" type="text" autocomplete="off"></label>
-          <label>Table <input id="compare-table" type="text" autocomplete="off" placeholder="schema.table"></label>
-        </div>
-        <button type="button" data-action="compare">Compare</button>
-      </article>
-
-      <article class="panel">
-        <h2>PostgreSQL Plan</h2>
-        <div class="controls">
-          <label>Scope
-            <select id="plan-scope">
-              <option value="all">All</option>
-              <option value="schema">Schema</option>
-              <option value="table">Table</option>
-            </select>
+          <label for="compare-schema">Schema
+            <input id="compare-schema" type="text" autocomplete="off" placeholder="dbstate_slice2">
           </label>
-          <label>Schema <input id="plan-schema" type="text" autocomplete="off"></label>
-          <label>Table <input id="plan-table" type="text" autocomplete="off" placeholder="schema.table"></label>
-          <label>Include <input id="plan-include" type="text" autocomplete="off" placeholder="table:dbstate_slice2.sample_accounts"></label>
-          <label>Exclude <input id="plan-exclude" type="text" autocomplete="off" placeholder="schema:public"></label>
-        </div>
-        <button type="button" data-action="plan">Plan</button>
-      </article>
-
-      <article class="panel">
-        <h2>Reference-data Compare</h2>
-        <div class="controls">
-          <label>Scope
+          <label for="compare-table">Table
+            <input id="compare-table" type="text" autocomplete="off" placeholder="schema.table">
+          </label>
+          <label for="plan-include">Include refs
+            <input id="plan-include" type="text" autocomplete="off" placeholder="table:dbstate_slice2.sample_accounts">
+          </label>
+          <label for="plan-exclude">Exclude refs
+            <input id="plan-exclude" type="text" autocomplete="off" placeholder="schema:public">
+          </label>
+          <label for="data-scope">Reference-data scope
             <select id="data-scope">
               <option value="all">All configured tables</option>
               <option value="table">Table</option>
             </select>
           </label>
-          <label>Table <input id="data-table" type="text" autocomplete="off" placeholder="schema.table"></label>
+          <label for="data-table">Reference-data table
+            <input id="data-table" type="text" autocomplete="off" placeholder="schema.table">
+          </label>
         </div>
-        <button type="button" data-action="data-compare">Data Compare</button>
-      </article>
-    </section>
+        <div class="object-filter-row" aria-label="Object type filters">
+          <label><input type="checkbox" checked disabled> schemas</label>
+          <label><input type="checkbox" checked disabled> tables</label>
+          <label><input type="checkbox" disabled> indexes future</label>
+          <label><input type="checkbox" disabled> views future</label>
+          <label><input type="checkbox" disabled> functions future</label>
+          <label><input type="checkbox" disabled> triggers future</label>
+          <label><input type="checkbox" disabled> grants future</label>
+        </div>
+        <div class="button-row">
+          <button type="button" data-action="inspect">Inspect</button>
+          <button type="button" data-action="compare">Run Compare</button>
+          <button type="button" data-action="plan">Run Plan</button>
+          <button type="button" data-action="data-compare">Run Reference Data Compare</button>
+        </div>
+      </section>
 
-    <section class="panel response-panel">
-      <h2>Response</h2>
-      <div id="response-summary" class="response-summary">Run a workflow to see results.</div>
-      <h3>Raw JSON</h3>
-      <pre id="json-viewer">{}</pre>
-    </section>
-  </main>
+      <section class="workflow-panel" id="step-results">
+        <div class="panel-heading">
+          <h2>Results</h2>
+          <p>Review comparison and planning results. Include selections are UI-only in this shell.</p>
+        </div>
+        <div class="results-toolbar">
+          <span id="results-count">0 result rows</span>
+          <span id="included-count">0 included</span>
+        </div>
+        <div class="table-wrap">
+          <table class="results-grid" aria-label="Comparison results grid">
+            <thead>
+              <tr>
+                <th>Include</th>
+                <th>Object type</th>
+                <th>Schema</th>
+                <th>Object name</th>
+                <th>Status</th>
+                <th>Planned operation</th>
+                <th>Warnings</th>
+                <th>Source</th>
+                <th>Target</th>
+              </tr>
+            </thead>
+            <tbody id="results-body">
+              <tr><td colspan="9">Run a compare or plan to populate results.</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section class="workflow-panel" id="step-object-diff">
+        <div class="panel-heading">
+          <h2>Object Diff</h2>
+          <p>Select a result row to inspect available object-level details.</p>
+        </div>
+        <section class="subsection">
+          <h3 id="selected-object-title">No object selected</h3>
+          <dl class="summary-list compact" id="selected-object-summary"></dl>
+        </section>
+        <div class="diff-grid" aria-label="Object detail viewer">
+          <section>
+            <h3>Repository Side</h3>
+            <pre id="source-detail">Diff detail not available yet.</pre>
+          </section>
+          <section>
+            <h3>Database Side</h3>
+            <pre id="target-detail">Diff detail not available yet.</pre>
+          </section>
+        </div>
+        <section class="subsection">
+          <h3>Selected JSON Item</h3>
+          <pre id="selected-json">{}</pre>
+        </section>
+      </section>
+
+      <section class="workflow-panel" id="step-warnings">
+        <div class="panel-heading">
+          <h2>Warnings</h2>
+          <p>Dependency warnings, blocked items, deferred object types, and service errors appear here.</p>
+        </div>
+        <div id="warnings-list" class="issue-list">No warnings yet.</div>
+      </section>
+
+      <section class="workflow-panel" id="step-release-plan">
+        <div class="panel-heading">
+          <h2>Release Plan</h2>
+          <p>Review-only planning area. This UI does not write release artifacts.</p>
+        </div>
+        <div class="release-summary" id="release-selected">No included result rows yet.</div>
+        <p class="note">Release artifact preview will be connected in a later safe write-gated slice. Use the CLI for explicit release artifact generation outside this UI shell.</p>
+      </section>
+
+      <section class="workflow-panel" id="step-reports">
+        <div class="panel-heading">
+          <h2>Reports / Raw JSON</h2>
+          <p>Transparent redacted service output for review and troubleshooting.</p>
+        </div>
+        <div id="response-summary" class="response-summary">Run a workflow to see results.</div>
+        <pre id="json-viewer">{}</pre>
+      </section>
+
+      <section class="workflow-panel" id="step-about">
+        <div class="panel-heading">
+          <h2>About / Safety</h2>
+          <p>DbState is local-first, Git/repo state based, and engine-first.</p>
+        </div>
+        <ul class="safety-list">
+          <li>The browser UI is a thin workflow shell over the local service.</li>
+          <li>PostgreSQL compare and inspect operations are read-only.</li>
+          <li>Generated artifacts are reviewable files under <code>database/releases/</code> when created by explicit non-UI commands.</li>
+          <li>No direct database apply exists.</li>
+          <li>No generated SQL execution exists.</li>
+          <li>No write workflows are exposed in this UI shell.</li>
+          <li>Unsupported object types are deferred for later slices.</li>
+          <li>Do not expose the local service publicly.</li>
+        </ul>
+      </section>
+    </main>
+  </div>
+
+  <footer class="status-strip" aria-label="Operation status">
+    <span>Last operation: <strong id="last-operation">none</strong></span>
+    <span>Status: <strong id="last-status">not run</strong></span>
+    <span>Warnings: <strong id="last-warnings">0</strong></span>
+    <span>Errors: <strong id="last-errors">0</strong></span>
+  </footer>
 
   <script src="/ui/app.js"></script>
 </body>
@@ -778,16 +899,18 @@ const UI_HTML: &str = r#"<!doctype html>
 
 const UI_CSS: &str = r#":root {
   color-scheme: light;
-  --bg: #f5f7f9;
-  --panel: #ffffff;
+  --bg: #f3f6f8;
+  --surface: #ffffff;
+  --surface-alt: #eef3f6;
   --text: #17202a;
-  --muted: #5d6b78;
-  --border: #d8e0e7;
+  --muted: #5b6875;
+  --border: #d3dde5;
   --accent: #176b87;
   --accent-strong: #0f5369;
+  --ok: #146c43;
   --warning: #7a4b00;
   --warning-bg: #fff4d6;
-  --safe-bg: #e9f7ef;
+  --danger: #9f2d20;
 }
 
 * {
@@ -796,81 +919,194 @@ const UI_CSS: &str = r#":root {
 
 body {
   margin: 0;
+  min-height: 100vh;
   background: var(--bg);
   color: var(--text);
   font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  line-height: 1.5;
+  line-height: 1.45;
 }
 
-.topbar {
-  display: flex;
-  justify-content: space-between;
-  gap: 24px;
-  align-items: center;
-  padding: 24px 32px;
-  background: #ffffff;
+.app-header,
+.context-strip,
+.status-strip {
+  background: var(--surface);
   border-bottom: 1px solid var(--border);
 }
 
-h1,
-h2,
-p {
+.app-header {
+  display: flex;
+  justify-content: space-between;
+  gap: 20px;
+  align-items: center;
+  padding: 18px 24px;
+}
+
+.brand-block h1,
+.brand-block p,
+.panel-heading h2,
+.panel-heading p {
   margin-top: 0;
 }
 
-h1 {
-  margin-bottom: 4px;
-  font-size: 28px;
+.brand-block h1 {
+  margin-bottom: 3px;
+  font-size: 24px;
+  letter-spacing: 0;
 }
 
-h2 {
-  font-size: 18px;
+.brand-block p,
+.panel-heading p,
+.note {
+  color: var(--muted);
 }
 
-main {
-  max-width: 1180px;
-  margin: 0 auto;
-  padding: 24px;
+.header-status,
+.button-row,
+.results-toolbar,
+.object-filter-row,
+.status-strip,
+.context-strip {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
 }
 
-.banner,
-.panel {
+.status-pill {
   border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--panel);
+  border-radius: 999px;
+  padding: 5px 10px;
+  color: var(--muted);
+  background: var(--surface);
+  white-space: nowrap;
 }
 
-.banner {
-  padding: 14px 16px;
-  margin-bottom: 12px;
+.status-pill.local-only {
+  color: var(--ok);
+  border-color: #b7dfc8;
 }
 
-.banner.local {
-  background: var(--safe-bg);
-}
-
-.banner.safety {
+.safety-strip {
+  padding: 10px 24px;
   background: var(--warning-bg);
   color: var(--warning);
+  border-bottom: 1px solid #eed28b;
 }
 
-.grid {
+.context-strip {
+  padding: 9px 24px;
+  color: var(--muted);
+}
+
+.app-layout {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
-  gap: 16px;
-  margin-top: 20px;
+  grid-template-columns: 250px minmax(0, 1fr);
+  min-height: calc(100vh - 176px);
 }
 
-.panel {
+.workflow-nav {
+  padding: 16px;
+  background: #e8eef2;
+  border-right: 1px solid var(--border);
+}
+
+.workflow-step {
+  width: 100%;
+  margin-bottom: 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  padding: 9px 10px;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.workflow-step:hover,
+.workflow-step.active {
+  border-color: var(--border);
+  background: var(--surface);
+}
+
+.workflow-step.active {
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.workflow-main {
+  padding: 18px;
+  min-width: 0;
+}
+
+.workflow-panel {
+  display: none;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
   padding: 18px;
 }
 
-.connection-panel {
-  grid-column: span 2;
+.workflow-panel.active {
+  display: block;
 }
 
-.response-panel {
-  margin-top: 16px;
+.panel-heading {
+  margin-bottom: 16px;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 12px;
+}
+
+.panel-heading h2 {
+  margin-bottom: 4px;
+  font-size: 20px;
+}
+
+.subsection {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  background: #fbfcfd;
+  margin-bottom: 14px;
+}
+
+.subsection h3 {
+  margin-top: 0;
+}
+
+.split-pane,
+.diff-grid,
+.form-grid {
+  display: grid;
+  gap: 14px;
+}
+
+.split-pane,
+.diff-grid {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.form-grid {
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  margin-bottom: 14px;
+}
+
+label {
+  display: block;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+input,
+select {
+  width: 100%;
+  min-height: 34px;
+  margin-top: 5px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font: inherit;
+  background: #ffffff;
 }
 
 button {
@@ -878,7 +1114,7 @@ button {
   border-radius: 6px;
   background: var(--accent);
   color: #ffffff;
-  padding: 9px 12px;
+  padding: 8px 11px;
   font: inherit;
   cursor: pointer;
 }
@@ -887,41 +1123,62 @@ button:hover {
   background: var(--accent-strong);
 }
 
-input,
-select {
-  width: 100%;
-  min-height: 36px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 7px 9px;
-  font: inherit;
-}
-
-label {
-  display: block;
-  font-weight: 600;
-  font-size: 14px;
-}
-
-.controls {
-  display: grid;
-  gap: 10px;
+.object-filter-row {
   margin-bottom: 14px;
+  color: var(--muted);
 }
 
-.status-pill {
+.object-filter-row label {
+  font-weight: 600;
+}
+
+.table-wrap {
+  overflow: auto;
   border: 1px solid var(--border);
-  border-radius: 999px;
-  padding: 6px 10px;
-  color: var(--muted);
+  border-radius: 8px;
+}
+
+.results-grid {
+  width: 100%;
+  border-collapse: collapse;
+  min-width: 900px;
+  background: #ffffff;
+}
+
+.results-grid th,
+.results-grid td {
+  border-bottom: 1px solid var(--border);
+  padding: 8px 10px;
+  text-align: left;
+  vertical-align: top;
+  font-size: 13px;
+}
+
+.results-grid th {
+  background: var(--surface-alt);
+  color: #25313c;
   white-space: nowrap;
 }
 
-dl {
+.results-grid tr {
+  cursor: pointer;
+}
+
+.results-grid tr.selected {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
+  background: #edf7fb;
+}
+
+.summary-list {
   display: grid;
   grid-template-columns: max-content 1fr;
   gap: 6px 12px;
-  margin-bottom: 0;
+  margin: 0;
+}
+
+.summary-list.compact {
+  font-size: 13px;
 }
 
 dt {
@@ -930,35 +1187,83 @@ dt {
 
 dd {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.response-summary {
+.issue-list {
+  display: grid;
+  gap: 8px;
+}
+
+.issue-item {
+  border-left: 4px solid var(--warning);
+  background: var(--warning-bg);
+  padding: 10px 12px;
+}
+
+.issue-item.error {
+  border-left-color: var(--danger);
+  background: #ffe9e6;
+}
+
+.response-summary,
+.release-summary {
   margin-bottom: 12px;
   color: var(--muted);
 }
 
-pre {
-  overflow: auto;
-  min-height: 180px;
-  max-height: 460px;
-  padding: 14px;
-  border-radius: 8px;
-  background: #111820;
-  color: #e8f0f7;
+.safety-list {
+  padding-left: 22px;
 }
 
-@media (max-width: 720px) {
-  .topbar,
-  main {
-    padding: 18px;
+pre {
+  overflow: auto;
+  min-height: 160px;
+  max-height: 420px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #17202a;
+  color: #edf4f8;
+  font-size: 12px;
+}
+
+.status-strip {
+  justify-content: space-between;
+  padding: 9px 18px;
+  color: var(--muted);
+}
+
+@media (max-width: 900px) {
+  .app-layout {
+    grid-template-columns: 1fr;
   }
 
-  .topbar {
+  .workflow-nav {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+    border-right: 0;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .split-pane,
+  .diff-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-header {
     display: block;
   }
 
-  .connection-panel {
-    grid-column: auto;
+  .workflow-main,
+  .app-header,
+  .safety-strip,
+  .context-strip {
+    padding-left: 14px;
+    padding-right: 14px;
   }
 }
 "#;
@@ -974,52 +1279,37 @@ const UI_JS: &str = r#"(function () {
     dataCompare: "/api/v1/postgres/data-compare"
   };
 
+  const state = {
+    lastResponse: null,
+    rows: [],
+    included: new Set(),
+    selectedIndex: -1
+  };
+
   const jsonViewer = document.getElementById("json-viewer");
   const responseSummary = document.getElementById("response-summary");
   const servicePill = document.getElementById("service-pill");
 
-  function value(id) {
-    return document.getElementById(id).value.trim();
+  function byId(id) {
+    return document.getElementById(id);
   }
 
-  function postgresUrl() {
-    return value("postgres-url");
+  function value(id) {
+    return byId(id).value.trim();
   }
 
   function workspacePath() {
     return value("workspace-path");
   }
 
+  function postgresUrl() {
+    return value("postgres-url");
+  }
+
   function attachWorkspacePath(body) {
     const path = workspacePath();
     if (path) {
       body.repositoryPath = path;
-    }
-    return body;
-  }
-
-  function commaList(raw) {
-    return raw.split(",").map(function (item) {
-      return item.trim();
-    }).filter(Boolean);
-  }
-
-  function buildScope(prefix) {
-    const scope = value(prefix + "-scope");
-    const body = { scope: scope };
-    if (scope === "schema") {
-      const schema = value(prefix + "-schema");
-      if (!schema) {
-        throw new Error("Schema scope requires a schema name.");
-      }
-      body.schema = schema;
-    }
-    if (scope === "table") {
-      const table = value(prefix + "-table");
-      if (!table) {
-        throw new Error("Table scope requires a schema.table value.");
-      }
-      body.table = table;
     }
     return body;
   }
@@ -1032,8 +1322,47 @@ const UI_JS: &str = r#"(function () {
     return body;
   }
 
-  function redactedJson(value) {
-    return JSON.stringify(value, null, 2)
+  function commaList(raw) {
+    return raw.split(",").map(function (item) {
+      return item.trim();
+    }).filter(Boolean);
+  }
+
+  function buildScope() {
+    const scope = value("compare-scope");
+    const body = { scope: scope };
+    if (scope === "schema") {
+      const schema = value("compare-schema");
+      if (!schema) {
+        throw new Error("Schema scope requires a schema name.");
+      }
+      body.schema = schema;
+    }
+    if (scope === "table") {
+      const table = value("compare-table");
+      if (!table) {
+        throw new Error("Table scope requires a schema.table value.");
+      }
+      body.table = table;
+    }
+    return body;
+  }
+
+  function dataScope() {
+    const scope = value("data-scope");
+    const body = { scope: scope };
+    if (scope === "table") {
+      const table = value("data-table");
+      if (!table) {
+        throw new Error("Reference-data table scope requires a schema.table value.");
+      }
+      body.table = table;
+    }
+    return body;
+  }
+
+  function redactedJson(input) {
+    return JSON.stringify(input, null, 2)
       .replace(/postgres(?:ql)?:\/\/[^"\s]+/gi, "<redacted-postgres-url>")
       .replace(/password[^",}]*/gi, "password=<redacted>")
       .replace(/token[^",}]*/gi, "token=<redacted>");
@@ -1042,14 +1371,14 @@ const UI_JS: &str = r#"(function () {
   function summarize(data) {
     const parts = [];
     parts.push(data.success ? "Success" : "Failed");
+    if (data.command) {
+      parts.push(data.command);
+    }
     if (data.branch) {
       parts.push("branch " + data.branch);
     }
     if (data.workingTreeStatus) {
       parts.push("working tree " + data.workingTreeStatus);
-    }
-    if (data.counts) {
-      parts.push("counts available");
     }
     if (Array.isArray(data.warnings) && data.warnings.length) {
       parts.push(data.warnings.length + " warning(s)");
@@ -1060,8 +1389,15 @@ const UI_JS: &str = r#"(function () {
     return parts.join(" | ");
   }
 
+  function updateStatus(label, data) {
+    byId("last-operation").textContent = label;
+    byId("last-status").textContent = data && data.success ? "success" : "failed";
+    byId("last-warnings").textContent = Array.isArray(data && data.warnings) ? data.warnings.length : 0;
+    byId("last-errors").textContent = Array.isArray(data && data.errors) ? data.errors.length : 0;
+  }
+
   function updateSummary(id, entries) {
-    const target = document.getElementById(id);
+    const target = byId(id);
     target.innerHTML = "";
     Object.keys(entries).forEach(function (key) {
       const dt = document.createElement("dt");
@@ -1071,6 +1407,285 @@ const UI_JS: &str = r#"(function () {
       target.appendChild(dt);
       target.appendChild(dd);
     });
+  }
+
+  function updateWorkspaceContext(data) {
+    if (!data) {
+      return;
+    }
+    if (data.repositoryPath) {
+      byId("header-workspace").textContent = data.repositoryPath;
+      byId("source-workspace").textContent = data.repositoryPath;
+    }
+    if (data.gitRoot) {
+      byId("source-git-root").textContent = data.gitRoot;
+    }
+    if (data.branch) {
+      byId("header-branch").textContent = data.branch;
+    }
+    if (data.workingTreeStatus) {
+      byId("header-tree").textContent = data.workingTreeStatus;
+    }
+  }
+
+  function showStep(step) {
+    document.querySelectorAll(".workflow-step").forEach(function (button) {
+      button.classList.toggle("active", button.dataset.step === step);
+    });
+    document.querySelectorAll(".workflow-panel").forEach(function (panel) {
+      panel.classList.toggle("active", panel.id === "step-" + step);
+    });
+  }
+
+  function rowRef(row, index) {
+    return row.objectRef || [row.objectType, row.schema, row.name, index].join(":");
+  }
+
+  function textOrEmpty(value) {
+    if (value == null) {
+      return "";
+    }
+    if (Array.isArray(value)) {
+      return value.join(", ");
+    }
+    return String(value);
+  }
+
+  function splitIdentity(value) {
+    const text = textOrEmpty(value);
+    const withoutType = text.indexOf(":") > -1 ? text.split(":").slice(1).join(":") : text;
+    const dot = withoutType.indexOf(".");
+    if (dot > -1) {
+      return {
+        schema: withoutType.slice(0, dot),
+        name: withoutType.slice(dot + 1)
+      };
+    }
+    return {
+      schema: "",
+      name: withoutType
+    };
+  }
+
+  function rowFromItem(item, status, fallbackType) {
+    const raw = typeof item === "object" && item !== null ? item : { value: item };
+    const objectRef = raw.objectRef || raw.objectName || raw.tableName || raw.relativePath || raw.value || "";
+    const identity = splitIdentity(objectRef || raw.name || "");
+    const objectType = raw.objectType || fallbackType || (String(objectRef).startsWith("table:") ? "table" : "object");
+    return {
+      objectRef: objectRef || objectType + ":" + (raw.name || status),
+      objectType: objectType,
+      schema: raw.schema || raw.schemaName || identity.schema,
+      name: raw.name || raw.table || raw.tableName || identity.name || raw.relativePath || status,
+      status: raw.compareClassification || raw.classification || status,
+      operation: raw.planIntent || raw.plannedOperation || "",
+      warnings: raw.warnings || raw.dependencyWarnings || [],
+      source: raw.relativePath || raw.source || "repository",
+      target: raw.target || "postgresql",
+      raw: raw
+    };
+  }
+
+  function appendObjectList(rows, data, field, status, type) {
+    if (!Array.isArray(data[field])) {
+      return;
+    }
+    data[field].forEach(function (item) {
+      rows.push(rowFromItem(item, status, type));
+    });
+  }
+
+  function rowsFromResponse(data, label) {
+    const rows = [];
+    appendObjectList(rows, data, "inSync", "inSync", "object");
+    appendObjectList(rows, data, "repoDifferent", "repoDifferent", "object");
+    appendObjectList(rows, data, "repoOnly", "repoOnly", "object");
+    appendObjectList(rows, data, "databaseOnly", "databaseOnly", "object");
+    appendObjectList(rows, data, "skipped", "skipped", "object");
+    appendObjectList(rows, data, "planItems", "planned", "object");
+    appendObjectList(rows, data, "blockedItems", "blocked", "object");
+
+    if (Array.isArray(data.tableResults)) {
+      data.tableResults.forEach(function (table) {
+        if (Array.isArray(table.rowResults)) {
+          table.rowResults.forEach(function (row) {
+            rows.push({
+              objectRef: table.tableName + ":" + textOrEmpty(row.rowKey),
+              objectType: "reference row",
+              schema: splitIdentity(table.tableName).schema,
+              name: splitIdentity(table.tableName).name + " " + textOrEmpty(row.rowKey),
+              status: row.classification || "row",
+              operation: "compare only",
+              warnings: row.warnings || [],
+              source: "repository reference-data",
+              target: "postgresql",
+              raw: row
+            });
+          });
+        }
+      });
+    }
+
+    if (!rows.length && data.success === false) {
+      rows.push({
+        objectRef: "service:response",
+        objectType: "service",
+        schema: "",
+        name: label,
+        status: "error",
+        operation: "",
+        warnings: data.errors || [],
+        source: "request",
+        target: "service",
+        raw: data
+      });
+    }
+    return rows;
+  }
+
+  function renderResults(rows) {
+    const body = byId("results-body");
+    body.innerHTML = "";
+    state.rows = rows;
+    if (state.selectedIndex < 0 || state.selectedIndex >= rows.length) {
+      state.selectedIndex = rows.length ? 0 : -1;
+    }
+    rows.forEach(function (row, index) {
+      const ref = rowRef(row, index);
+      if (!state.included.has(ref)) {
+        state.included.add(ref);
+      }
+      const tr = document.createElement("tr");
+      tr.dataset.index = String(index);
+      tr.classList.toggle("selected", index === state.selectedIndex);
+      const include = document.createElement("input");
+      include.type = "checkbox";
+      include.checked = state.included.has(ref);
+      include.addEventListener("change", function (event) {
+        event.stopPropagation();
+        if (include.checked) {
+          state.included.add(ref);
+        } else {
+          state.included.delete(ref);
+        }
+        renderReleasePlan();
+        updateResultCounts();
+      });
+
+      [
+        include,
+        row.objectType,
+        row.schema,
+        row.name,
+        row.status,
+        row.operation || "review",
+        Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings),
+        row.source,
+        row.target
+      ].forEach(function (value) {
+        const td = document.createElement("td");
+        if (value instanceof HTMLElement) {
+          td.appendChild(value);
+        } else {
+          td.textContent = textOrEmpty(value);
+        }
+        tr.appendChild(td);
+      });
+
+      tr.addEventListener("click", function () {
+        state.selectedIndex = index;
+        renderResults(state.rows);
+        renderSelectedObject();
+        showStep("object-diff");
+      });
+      body.appendChild(tr);
+    });
+
+    if (!rows.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 9;
+      td.textContent = "No object rows are available in the latest response. Use Reports / Raw JSON for the full service response.";
+      tr.appendChild(td);
+      body.appendChild(tr);
+    }
+
+    updateResultCounts();
+    renderSelectedObject();
+    renderReleasePlan();
+  }
+
+  function updateResultCounts() {
+    byId("results-count").textContent = state.rows.length + " result row(s)";
+    byId("included-count").textContent = Array.from(state.included).length + " included";
+  }
+
+  function renderSelectedObject() {
+    const row = state.rows[state.selectedIndex];
+    if (!row) {
+      byId("selected-object-title").textContent = "No object selected";
+      byId("selected-object-summary").innerHTML = "";
+      byId("source-detail").textContent = "Diff detail not available yet.";
+      byId("target-detail").textContent = "Diff detail not available yet.";
+      byId("selected-json").textContent = "{}";
+      return;
+    }
+    byId("selected-object-title").textContent = row.objectType + ": " + row.name;
+    updateSummary("selected-object-summary", {
+      schema: row.schema,
+      status: row.status,
+      operation: row.operation || "review",
+      warnings: Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings)
+    });
+    byId("source-detail").textContent = row.source || "Diff detail not available yet.";
+    byId("target-detail").textContent = row.target || "Diff detail not available yet.";
+    byId("selected-json").textContent = redactedJson(row.raw || row);
+  }
+
+  function renderWarnings(data) {
+    const warnings = [];
+    function addMany(values, label, kind) {
+      if (!Array.isArray(values)) {
+        return;
+      }
+      values.forEach(function (item) {
+        warnings.push({
+          kind: kind || "warning",
+          text: label + ": " + (typeof item === "string" ? item : redactedJson(item))
+        });
+      });
+    }
+    addMany(data.warnings, "Warning");
+    addMany(data.errors, "Error", "error");
+    addMany(data.dependencyWarnings, "Dependency warning");
+    addMany(data.blockedItems, "Blocked item", "error");
+    addMany(data.deferredObjectTypes, "Deferred object type");
+
+    const target = byId("warnings-list");
+    target.innerHTML = "";
+    if (!warnings.length) {
+      target.textContent = "No warnings yet.";
+      return;
+    }
+    warnings.forEach(function (warning) {
+      const item = document.createElement("div");
+      item.className = "issue-item" + (warning.kind === "error" ? " error" : "");
+      item.textContent = warning.text;
+      target.appendChild(item);
+    });
+  }
+
+  function renderReleasePlan() {
+    const includedRows = state.rows.filter(function (row, index) {
+      return state.included.has(rowRef(row, index));
+    });
+    if (!includedRows.length) {
+      byId("release-selected").textContent = "No included result rows yet.";
+      return;
+    }
+    byId("release-selected").textContent = includedRows.map(function (row) {
+      return row.objectType + " " + row.schema + "." + row.name + " [" + (row.operation || row.status) + "]";
+    }).join("\n");
   }
 
   async function requestJson(endpoint, body) {
@@ -1091,14 +1706,23 @@ const UI_JS: &str = r#"(function () {
     return data;
   }
 
-  async function run(label, endpoint, body, summaryId) {
+  async function run(label, endpoint, body, options) {
+    const config = options || {};
     responseSummary.textContent = "Running " + label + "...";
+    showStep(config.step || "reports");
     try {
       const data = await requestJson(endpoint, body);
+      state.lastResponse = data;
       responseSummary.textContent = label + ": " + summarize(data);
       jsonViewer.textContent = redactedJson(data);
-      if (summaryId) {
-        updateSummary(summaryId, {
+      updateStatus(label, data);
+      updateWorkspaceContext(data);
+      renderWarnings(data);
+      state.included = new Set();
+      state.selectedIndex = data.success === false ? 0 : -1;
+      renderResults(rowsFromResponse(data, label));
+      if (config.summaryId) {
+        updateSummary(config.summaryId, {
           success: data.success,
           status: data.httpStatus,
           repository: data.repositoryPath || "",
@@ -1116,60 +1740,78 @@ const UI_JS: &str = r#"(function () {
       }
     } catch (error) {
       const message = error && error.message ? error.message : "Unknown service error.";
+      const data = { success: false, errors: [message] };
+      state.lastResponse = data;
       responseSummary.textContent = label + ": " + message;
-      jsonViewer.textContent = redactedJson({ success: false, errors: [message] });
+      jsonViewer.textContent = redactedJson(data);
+      updateStatus(label, data);
+      renderWarnings(data);
+      renderResults(rowsFromResponse(data, label));
       if (label === "Health") {
         servicePill.textContent = "Service not reachable";
       }
     }
   }
 
-  document.querySelector("[data-action='health']").addEventListener("click", function () {
-    run("Health", approvedEndpoints.health, null, "health-summary");
+  document.querySelectorAll(".workflow-step").forEach(function (button) {
+    button.addEventListener("click", function () {
+      showStep(button.dataset.step);
+    });
   });
 
-  document.querySelector("[data-action='repo-status']").addEventListener("click", function () {
-    run("Repository status", approvedEndpoints.repoStatus, attachWorkspacePath({}), "repo-summary");
+  document.querySelector("[data-action='health']").addEventListener("click", function () {
+    run("Health", approvedEndpoints.health, null, { summaryId: "workspace-summary", step: "workspace" });
   });
 
   document.querySelector("[data-action='workspace-status']").addEventListener("click", function () {
-    run("Workspace status", approvedEndpoints.repoStatus, attachWorkspacePath({}), "workspace-summary");
+    run("Workspace status", approvedEndpoints.repoStatus, attachWorkspacePath({}), { summaryId: "workspace-summary", step: "workspace" });
+  });
+
+  document.querySelector("[data-action='repo-status']").addEventListener("click", function () {
+    run("Repository status", approvedEndpoints.repoStatus, attachWorkspacePath({}), { summaryId: "workspace-summary", step: "workspace" });
   });
 
   document.querySelector("[data-action='init-plan']").addEventListener("click", function () {
-    run("Init plan", approvedEndpoints.initPlan, attachWorkspacePath({ dryRun: true }), "init-summary");
+    run("Init plan", approvedEndpoints.initPlan, attachWorkspacePath({ dryRun: true }), { summaryId: "workspace-summary", step: "workspace" });
   });
 
   document.querySelector("[data-action='inspect']").addEventListener("click", function () {
-    run("Inspect", approvedEndpoints.inspect, attachWorkspacePath(attachPostgresUrl(buildScope("inspect"))));
+    try {
+      const body = attachWorkspacePath(attachPostgresUrl(buildScope()));
+      run("Inspect", approvedEndpoints.inspect, body, { step: "results" });
+    } catch (error) {
+      responseSummary.textContent = "Inspect: " + error.message;
+    }
   });
 
   document.querySelector("[data-action='compare']").addEventListener("click", function () {
-    run("Compare", approvedEndpoints.compare, attachWorkspacePath(attachPostgresUrl(buildScope("compare"))));
+    try {
+      run("Compare", approvedEndpoints.compare, attachWorkspacePath(attachPostgresUrl(buildScope())), { step: "results" });
+    } catch (error) {
+      responseSummary.textContent = "Compare: " + error.message;
+    }
   });
 
   document.querySelector("[data-action='plan']").addEventListener("click", function () {
-    const body = attachWorkspacePath(attachPostgresUrl(buildScope("plan")));
-    body.include = commaList(value("plan-include"));
-    body.exclude = commaList(value("plan-exclude"));
-    run("Plan", approvedEndpoints.plan, body);
+    try {
+      const body = attachWorkspacePath(attachPostgresUrl(buildScope()));
+      body.include = commaList(value("plan-include"));
+      body.exclude = commaList(value("plan-exclude"));
+      run("Plan", approvedEndpoints.plan, body, { step: "results" });
+    } catch (error) {
+      responseSummary.textContent = "Plan: " + error.message;
+    }
   });
 
   document.querySelector("[data-action='data-compare']").addEventListener("click", function () {
-    const scope = value("data-scope");
-    const body = { scope: scope };
-    if (scope === "table") {
-      const table = value("data-table");
-      if (!table) {
-        responseSummary.textContent = "Reference-data compare: table scope requires a schema.table value.";
-        return;
-      }
-      body.table = table;
+    try {
+      run("Reference-data compare", approvedEndpoints.dataCompare, attachWorkspacePath(attachPostgresUrl(dataScope())), { step: "results" });
+    } catch (error) {
+      responseSummary.textContent = "Reference-data compare: " + error.message;
     }
-    run("Reference-data compare", approvedEndpoints.dataCompare, attachWorkspacePath(attachPostgresUrl(body)));
   });
 
-  run("Health", approvedEndpoints.health, null, "health-summary");
+  run("Health", approvedEndpoints.health, null, { summaryId: "workspace-summary", step: "workspace" });
 }());
 "#;
 
@@ -8814,7 +9456,7 @@ rows:
         let css = service_response("GET", "/ui/app.css", "", &dir);
         assert_eq!(css.status_code, 200);
         assert!(css.content_type.contains("text/css"));
-        assert!(css.body.contains(".panel"));
+        assert!(css.body.contains(".workflow-panel"));
 
         let js = service_response("GET", "/ui/app.js", "", &dir);
         assert_eq!(js.status_code, 200);
@@ -8828,19 +9470,26 @@ rows:
 
         assert!(html.contains("Local only"));
         assert!(html.contains("No SQL execution"));
-        assert!(html.contains("no direct database apply"));
+        assert!(html.contains("direct database apply"));
         assert!(html.contains("no write workflows"));
-        assert!(html.contains("Service Health"));
-        assert!(html.contains("Repository Status"));
+        assert!(html.contains("Schema compare workflow shell"));
         assert!(html.contains("Init Plan"));
-        assert!(html.contains("PostgreSQL Inspect"));
-        assert!(html.contains("PostgreSQL Compare"));
-        assert!(html.contains("PostgreSQL Plan"));
-        assert!(html.contains("Reference-data Compare"));
         assert!(html.contains("Workspace"));
+        assert!(html.contains("Source &amp; Target"));
+        assert!(html.contains("Compare Options"));
+        assert!(html.contains("Results"));
+        assert!(html.contains("Object Diff"));
+        assert!(html.contains("Warnings"));
+        assert!(html.contains("Release Plan"));
+        assert!(html.contains("Reports / Raw JSON"));
+        assert!(html.contains("About / Safety"));
         assert!(html.contains("workspace-path"));
         assert!(html.contains("Session-only"));
-        assert!(html.contains("does not clone, fetch, or persist workspace paths"));
+        assert!(html.contains("does not clone or fetch repositories"));
+        assert!(html.contains("results-grid"));
+        assert!(html.contains("selected-json"));
+        assert!(html.contains("warnings-list"));
+        assert!(html.contains("Release artifact preview will be connected"));
         assert!(html.contains("Raw JSON"));
         assert!(!html.contains("http://"));
         assert!(!html.contains("https://"));
@@ -8873,11 +9522,15 @@ rows:
             "/api/v1/postgres/export",
             "/api/v1/postgres/sync",
             "/api/v1/postgres/release",
+            "/api/v1/release",
             "/api/v1/postgres/apply",
+            "release/write",
             "localStorage",
             "sessionStorage",
             "console.log",
             "execute generated SQL",
+            "execute SQL",
+            "sync to database",
             "directApply",
             "mutateDatabase",
             "clone",
@@ -8890,6 +9543,54 @@ rows:
             assert!(
                 !js.contains(forbidden),
                 "UI JavaScript contains forbidden pattern {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn slice13a_ui_html_contains_schema_compare_workflow_structure() {
+        let html = ui_html();
+
+        for expected in [
+            "Workspace",
+            "Source &amp; Target",
+            "Compare Options",
+            "Results",
+            "Object Diff",
+            "Warnings",
+            "Release Plan",
+            "Reports / Raw JSON",
+            "About / Safety",
+            "results-grid",
+            "Object type",
+            "Planned operation",
+            "Repository Side",
+            "Database Side",
+            "Diff detail not available yet",
+            "Review-only",
+        ] {
+            assert!(
+                html.contains(expected),
+                "missing UI workflow text {expected}"
+            );
+        }
+
+        for forbidden in [
+            "React",
+            "Vue",
+            "Svelte",
+            "Angular",
+            "Vite",
+            "node_modules",
+            "unpkg",
+            "jsdelivr",
+            "Deploy to database",
+            "Execute SQL",
+            "Sync to Database",
+        ] {
+            assert!(
+                !html.contains(forbidden),
+                "UI HTML contains forbidden pattern {forbidden}"
             );
         }
     }
