@@ -537,8 +537,12 @@ pub fn run_cli(
             })
         }
         CommandKind::InspectPostgres => {
-            let report =
-                inspect_postgres_command(parsed.url, env::var("DBSTATE_POSTGRES_URL").ok());
+            let report = inspect_postgres_scoped_command(
+                parsed.url,
+                env::var("DBSTATE_POSTGRES_URL").ok(),
+                parsed.schema,
+                parsed.table,
+            );
             let exit_code = if report.success { 0 } else { 2 };
             Ok(CliResult {
                 format: parsed.format,
@@ -627,8 +631,518 @@ impl Default for ServiceConfig {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ServiceHttpResponse {
     pub status_code: u16,
+    pub content_type: String,
     pub body: String,
 }
+
+const UI_HTML: &str = r#"<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>DbState PostgreSQL v0.1</title>
+  <link rel="stylesheet" href="/ui/app.css">
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>DbState PostgreSQL v0.1</h1>
+      <p>Local workflow shell over the DbState Service API.</p>
+    </div>
+    <span class="status-pill" id="service-pill">Service not checked</span>
+  </header>
+
+  <main>
+    <section class="banner local">
+      <strong>Local only.</strong>
+      This UI is served by the local DbState Service. Do not expose it publicly.
+    </section>
+    <section class="banner safety">
+      <strong>Safety boundary.</strong>
+      No SQL execution, no direct database apply, and no write workflows are available in Slice 12.
+    </section>
+
+    <section class="grid">
+      <article class="panel">
+        <h2>Service Health</h2>
+        <button type="button" data-action="health">Check Health</button>
+        <dl id="health-summary"></dl>
+      </article>
+
+      <article class="panel">
+        <h2>Repository Status</h2>
+        <button type="button" data-action="repo-status">Refresh Status</button>
+        <dl id="repo-summary"></dl>
+      </article>
+
+      <article class="panel">
+        <h2>Init Plan</h2>
+        <p>Dry-run only. The UI does not initialize or write project files.</p>
+        <button type="button" data-action="init-plan">Plan Init</button>
+        <dl id="init-summary"></dl>
+      </article>
+
+      <article class="panel connection-panel">
+        <h2>PostgreSQL Connection</h2>
+        <label for="postgres-url">Session-only URL</label>
+        <input id="postgres-url" type="password" autocomplete="off" spellcheck="false" placeholder="Prefer DBSTATE_POSTGRES_URL in the service environment">
+        <p>The URL is sent only with the clicked operation. It is not stored by this UI.</p>
+      </article>
+
+      <article class="panel">
+        <h2>PostgreSQL Inspect</h2>
+        <div class="controls">
+          <label>Scope
+            <select id="inspect-scope">
+              <option value="all">All</option>
+              <option value="schema">Schema</option>
+              <option value="table">Table</option>
+            </select>
+          </label>
+          <label>Schema <input id="inspect-schema" type="text" autocomplete="off"></label>
+          <label>Table <input id="inspect-table" type="text" autocomplete="off" placeholder="schema.table"></label>
+        </div>
+        <button type="button" data-action="inspect">Inspect</button>
+      </article>
+
+      <article class="panel">
+        <h2>PostgreSQL Compare</h2>
+        <div class="controls">
+          <label>Scope
+            <select id="compare-scope">
+              <option value="all">All</option>
+              <option value="schema">Schema</option>
+              <option value="table">Table</option>
+            </select>
+          </label>
+          <label>Schema <input id="compare-schema" type="text" autocomplete="off"></label>
+          <label>Table <input id="compare-table" type="text" autocomplete="off" placeholder="schema.table"></label>
+        </div>
+        <button type="button" data-action="compare">Compare</button>
+      </article>
+
+      <article class="panel">
+        <h2>PostgreSQL Plan</h2>
+        <div class="controls">
+          <label>Scope
+            <select id="plan-scope">
+              <option value="all">All</option>
+              <option value="schema">Schema</option>
+              <option value="table">Table</option>
+            </select>
+          </label>
+          <label>Schema <input id="plan-schema" type="text" autocomplete="off"></label>
+          <label>Table <input id="plan-table" type="text" autocomplete="off" placeholder="schema.table"></label>
+          <label>Include <input id="plan-include" type="text" autocomplete="off" placeholder="table:dbstate_slice2.sample_accounts"></label>
+          <label>Exclude <input id="plan-exclude" type="text" autocomplete="off" placeholder="schema:public"></label>
+        </div>
+        <button type="button" data-action="plan">Plan</button>
+      </article>
+
+      <article class="panel">
+        <h2>Reference-data Compare</h2>
+        <div class="controls">
+          <label>Scope
+            <select id="data-scope">
+              <option value="all">All configured tables</option>
+              <option value="table">Table</option>
+            </select>
+          </label>
+          <label>Table <input id="data-table" type="text" autocomplete="off" placeholder="schema.table"></label>
+        </div>
+        <button type="button" data-action="data-compare">Data Compare</button>
+      </article>
+    </section>
+
+    <section class="panel response-panel">
+      <h2>Response</h2>
+      <div id="response-summary" class="response-summary">Run a workflow to see results.</div>
+      <h3>Raw JSON</h3>
+      <pre id="json-viewer">{}</pre>
+    </section>
+  </main>
+
+  <script src="/ui/app.js"></script>
+</body>
+</html>
+"#;
+
+const UI_CSS: &str = r#":root {
+  color-scheme: light;
+  --bg: #f5f7f9;
+  --panel: #ffffff;
+  --text: #17202a;
+  --muted: #5d6b78;
+  --border: #d8e0e7;
+  --accent: #176b87;
+  --accent-strong: #0f5369;
+  --warning: #7a4b00;
+  --warning-bg: #fff4d6;
+  --safe-bg: #e9f7ef;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  line-height: 1.5;
+}
+
+.topbar {
+  display: flex;
+  justify-content: space-between;
+  gap: 24px;
+  align-items: center;
+  padding: 24px 32px;
+  background: #ffffff;
+  border-bottom: 1px solid var(--border);
+}
+
+h1,
+h2,
+p {
+  margin-top: 0;
+}
+
+h1 {
+  margin-bottom: 4px;
+  font-size: 28px;
+}
+
+h2 {
+  font-size: 18px;
+}
+
+main {
+  max-width: 1180px;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.banner,
+.panel {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.banner {
+  padding: 14px 16px;
+  margin-bottom: 12px;
+}
+
+.banner.local {
+  background: var(--safe-bg);
+}
+
+.banner.safety {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));
+  gap: 16px;
+  margin-top: 20px;
+}
+
+.panel {
+  padding: 18px;
+}
+
+.connection-panel {
+  grid-column: span 2;
+}
+
+.response-panel {
+  margin-top: 16px;
+}
+
+button {
+  border: 0;
+  border-radius: 6px;
+  background: var(--accent);
+  color: #ffffff;
+  padding: 9px 12px;
+  font: inherit;
+  cursor: pointer;
+}
+
+button:hover {
+  background: var(--accent-strong);
+}
+
+input,
+select {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 9px;
+  font: inherit;
+}
+
+label {
+  display: block;
+  font-weight: 600;
+  font-size: 14px;
+}
+
+.controls {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.status-pill {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 6px 10px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 6px 12px;
+  margin-bottom: 0;
+}
+
+dt {
+  color: var(--muted);
+}
+
+dd {
+  margin: 0;
+}
+
+.response-summary {
+  margin-bottom: 12px;
+  color: var(--muted);
+}
+
+pre {
+  overflow: auto;
+  min-height: 180px;
+  max-height: 460px;
+  padding: 14px;
+  border-radius: 8px;
+  background: #111820;
+  color: #e8f0f7;
+}
+
+@media (max-width: 720px) {
+  .topbar,
+  main {
+    padding: 18px;
+  }
+
+  .topbar {
+    display: block;
+  }
+
+  .connection-panel {
+    grid-column: auto;
+  }
+}
+"#;
+
+const UI_JS: &str = r#"(function () {
+  const approvedEndpoints = {
+    health: "/api/v1/health",
+    repoStatus: "/api/v1/repo/status",
+    initPlan: "/api/v1/init/plan",
+    inspect: "/api/v1/postgres/inspect",
+    compare: "/api/v1/postgres/compare",
+    plan: "/api/v1/postgres/plan",
+    dataCompare: "/api/v1/postgres/data-compare"
+  };
+
+  const jsonViewer = document.getElementById("json-viewer");
+  const responseSummary = document.getElementById("response-summary");
+  const servicePill = document.getElementById("service-pill");
+
+  function value(id) {
+    return document.getElementById(id).value.trim();
+  }
+
+  function postgresUrl() {
+    return value("postgres-url");
+  }
+
+  function commaList(raw) {
+    return raw.split(",").map(function (item) {
+      return item.trim();
+    }).filter(Boolean);
+  }
+
+  function buildScope(prefix) {
+    const scope = value(prefix + "-scope");
+    const body = { scope: scope };
+    if (scope === "schema") {
+      const schema = value(prefix + "-schema");
+      if (!schema) {
+        throw new Error("Schema scope requires a schema name.");
+      }
+      body.schema = schema;
+    }
+    if (scope === "table") {
+      const table = value(prefix + "-table");
+      if (!table) {
+        throw new Error("Table scope requires a schema.table value.");
+      }
+      body.table = table;
+    }
+    return body;
+  }
+
+  function attachPostgresUrl(body) {
+    const url = postgresUrl();
+    if (url) {
+      body.postgresUrl = url;
+    }
+    return body;
+  }
+
+  function redactedJson(value) {
+    return JSON.stringify(value, null, 2)
+      .replace(/postgres(?:ql)?:\/\/[^"\s]+/gi, "<redacted-postgres-url>")
+      .replace(/password[^",}]*/gi, "password=<redacted>")
+      .replace(/token[^",}]*/gi, "token=<redacted>");
+  }
+
+  function summarize(data) {
+    const parts = [];
+    parts.push(data.success ? "Success" : "Failed");
+    if (data.branch) {
+      parts.push("branch " + data.branch);
+    }
+    if (data.workingTreeStatus) {
+      parts.push("working tree " + data.workingTreeStatus);
+    }
+    if (data.counts) {
+      parts.push("counts available");
+    }
+    if (Array.isArray(data.warnings) && data.warnings.length) {
+      parts.push(data.warnings.length + " warning(s)");
+    }
+    if (Array.isArray(data.errors) && data.errors.length) {
+      parts.push(data.errors.length + " error(s)");
+    }
+    return parts.join(" | ");
+  }
+
+  function updateSummary(id, entries) {
+    const target = document.getElementById(id);
+    target.innerHTML = "";
+    Object.keys(entries).forEach(function (key) {
+      const dt = document.createElement("dt");
+      const dd = document.createElement("dd");
+      dt.textContent = key;
+      dd.textContent = entries[key] == null ? "" : String(entries[key]);
+      target.appendChild(dt);
+      target.appendChild(dd);
+    });
+  }
+
+  async function requestJson(endpoint, body) {
+    const options = body == null ? {} : {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    };
+    const response = await fetch(endpoint, options);
+    const text = await response.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (error) {
+      throw new Error("Service returned a non-JSON response with HTTP " + response.status + ".");
+    }
+    data.httpStatus = response.status;
+    return data;
+  }
+
+  async function run(label, endpoint, body, summaryId) {
+    responseSummary.textContent = "Running " + label + "...";
+    try {
+      const data = await requestJson(endpoint, body);
+      responseSummary.textContent = label + ": " + summarize(data);
+      jsonViewer.textContent = redactedJson(data);
+      if (summaryId) {
+        updateSummary(summaryId, {
+          success: data.success,
+          status: data.httpStatus,
+          branch: data.branch || "",
+          tree: data.workingTreeStatus || "",
+          warnings: Array.isArray(data.warnings) ? data.warnings.length : 0,
+          errors: Array.isArray(data.errors) ? data.errors.length : 0
+        });
+      }
+      if (label === "Health") {
+        servicePill.textContent = data.success ? "Service healthy" : "Service issue";
+      }
+    } catch (error) {
+      const message = error && error.message ? error.message : "Unknown service error.";
+      responseSummary.textContent = label + ": " + message;
+      jsonViewer.textContent = redactedJson({ success: false, errors: [message] });
+      if (label === "Health") {
+        servicePill.textContent = "Service not reachable";
+      }
+    }
+  }
+
+  document.querySelector("[data-action='health']").addEventListener("click", function () {
+    run("Health", approvedEndpoints.health, null, "health-summary");
+  });
+
+  document.querySelector("[data-action='repo-status']").addEventListener("click", function () {
+    run("Repository status", approvedEndpoints.repoStatus, {}, "repo-summary");
+  });
+
+  document.querySelector("[data-action='init-plan']").addEventListener("click", function () {
+    run("Init plan", approvedEndpoints.initPlan, { dryRun: true }, "init-summary");
+  });
+
+  document.querySelector("[data-action='inspect']").addEventListener("click", function () {
+    run("Inspect", approvedEndpoints.inspect, attachPostgresUrl(buildScope("inspect")));
+  });
+
+  document.querySelector("[data-action='compare']").addEventListener("click", function () {
+    run("Compare", approvedEndpoints.compare, attachPostgresUrl(buildScope("compare")));
+  });
+
+  document.querySelector("[data-action='plan']").addEventListener("click", function () {
+    const body = attachPostgresUrl(buildScope("plan"));
+    body.include = commaList(value("plan-include"));
+    body.exclude = commaList(value("plan-exclude"));
+    run("Plan", approvedEndpoints.plan, body);
+  });
+
+  document.querySelector("[data-action='data-compare']").addEventListener("click", function () {
+    const scope = value("data-scope");
+    const body = { scope: scope };
+    if (scope === "table") {
+      const table = value("data-table");
+      if (!table) {
+        responseSummary.textContent = "Reference-data compare: table scope requires a schema.table value.";
+        return;
+      }
+      body.table = table;
+    }
+    run("Reference-data compare", approvedEndpoints.dataCompare, attachPostgresUrl(body));
+  });
+
+  run("Health", approvedEndpoints.health, null, "health-summary");
+}());
+"#;
 
 pub fn parse_service_args(args: &[String]) -> Result<ServiceConfig, String> {
     let mut config = ServiceConfig::default();
@@ -830,9 +1344,10 @@ fn write_http_response(
         _ => "OK",
     };
     let http_response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
         response.status_code,
         reason,
+        response.content_type,
         response.body.len(),
         response.body
     );
@@ -843,6 +1358,13 @@ fn write_http_response(
 
 pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> ServiceHttpResponse {
     match (method, path) {
+        ("GET", "/") | ("GET", "/ui") | ("GET", "/ui/") => {
+            service_static_response(200, "text/html; charset=utf-8", UI_HTML)
+        }
+        ("GET", "/ui/app.css") => service_static_response(200, "text/css; charset=utf-8", UI_CSS),
+        ("GET", "/ui/app.js") => {
+            service_static_response(200, "application/javascript; charset=utf-8", UI_JS)
+        }
         ("GET", "/health") | ("GET", "/api/v1/health") => service_health_response(),
         ("POST", "/api/v1/repo/status") => service_cli_endpoint(
             "repo status",
@@ -901,6 +1423,11 @@ enum EndpointScopeKind {
 
 pub fn service_route_definitions() -> Vec<(&'static str, &'static str)> {
     vec![
+        ("GET", "/"),
+        ("GET", "/ui"),
+        ("GET", "/ui/"),
+        ("GET", "/ui/app.css"),
+        ("GET", "/ui/app.js"),
         ("GET", "/health"),
         ("GET", "/api/v1/health"),
         ("POST", "/api/v1/repo/status"),
@@ -924,7 +1451,32 @@ fn service_health_response() -> ServiceHttpResponse {
     body.push('}');
     ServiceHttpResponse {
         status_code: 200,
+        content_type: "application/json; charset=utf-8".to_string(),
         body,
+    }
+}
+
+pub fn ui_html() -> &'static str {
+    UI_HTML
+}
+
+pub fn ui_css() -> &'static str {
+    UI_CSS
+}
+
+pub fn ui_js() -> &'static str {
+    UI_JS
+}
+
+fn service_static_response(
+    status_code: u16,
+    content_type: &str,
+    body: &str,
+) -> ServiceHttpResponse {
+    ServiceHttpResponse {
+        status_code,
+        content_type: content_type.to_string(),
+        body: body.to_string(),
     }
 }
 
@@ -1015,7 +1567,11 @@ fn service_run_cli(command: &str, cwd: &Path, args: Vec<String>) -> ServiceHttpR
         Ok(result) => {
             let body = result.output.to_json();
             let status_code = service_status_from_cli_result(result.exit_code, &body);
-            ServiceHttpResponse { status_code, body }
+            ServiceHttpResponse {
+                status_code,
+                content_type: "application/json; charset=utf-8".to_string(),
+                body,
+            }
         }
         Err(error) => service_error_response(400, command, &error),
     }
@@ -1167,7 +1723,11 @@ fn service_error_response(status_code: u16, command: &str, message: &str) -> Ser
     write_json_array_field(&mut body, "warnings", &[]);
     write_json_array_field(&mut body, "errors", &[redact_message(message, "")]);
     body.push('}');
-    ServiceHttpResponse { status_code, body }
+    ServiceHttpResponse {
+        status_code,
+        content_type: "application/json; charset=utf-8".to_string(),
+        body,
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -1337,6 +1897,7 @@ impl ParsedArgs {
         }
 
         if (schema.is_some() || table.is_some() || all)
+            && command != CommandKind::InspectPostgres
             && command != CommandKind::ExportPostgres
             && command != CommandKind::SyncPostgres
             && command != CommandKind::ComparePostgres
@@ -1345,7 +1906,7 @@ impl ParsedArgs {
             && command != CommandKind::DataComparePostgres
         {
             return Err(
-                "--schema, --table, and --all are only supported for dbstate export postgres, dbstate sync postgres, dbstate compare postgres, dbstate plan postgres, dbstate release postgres, and dbstate data-compare postgres"
+                "--schema, --table, and --all are only supported for dbstate inspect postgres, dbstate export postgres, dbstate sync postgres, dbstate compare postgres, dbstate plan postgres, dbstate release postgres, and dbstate data-compare postgres"
                     .to_string(),
             );
         }
@@ -1386,7 +1947,7 @@ impl ParsedArgs {
 }
 
 pub fn usage() -> String {
-    "Usage:\n  dbstate repo status [--format json|--json]\n  dbstate init [--dry-run] [--format json|--json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json|--json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json|--json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json|--json]\n  dbstate data-compare postgres (--all | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate serve [--host <host>] [--port <port>] [--format json|--json]".to_string()
+    "Usage:\n  dbstate repo status [--format json|--json]\n  dbstate init [--dry-run] [--format json|--json]\n  dbstate inspect postgres [--url <postgres-url>] [--all | --schema <schema> | --table <schema.table>] [--format json|--json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json|--json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json|--json]\n  dbstate data-compare postgres (--all | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate serve [--host <host>] [--port <port>] [--format json|--json]".to_string()
 }
 
 pub fn status_report(cwd: &Path, command: CommandKind) -> ProjectReport {
@@ -1501,6 +2062,15 @@ pub fn inspect_postgres_command(
     cli_url: Option<String>,
     env_url: Option<String>,
 ) -> InspectionReport {
+    inspect_postgres_scoped_command(cli_url, env_url, None, None)
+}
+
+fn inspect_postgres_scoped_command(
+    cli_url: Option<String>,
+    env_url: Option<String>,
+    schema: Option<String>,
+    table: Option<String>,
+) -> InspectionReport {
     let mut report = empty_inspection_report(CommandKind::InspectPostgres);
 
     let Some(connection_url) = resolve_postgres_url(cli_url, env_url) else {
@@ -1519,6 +2089,11 @@ pub fn inspect_postgres_command(
             report.schemas = inventory.schemas;
             report.tables = inventory.tables;
             report.columns = inventory.columns;
+            if let Err(error) = apply_inspection_scope(&mut report, schema, table) {
+                report.success = false;
+                report.errors.push(error);
+                return report;
+            }
             report.counts = InspectionCounts {
                 schemas: report.schemas.len(),
                 tables: report.tables.len(),
@@ -1532,6 +2107,60 @@ pub fn inspect_postgres_command(
     }
 
     report
+}
+
+fn apply_inspection_scope(
+    report: &mut InspectionReport,
+    schema: Option<String>,
+    table: Option<String>,
+) -> Result<(), String> {
+    if let Some(schema) = schema {
+        if schema.trim().is_empty() {
+            return Err("--schema cannot be empty.".to_string());
+        }
+        if !report.schemas.iter().any(|item| item.name == schema) {
+            return Err(format!(
+                "Selected schema '{schema}' was not found in the PostgreSQL inventory."
+            ));
+        }
+        report.schemas.retain(|item| item.name == schema);
+        report.tables.retain(|item| item.schema_name == schema);
+        report.columns.retain(|item| item.schema_name == schema);
+        report.inspection_scope = vec![format!("schema:{schema}")];
+        return Ok(());
+    }
+
+    if let Some(table) = table {
+        let Some((schema, table_name)) = table.split_once('.') else {
+            return Err(
+                "--table must use schema-qualified form such as public.example_table.".to_string(),
+            );
+        };
+        if schema.trim().is_empty() || table_name.trim().is_empty() {
+            return Err(
+                "--table must use schema-qualified form such as public.example_table.".to_string(),
+            );
+        }
+        if !report
+            .tables
+            .iter()
+            .any(|item| item.schema_name == schema && item.table_name == table_name)
+        {
+            return Err(format!(
+                "Selected table '{schema}.{table_name}' was not found in the PostgreSQL inventory."
+            ));
+        }
+        report.schemas.retain(|item| item.name == schema);
+        report
+            .tables
+            .retain(|item| item.schema_name == schema && item.table_name == table_name);
+        report
+            .columns
+            .retain(|item| item.schema_name == schema && item.table_name == table_name);
+        report.inspection_scope = vec![format!("table:{schema}.{table_name}")];
+    }
+
+    Ok(())
 }
 
 fn resolve_postgres_url(cli_url: Option<String>, env_url: Option<String>) -> Option<String> {
@@ -8065,6 +8694,11 @@ rows:
         let routes = service_route_definitions();
 
         for expected in [
+            ("GET", "/"),
+            ("GET", "/ui"),
+            ("GET", "/ui/"),
+            ("GET", "/ui/app.css"),
+            ("GET", "/ui/app.js"),
             ("GET", "/health"),
             ("GET", "/api/v1/health"),
             ("POST", "/api/v1/repo/status"),
@@ -8083,6 +8717,110 @@ rows:
             assert!(!path.contains("release/write"));
             assert!(!path.contains("apply"));
         }
+    }
+
+    #[test]
+    fn slice12_ui_routes_serve_static_assets() {
+        let dir = create_temp_dir("slice12-ui-routes");
+
+        let root = service_response("GET", "/", "", &dir);
+        assert_eq!(root.status_code, 200);
+        assert!(root.content_type.contains("text/html"));
+        assert!(root.body.contains("DbState PostgreSQL v0.1"));
+
+        let ui = service_response("GET", "/ui", "", &dir);
+        assert_eq!(ui.status_code, 200);
+        assert!(ui.content_type.contains("text/html"));
+
+        let ui_slash = service_response("GET", "/ui/", "", &dir);
+        assert_eq!(ui_slash.status_code, 200);
+        assert!(ui_slash.content_type.contains("text/html"));
+
+        let css = service_response("GET", "/ui/app.css", "", &dir);
+        assert_eq!(css.status_code, 200);
+        assert!(css.content_type.contains("text/css"));
+        assert!(css.body.contains(".panel"));
+
+        let js = service_response("GET", "/ui/app.js", "", &dir);
+        assert_eq!(js.status_code, 200);
+        assert!(js.content_type.contains("application/javascript"));
+        assert!(js.body.contains("/api/v1/health"));
+    }
+
+    #[test]
+    fn slice12_ui_html_contains_safety_messages_and_no_external_assets() {
+        let html = ui_html();
+
+        assert!(html.contains("Local only"));
+        assert!(html.contains("No SQL execution"));
+        assert!(html.contains("no direct database apply"));
+        assert!(html.contains("no write workflows"));
+        assert!(html.contains("Service Health"));
+        assert!(html.contains("Repository Status"));
+        assert!(html.contains("Init Plan"));
+        assert!(html.contains("PostgreSQL Inspect"));
+        assert!(html.contains("PostgreSQL Compare"));
+        assert!(html.contains("PostgreSQL Plan"));
+        assert!(html.contains("Reference-data Compare"));
+        assert!(html.contains("Raw JSON"));
+        assert!(!html.contains("http://"));
+        assert!(!html.contains("https://"));
+        assert!(!html.contains("cdn"));
+        assert!(!html.contains("unpkg"));
+        assert!(!html.contains("jsdelivr"));
+    }
+
+    #[test]
+    fn slice12_ui_javascript_calls_only_approved_endpoints() {
+        let js = ui_js();
+        let approved = [
+            "/api/v1/health",
+            "/api/v1/repo/status",
+            "/api/v1/init/plan",
+            "/api/v1/postgres/inspect",
+            "/api/v1/postgres/compare",
+            "/api/v1/postgres/plan",
+            "/api/v1/postgres/data-compare",
+        ];
+
+        for endpoint in approved {
+            assert!(
+                js.contains(endpoint),
+                "missing approved endpoint {endpoint}"
+            );
+        }
+
+        for forbidden in [
+            "/api/v1/postgres/export",
+            "/api/v1/postgres/sync",
+            "/api/v1/postgres/release",
+            "/api/v1/postgres/apply",
+            "localStorage",
+            "sessionStorage",
+            "console.log",
+            "execute generated SQL",
+            "directApply",
+            "mutateDatabase",
+        ] {
+            assert!(
+                !js.contains(forbidden),
+                "UI JavaScript contains forbidden pattern {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn slice12_service_api_routes_remain_json() {
+        let dir = create_temp_dir("slice12-api-json");
+        let health = service_response("GET", "/api/v1/health", "", &dir);
+        assert_eq!(health.status_code, 200);
+        assert!(health.content_type.contains("application/json"));
+        assert_common_json_contract(&health.body);
+
+        let missing = service_response("GET", "/api/v1/missing", "", &dir);
+        assert_eq!(missing.status_code, 404);
+        assert!(missing.content_type.contains("application/json"));
+        assert_common_json_contract(&missing.body);
     }
 
     #[test]
@@ -8163,7 +8901,7 @@ rows:
 
         let response = service_response("POST", "/api/v1/postgres/inspect", &body, &dir);
 
-        assert_eq!(response.status_code, 400);
+        assert_eq!(response.status_code, 503);
         assert_common_json_contract(&response.body);
         assert!(!response.body.contains(&raw_url));
         assert!(!response.body.contains("service-secret-marker"));
