@@ -75,7 +75,7 @@ Buttons call only existing safe service endpoints:
 
 ## Results Grid
 
-The Results step maps existing service responses into a best-effort grid.
+The Results step maps existing service responses into a best-effort grid. Slice 13B refines this grid so it behaves more like a database schema compare tool.
 
 Columns:
 
@@ -86,10 +86,19 @@ Columns:
 - Status.
 - Planned operation.
 - Warnings.
-- Source.
-- Target.
+
+Source and target are shown as workflow context above the grid instead of repeated columns.
 
 The include checkboxes are UI-only state in Slice 13A. They do not write files and do not call write endpoints.
+
+The Slice 13B grid includes:
+
+- Object-type filter.
+- Compact status legend.
+- Status badges.
+- Clean schema and object names derived from object refs or repository file paths.
+- Inspect rows for schemas, tables, and columns when available.
+- Service errors shown as errors, not fake object rows.
 
 ## Object Diff
 

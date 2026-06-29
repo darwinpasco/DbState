@@ -738,24 +738,21 @@ const UI_HTML: &str = r#"<!doctype html>
           <p>Choose the scope and run a read-only compare, plan, inspect, or configured reference-data compare.</p>
         </div>
         <div class="form-grid">
-          <label for="compare-scope">Scope
-            <select id="compare-scope">
-              <option value="all">All</option>
-              <option value="schema">Schema</option>
-              <option value="table">Table</option>
+          <label for="compare-schema">Schema
+            <select id="compare-schema">
+              <option value="">All</option>
             </select>
           </label>
-          <label for="compare-schema">Schema
-            <input id="compare-schema" type="text" autocomplete="off" placeholder="dbstate_slice2">
-          </label>
           <label for="compare-table">Table
-            <input id="compare-table" type="text" autocomplete="off" placeholder="schema.table">
+            <select id="compare-table">
+              <option value="">All</option>
+            </select>
           </label>
           <label for="plan-include">Include refs
-            <input id="plan-include" type="text" autocomplete="off" placeholder="table:dbstate_slice2.sample_accounts">
+            <input id="plan-include" type="text" autocomplete="off">
           </label>
           <label for="plan-exclude">Exclude refs
-            <input id="plan-exclude" type="text" autocomplete="off" placeholder="schema:public">
+            <input id="plan-exclude" type="text" autocomplete="off">
           </label>
           <label for="data-scope">Reference-data scope
             <select id="data-scope">
@@ -764,9 +761,13 @@ const UI_HTML: &str = r#"<!doctype html>
             </select>
           </label>
           <label for="data-table">Reference-data table
-            <input id="data-table" type="text" autocomplete="off" placeholder="schema.table">
+            <select id="data-table">
+              <option value="">All</option>
+            </select>
           </label>
         </div>
+        <p class="note">Run Inspect first to populate schema and table lists. Include/exclude refs are advanced optional filters. Format examples: schema:core, table:core.payment_attempts.</p>
+        <p class="note">Run Reference Data Compare to load configured reference-data tables.</p>
         <div class="object-filter-row" aria-label="Object type filters">
           <label><input type="checkbox" checked disabled> schemas</label>
           <label><input type="checkbox" checked disabled> tables</label>
@@ -789,9 +790,32 @@ const UI_HTML: &str = r#"<!doctype html>
           <h2>Results</h2>
           <p>Review comparison and planning results. Include selections are UI-only in this shell.</p>
         </div>
+        <div class="results-context" aria-label="Results source and target context">
+          <span>Source: <strong id="results-source">Repository desired state</strong></span>
+          <span>Target: <strong id="results-target">PostgreSQL target</strong></span>
+          <span>Operation: <strong id="results-operation">none</strong></span>
+        </div>
+        <div id="results-error-summary" class="results-error-summary" hidden></div>
         <div class="results-toolbar">
+          <label for="object-type-filter">Object type
+            <select id="object-type-filter">
+              <option value="all">All</option>
+              <option value="schema">Schema</option>
+              <option value="table">Table</option>
+            </select>
+          </label>
           <span id="results-count">0 result rows</span>
           <span id="included-count">0 included</span>
+        </div>
+        <div class="status-legend" aria-label="Status legend">
+          <span><span class="status-badge status-insync">inSync</span> repository and database match</span>
+          <span><span class="status-badge status-repodifferent">repoDifferent</span> exists in both but differs</span>
+          <span><span class="status-badge status-repoonly">repoOnly</span> repository only</span>
+          <span><span class="status-badge status-databaseonly">databaseOnly</span> PostgreSQL only</span>
+          <span><span class="status-badge status-skipped">skipped</span> not safely comparable</span>
+          <span><span class="status-badge status-blocked">blocked</span> blocked by safety or dependency rules</span>
+          <span><span class="status-badge status-error">error</span> operation failed</span>
+          <span><span class="status-badge status-inspected">inspected</span> read from PostgreSQL inspect output</span>
         </div>
         <div class="table-wrap">
           <table class="results-grid" aria-label="Comparison results grid">
@@ -804,12 +828,10 @@ const UI_HTML: &str = r#"<!doctype html>
                 <th>Status</th>
                 <th>Planned operation</th>
                 <th>Warnings</th>
-                <th>Source</th>
-                <th>Target</th>
               </tr>
             </thead>
             <tbody id="results-body">
-              <tr><td colspan="9">Run a compare or plan to populate results.</td></tr>
+              <tr><td colspan="7">Run a compare or plan to populate results.</td></tr>
             </tbody>
           </table>
         </div>
@@ -1132,6 +1154,42 @@ button:hover {
   font-weight: 600;
 }
 
+.results-toolbar {
+  justify-content: space-between;
+  margin: 10px 0;
+}
+
+.results-toolbar label {
+  max-width: 220px;
+}
+
+.results-context,
+.status-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.results-context {
+  margin-bottom: 10px;
+  color: var(--muted);
+}
+
+.results-error-summary {
+  margin-bottom: 10px;
+  border-left: 4px solid var(--danger);
+  background: #ffe9e6;
+  color: #5d160f;
+  padding: 10px 12px;
+}
+
+.status-legend {
+  margin-bottom: 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+
 .table-wrap {
   overflow: auto;
   border: 1px solid var(--border);
@@ -1141,7 +1199,7 @@ button:hover {
 .results-grid {
   width: 100%;
   border-collapse: collapse;
-  min-width: 900px;
+  min-width: 760px;
   background: #ffffff;
 }
 
@@ -1168,6 +1226,65 @@ button:hover {
   outline: 2px solid var(--accent);
   outline-offset: -2px;
   background: #edf7fb;
+}
+
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 22px;
+  border-radius: 999px;
+  padding: 2px 8px;
+  border: 1px solid #c9d2da;
+  background: #eef2f5;
+  color: #344451;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.status-insync {
+  border-color: #9bd6b5;
+  background: #e7f7ee;
+  color: #146c43;
+}
+
+.status-repodifferent,
+.status-error {
+  border-color: #ecaaa3;
+  background: #ffe9e6;
+  color: #9f2d20;
+}
+
+.status-repoonly {
+  border-color: #a7c9f2;
+  background: #e8f2ff;
+  color: #195899;
+}
+
+.status-databaseonly,
+.status-planned,
+.status-review {
+  border-color: #e2c15f;
+  background: #fff6d8;
+  color: #775000;
+}
+
+.status-skipped,
+.status-unknown {
+  border-color: #c7ced5;
+  background: #f1f3f5;
+  color: #59636e;
+}
+
+.status-blocked {
+  border-color: #c97c72;
+  background: #f8d3ce;
+  color: #7b1f16;
+}
+
+.status-inspected {
+  border-color: #98c8d8;
+  background: #e6f5fa;
+  color: #176b87;
 }
 
 .summary-list {
@@ -1282,8 +1399,14 @@ const UI_JS: &str = r#"(function () {
   const state = {
     lastResponse: null,
     rows: [],
+    visibleRows: [],
+    inspectSchemas: [],
+    inspectTables: [],
+    inspectColumns: [],
+    referenceDataTables: [],
     included: new Set(),
-    selectedIndex: -1
+    selectedIndex: -1,
+    lastOperation: "none"
   };
 
   const jsonViewer = document.getElementById("json-viewer");
@@ -1296,6 +1419,21 @@ const UI_JS: &str = r#"(function () {
 
   function value(id) {
     return byId(id).value.trim();
+  }
+
+  function resetSelect(select, defaultLabel) {
+    select.innerHTML = "";
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = defaultLabel || "All";
+    select.appendChild(option);
+  }
+
+  function appendOption(select, value, label) {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = label || value;
+    select.appendChild(option);
   }
 
   function workspacePath() {
@@ -1329,23 +1467,15 @@ const UI_JS: &str = r#"(function () {
   }
 
   function buildScope() {
-    const scope = value("compare-scope");
-    const body = { scope: scope };
-    if (scope === "schema") {
-      const schema = value("compare-schema");
-      if (!schema) {
-        throw new Error("Schema scope requires a schema name.");
-      }
-      body.schema = schema;
+    const schema = value("compare-schema");
+    const table = value("compare-table");
+    if (table) {
+      return { scope: "table", table: table };
     }
-    if (scope === "table") {
-      const table = value("compare-table");
-      if (!table) {
-        throw new Error("Table scope requires a schema.table value.");
-      }
-      body.table = table;
+    if (schema) {
+      return { scope: "schema", schema: schema };
     }
-    return body;
+    return { scope: "all" };
   }
 
   function dataScope() {
@@ -1354,7 +1484,7 @@ const UI_JS: &str = r#"(function () {
     if (scope === "table") {
       const table = value("data-table");
       if (!table) {
-        throw new Error("Reference-data table scope requires a schema.table value.");
+        throw new Error("Reference-data table scope requires a configured table selection.");
       }
       body.table = table;
     }
@@ -1428,6 +1558,98 @@ const UI_JS: &str = r#"(function () {
     }
   }
 
+  function updateCompareOptionLists(data) {
+    if (!data || data.success === false || !Array.isArray(data.schemas) || !Array.isArray(data.tables)) {
+      return;
+    }
+    state.inspectSchemas = data.schemas.map(function (schema) {
+      return schema.name;
+    }).filter(Boolean).sort();
+    state.inspectTables = data.tables.map(function (table) {
+      return {
+        schema: table.schemaName,
+        table: table.tableName,
+        qualified: table.schemaName + "." + table.tableName
+      };
+    }).sort(function (left, right) {
+      return left.qualified.localeCompare(right.qualified);
+    });
+    state.inspectColumns = Array.isArray(data.columns) ? data.columns.slice() : [];
+
+    const schemaSelect = byId("compare-schema");
+    const selectedSchema = schemaSelect.value;
+    resetSelect(schemaSelect, "All");
+    state.inspectSchemas.forEach(function (schema) {
+      appendOption(schemaSelect, schema, schema);
+    });
+    if (state.inspectSchemas.indexOf(selectedSchema) >= 0) {
+      schemaSelect.value = selectedSchema;
+    }
+    updateTableOptions();
+  }
+
+  function updateTableOptions() {
+    const tableSelect = byId("compare-table");
+    const selectedTable = tableSelect.value;
+    const selectedSchema = value("compare-schema");
+    resetSelect(tableSelect, "All");
+    state.inspectTables.filter(function (table) {
+      return !selectedSchema || table.schema === selectedSchema;
+    }).forEach(function (table) {
+      const label = selectedSchema ? table.table : table.qualified;
+      appendOption(tableSelect, table.qualified, label);
+    });
+    if (Array.from(tableSelect.options).some(function (option) {
+      return option.value === selectedTable;
+    })) {
+      tableSelect.value = selectedTable;
+    }
+  }
+
+  function updateReferenceDataOptions(data) {
+    if (!data || data.success === false || !Array.isArray(data.tableResults)) {
+      return;
+    }
+    state.referenceDataTables = data.tableResults.map(function (table) {
+      return table.tableName;
+    }).filter(Boolean).sort();
+    const tableSelect = byId("data-table");
+    const selectedTable = tableSelect.value;
+    resetSelect(tableSelect, "All");
+    state.referenceDataTables.forEach(function (table) {
+      appendOption(tableSelect, table, table);
+    });
+    if (state.referenceDataTables.indexOf(selectedTable) >= 0) {
+      tableSelect.value = selectedTable;
+    }
+  }
+
+  function updateObjectTypeFilterOptions(rows, label) {
+    const select = byId("object-type-filter");
+    const selected = select.value || "all";
+    resetSelect(select, "All");
+    select.options[0].value = "all";
+    appendOption(select, "schema", "Schema");
+    appendOption(select, "table", "Table");
+    const hasReferenceData = value("workflow-mode") === "data" || label === "Reference-data compare" || rows.some(function (row) {
+      return row.objectType === "referenceDataTable" || row.objectType === "referenceDataRow";
+    });
+    if (hasReferenceData) {
+      appendOption(select, "referenceData", "Reference data");
+    }
+    const hasUnknownOrSkipped = rows.some(function (row) {
+      return row.objectType === "unknown" || row.status === "skipped";
+    });
+    if (hasUnknownOrSkipped) {
+      appendOption(select, "unknown", "Unknown or Skipped");
+    }
+    if (Array.from(select.options).some(function (option) {
+      return option.value === selected;
+    })) {
+      select.value = selected;
+    }
+  }
+
   function showStep(step) {
     document.querySelectorAll(".workflow-step").forEach(function (button) {
       button.classList.toggle("active", button.dataset.step === step);
@@ -1467,18 +1689,103 @@ const UI_JS: &str = r#"(function () {
     };
   }
 
+  function fileNameWithoutSql(path) {
+    const normalized = textOrEmpty(path).replace(/\\/g, "/");
+    const fileName = normalized.split("/").filter(Boolean).pop() || normalized;
+    return fileName.endsWith(".sql") ? fileName.slice(0, -4) : fileName;
+  }
+
+  function identityFromPath(path) {
+    const normalized = textOrEmpty(path).replace(/\\/g, "/");
+    const fileBase = fileNameWithoutSql(normalized);
+    if (normalized.indexOf("database/objects/schemas/") >= 0) {
+      return {
+        objectType: "schema",
+        schema: fileBase,
+        name: fileBase
+      };
+    }
+    if (normalized.indexOf("database/objects/tables/") >= 0) {
+      const dot = fileBase.indexOf(".");
+      if (dot > 0) {
+        return {
+          objectType: "table",
+          schema: fileBase.slice(0, dot),
+          name: fileBase.slice(dot + 1)
+        };
+      }
+      return {
+        objectType: "table",
+        schema: "",
+        name: fileBase
+      };
+    }
+    return null;
+  }
+
+  function identityFromObjectRef(objectRef) {
+    const text = textOrEmpty(objectRef);
+    if (text.indexOf("schema:") === 0) {
+      const schema = text.slice("schema:".length);
+      return {
+        objectType: "schema",
+        schema: schema,
+        name: schema
+      };
+    }
+    if (text.indexOf("table:") === 0) {
+      const identity = splitIdentity(text);
+      return {
+        objectType: "table",
+        schema: identity.schema,
+        name: identity.name
+      };
+    }
+    return null;
+  }
+
+  function identityFromTableName(tableName) {
+    const identity = splitIdentity(tableName);
+    return {
+      objectType: "table",
+      schema: identity.schema,
+      name: identity.name
+    };
+  }
+
+  function normalizeObjectType(value) {
+    const text = textOrEmpty(value);
+    if (text === "reference row") {
+      return "referenceDataRow";
+    }
+    if (text === "reference table") {
+      return "referenceDataTable";
+    }
+    if (["schema", "table", "column", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
+      return text;
+    }
+    return text || "unknown";
+  }
+
+  function statusClass(status) {
+    return "status-" + textOrEmpty(status).toLowerCase().replace(/[^a-z0-9]+/g, "");
+  }
+
   function rowFromItem(item, status, fallbackType) {
     const raw = typeof item === "object" && item !== null ? item : { value: item };
     const objectRef = raw.objectRef || raw.objectName || raw.tableName || raw.relativePath || raw.value || "";
-    const identity = splitIdentity(objectRef || raw.name || "");
-    const objectType = raw.objectType || fallbackType || (String(objectRef).startsWith("table:") ? "table" : "object");
+    const pathIdentity = identityFromPath(raw.relativePath || objectRef);
+    const refIdentity = identityFromObjectRef(objectRef);
+    const tableIdentity = raw.tableName ? identityFromTableName(raw.tableName) : null;
+    const identity = pathIdentity || refIdentity || tableIdentity || splitIdentity(objectRef || raw.name || "");
+    const objectType = normalizeObjectType(raw.objectType || identity.objectType || fallbackType || "unknown");
     return {
       objectRef: objectRef || objectType + ":" + (raw.name || status),
       objectType: objectType,
-      schema: raw.schema || raw.schemaName || identity.schema,
-      name: raw.name || raw.table || raw.tableName || identity.name || raw.relativePath || status,
+      schema: raw.schema || raw.schemaName || identity.schema || "",
+      name: raw.name || raw.table || identity.name || fileNameWithoutSql(raw.relativePath) || status,
       status: raw.compareClassification || raw.classification || status,
-      operation: raw.planIntent || raw.plannedOperation || "",
+      operation: raw.planIntent || raw.plannedOperation || (status === "inspected" ? "" : ""),
       warnings: raw.warnings || raw.dependencyWarnings || [],
       source: raw.relativePath || raw.source || "repository",
       target: raw.target || "postgresql",
@@ -1497,23 +1804,71 @@ const UI_JS: &str = r#"(function () {
 
   function rowsFromResponse(data, label) {
     const rows = [];
-    appendObjectList(rows, data, "inSync", "inSync", "object");
-    appendObjectList(rows, data, "repoDifferent", "repoDifferent", "object");
-    appendObjectList(rows, data, "repoOnly", "repoOnly", "object");
-    appendObjectList(rows, data, "databaseOnly", "databaseOnly", "object");
-    appendObjectList(rows, data, "skipped", "skipped", "object");
-    appendObjectList(rows, data, "planItems", "planned", "object");
-    appendObjectList(rows, data, "blockedItems", "blocked", "object");
+    appendObjectList(rows, data, "inSync", "inSync", "unknown");
+    appendObjectList(rows, data, "repoDifferent", "repoDifferent", "unknown");
+    appendObjectList(rows, data, "repoOnly", "repoOnly", "unknown");
+    appendObjectList(rows, data, "databaseOnly", "databaseOnly", "unknown");
+    appendObjectList(rows, data, "skipped", "skipped", "unknown");
+    appendObjectList(rows, data, "planItems", "planned", "unknown");
+    appendObjectList(rows, data, "blockedItems", "blocked", "unknown");
+
+    if (label === "Inspect" && data.success !== false) {
+      if (Array.isArray(data.schemas)) {
+        data.schemas.forEach(function (schema) {
+          rows.push({
+            objectRef: "schema:" + schema.name,
+            objectType: "schema",
+            schema: schema.name,
+            name: schema.name,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: schema
+          });
+        });
+      }
+      if (Array.isArray(data.tables)) {
+        data.tables.forEach(function (table) {
+          rows.push({
+            objectRef: "table:" + table.schemaName + "." + table.tableName,
+            objectType: "table",
+            schema: table.schemaName,
+            name: table.tableName,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: table
+          });
+        });
+      }
+    }
 
     if (Array.isArray(data.tableResults)) {
       data.tableResults.forEach(function (table) {
+        const tableIdentity = identityFromTableName(table.tableName);
+        rows.push({
+          objectRef: "referenceDataTable:" + table.tableName,
+          objectType: "referenceDataTable",
+          schema: tableIdentity.schema,
+          name: tableIdentity.name,
+          status: "inspected",
+          operation: "compare only",
+          warnings: table.warnings || [],
+          source: "repository reference-data",
+          target: "postgresql",
+          raw: table
+        });
         if (Array.isArray(table.rowResults)) {
           table.rowResults.forEach(function (row) {
             rows.push({
-              objectRef: table.tableName + ":" + textOrEmpty(row.rowKey),
-              objectType: "reference row",
-              schema: splitIdentity(table.tableName).schema,
-              name: splitIdentity(table.tableName).name + " " + textOrEmpty(row.rowKey),
+              objectRef: "referenceDataRow:" + table.tableName + ":" + textOrEmpty(row.rowKey),
+              objectType: "referenceDataRow",
+              schema: tableIdentity.schema,
+              name: tableIdentity.name + " " + textOrEmpty(row.rowKey),
               status: row.classification || "row",
               operation: "compare only",
               warnings: row.warnings || [],
@@ -1525,39 +1880,43 @@ const UI_JS: &str = r#"(function () {
         }
       });
     }
-
-    if (!rows.length && data.success === false) {
-      rows.push({
-        objectRef: "service:response",
-        objectType: "service",
-        schema: "",
-        name: label,
-        status: "error",
-        operation: "",
-        warnings: data.errors || [],
-        source: "request",
-        target: "service",
-        raw: data
-      });
-    }
     return rows;
   }
 
-  function renderResults(rows) {
+  function rowMatchesFilter(row) {
+    const filter = value("object-type-filter");
+    if (filter === "all") {
+      return true;
+    }
+    if (filter === "referenceData") {
+      return row.objectType === "referenceDataTable" || row.objectType === "referenceDataRow";
+    }
+    if (filter === "unknown") {
+      return row.objectType === "unknown" || row.status === "skipped";
+    }
+    return row.objectType === filter;
+  }
+
+  function renderResults(rows, keepUnderlying) {
     const body = byId("results-body");
     body.innerHTML = "";
-    state.rows = rows;
-    if (state.selectedIndex < 0 || state.selectedIndex >= rows.length) {
-      state.selectedIndex = rows.length ? 0 : -1;
+    if (!keepUnderlying) {
+      state.rows = rows;
     }
-    rows.forEach(function (row, index) {
-      const ref = rowRef(row, index);
+    const visibleRows = state.rows.filter(rowMatchesFilter);
+    state.visibleRows = visibleRows;
+    if (state.selectedIndex < 0 || state.selectedIndex >= visibleRows.length) {
+      state.selectedIndex = visibleRows.length ? 0 : -1;
+    }
+    visibleRows.forEach(function (row, visibleIndex) {
+      const sourceIndex = state.rows.indexOf(row);
+      const ref = rowRef(row, sourceIndex);
       if (!state.included.has(ref)) {
         state.included.add(ref);
       }
       const tr = document.createElement("tr");
-      tr.dataset.index = String(index);
-      tr.classList.toggle("selected", index === state.selectedIndex);
+      tr.dataset.index = String(visibleIndex);
+      tr.classList.toggle("selected", visibleIndex === state.selectedIndex);
       const include = document.createElement("input");
       include.type = "checkbox";
       include.checked = state.included.has(ref);
@@ -1577,11 +1936,9 @@ const UI_JS: &str = r#"(function () {
         row.objectType,
         row.schema,
         row.name,
-        row.status,
-        row.operation || "review",
+        statusBadge(row.status),
+        row.operation || "",
         Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings),
-        row.source,
-        row.target
       ].forEach(function (value) {
         const td = document.createElement("td");
         if (value instanceof HTMLElement) {
@@ -1593,18 +1950,18 @@ const UI_JS: &str = r#"(function () {
       });
 
       tr.addEventListener("click", function () {
-        state.selectedIndex = index;
-        renderResults(state.rows);
+        state.selectedIndex = visibleIndex;
+        renderResults(state.rows, true);
         renderSelectedObject();
         showStep("object-diff");
       });
       body.appendChild(tr);
     });
 
-    if (!rows.length) {
+    if (!visibleRows.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 9;
+      td.colSpan = 7;
       td.textContent = "No object rows are available in the latest response. Use Reports / Raw JSON for the full service response.";
       tr.appendChild(td);
       body.appendChild(tr);
@@ -1615,13 +1972,26 @@ const UI_JS: &str = r#"(function () {
     renderReleasePlan();
   }
 
+  function statusBadge(status) {
+    const span = document.createElement("span");
+    span.className = "status-badge " + statusClass(status);
+    span.textContent = textOrEmpty(status) || "unknown";
+    return span;
+  }
+
   function updateResultCounts() {
-    byId("results-count").textContent = state.rows.length + " result row(s)";
-    byId("included-count").textContent = Array.from(state.included).length + " included";
+    const visibleRefs = state.visibleRows.map(function (row) {
+      return rowRef(row, state.rows.indexOf(row));
+    });
+    const visibleIncluded = visibleRefs.filter(function (ref) {
+      return state.included.has(ref);
+    }).length;
+    byId("results-count").textContent = state.visibleRows.length + " visible of " + state.rows.length + " row(s)";
+    byId("included-count").textContent = visibleIncluded + " included in filter";
   }
 
   function renderSelectedObject() {
-    const row = state.rows[state.selectedIndex];
+    const row = state.visibleRows[state.selectedIndex];
     if (!row) {
       byId("selected-object-title").textContent = "No object selected";
       byId("selected-object-summary").innerHTML = "";
@@ -1630,6 +2000,11 @@ const UI_JS: &str = r#"(function () {
       byId("selected-json").textContent = "{}";
       return;
     }
+    const columns = columnsForSelectedTable(row);
+    const columnText = columns.length ? "\n\nColumns:\n" + columns.map(function (column) {
+      const nullable = column.isNullable === false ? " not null" : "";
+      return "- " + column.columnName + " " + textOrEmpty(column.dataType) + nullable;
+    }).join("\n") : "";
     byId("selected-object-title").textContent = row.objectType + ": " + row.name;
     updateSummary("selected-object-summary", {
       schema: row.schema,
@@ -1638,8 +2013,27 @@ const UI_JS: &str = r#"(function () {
       warnings: Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings)
     });
     byId("source-detail").textContent = row.source || "Diff detail not available yet.";
-    byId("target-detail").textContent = row.target || "Diff detail not available yet.";
+    byId("target-detail").textContent = (row.target || "Diff detail not available yet.") + columnText;
     byId("selected-json").textContent = redactedJson(row.raw || row);
+  }
+
+  function columnsForSelectedTable(row) {
+    if (!row || row.objectType !== "table") {
+      return [];
+    }
+    return state.inspectColumns.filter(function (column) {
+      return column.schemaName === row.schema && column.tableName === row.name;
+    }).sort(function (left, right) {
+      return (left.ordinalPosition || 0) - (right.ordinalPosition || 0);
+    });
+  }
+
+  function projectStructureGuidance(message) {
+    const text = textOrEmpty(message);
+    if (text.indexOf("DbState PostgreSQL project structure is incomplete") >= 0 || text.indexOf("Run dbstate init first") >= 0) {
+      return text + " This workspace is a Git repository but not yet an initialized DbState project. Run dbstate init from this workspace, then export or sync desired state before comparing.";
+    }
+    return text;
   }
 
   function renderWarnings(data) {
@@ -1649,9 +2043,10 @@ const UI_JS: &str = r#"(function () {
         return;
       }
       values.forEach(function (item) {
+        const text = typeof item === "string" ? projectStructureGuidance(item) : redactedJson(item);
         warnings.push({
           kind: kind || "warning",
-          text: label + ": " + (typeof item === "string" ? item : redactedJson(item))
+          text: label + ": " + text
         });
       });
     }
@@ -1673,6 +2068,33 @@ const UI_JS: &str = r#"(function () {
       item.textContent = warning.text;
       target.appendChild(item);
     });
+  }
+
+  function updateResultsContext(label, data) {
+    byId("results-operation").textContent = label || "none";
+    if (label === "Inspect") {
+      byId("results-source").textContent = "PostgreSQL inspect";
+      byId("results-target").textContent = "Read-only catalog view";
+      return;
+    }
+    if (label === "Reference-data compare") {
+      byId("results-source").textContent = "Repository reference-data";
+      byId("results-target").textContent = "PostgreSQL target";
+      return;
+    }
+    byId("results-source").textContent = data && data.repositoryPath ? "Repository desired state: " + data.repositoryPath : "Repository desired state";
+    byId("results-target").textContent = data && data.databaseType ? data.databaseType + " target" : "PostgreSQL target";
+  }
+
+  function renderErrorSummary(data) {
+    const target = byId("results-error-summary");
+    if (data && data.success === false && Array.isArray(data.errors) && data.errors.length) {
+      target.hidden = false;
+      target.textContent = projectStructureGuidance(data.errors.join(" "));
+      return;
+    }
+    target.hidden = true;
+    target.textContent = "";
   }
 
   function renderReleasePlan() {
@@ -1713,14 +2135,25 @@ const UI_JS: &str = r#"(function () {
     try {
       const data = await requestJson(endpoint, body);
       state.lastResponse = data;
+      state.lastOperation = label;
       responseSummary.textContent = label + ": " + summarize(data);
       jsonViewer.textContent = redactedJson(data);
       updateStatus(label, data);
       updateWorkspaceContext(data);
+      updateResultsContext(label, data);
+      renderErrorSummary(data);
       renderWarnings(data);
       state.included = new Set();
-      state.selectedIndex = data.success === false ? 0 : -1;
-      renderResults(rowsFromResponse(data, label));
+      state.selectedIndex = -1;
+      if (label === "Inspect") {
+        updateCompareOptionLists(data);
+      }
+      if (label === "Reference-data compare") {
+        updateReferenceDataOptions(data);
+      }
+      const rows = rowsFromResponse(data, label);
+      updateObjectTypeFilterOptions(rows, label);
+      renderResults(rows);
       if (config.summaryId) {
         updateSummary(config.summaryId, {
           success: data.success,
@@ -1742,11 +2175,16 @@ const UI_JS: &str = r#"(function () {
       const message = error && error.message ? error.message : "Unknown service error.";
       const data = { success: false, errors: [message] };
       state.lastResponse = data;
+      state.lastOperation = label;
       responseSummary.textContent = label + ": " + message;
       jsonViewer.textContent = redactedJson(data);
       updateStatus(label, data);
+      updateResultsContext(label, data);
+      renderErrorSummary(data);
       renderWarnings(data);
-      renderResults(rowsFromResponse(data, label));
+      const rows = rowsFromResponse(data, label);
+      updateObjectTypeFilterOptions(rows, label);
+      renderResults(rows);
       if (label === "Health") {
         servicePill.textContent = "Service not reachable";
       }
@@ -1757,6 +2195,20 @@ const UI_JS: &str = r#"(function () {
     button.addEventListener("click", function () {
       showStep(button.dataset.step);
     });
+  });
+
+  document.getElementById("object-type-filter").addEventListener("change", function () {
+    state.selectedIndex = -1;
+    renderResults(state.rows, true);
+  });
+
+  document.getElementById("compare-schema").addEventListener("change", function () {
+    updateTableOptions();
+  });
+
+  document.getElementById("workflow-mode").addEventListener("change", function () {
+    updateObjectTypeFilterOptions(state.rows, state.lastOperation);
+    renderResults(state.rows, true);
   });
 
   document.querySelector("[data-action='health']").addEventListener("click", function () {
@@ -9489,6 +9941,12 @@ rows:
         assert!(html.contains("results-grid"));
         assert!(html.contains("selected-json"));
         assert!(html.contains("warnings-list"));
+        assert!(html.contains("object-type-filter"));
+        assert!(html.contains("status-legend"));
+        assert!(html.contains("results-source"));
+        assert!(html.contains("results-target"));
+        assert!(!html.contains("<th>Source</th>"));
+        assert!(!html.contains("<th>Target</th>"));
         assert!(html.contains("Release artifact preview will be connected"));
         assert!(html.contains("Raw JSON"));
         assert!(!html.contains("http://"));
@@ -9593,6 +10051,87 @@ rows:
                 "UI HTML contains forbidden pattern {forbidden}"
             );
         }
+    }
+
+    #[test]
+    fn slice13b_results_grid_usability_contract_is_present() {
+        let html = ui_html();
+        let css = ui_css();
+        let js = ui_js();
+
+        assert!(html.contains("<label for=\"object-type-filter\">Object type"));
+        assert!(html.contains("<option value=\"all\">All</option>"));
+        assert!(html.contains("<option value=\"schema\">Schema</option>"));
+        assert!(html.contains("<option value=\"table\">Table</option>"));
+        assert!(!html.contains("<option value=\"column\">Column</option>"));
+        assert!(!html.contains("<option value=\"referenceData\">Reference data</option>"));
+        assert!(html.contains("<select id=\"compare-schema\">"));
+        assert!(html.contains("<select id=\"compare-table\">"));
+        assert!(html.contains("<select id=\"data-table\">"));
+        assert!(html.contains("Run Inspect first to populate schema and table lists."));
+        assert!(
+            html.contains("Run Reference Data Compare to load configured reference-data tables.")
+        );
+        assert!(!html.contains("placeholder=\"dbstate_slice2\""));
+        assert!(!html.contains("placeholder=\"schema.table\""));
+        assert!(!html.contains("table:dbstate_slice2.sample_accounts"));
+        assert!(!html.contains("schema:public"));
+        assert!(html.contains("status-legend"));
+        assert!(html.contains("inSync"));
+        assert!(html.contains("repoDifferent"));
+        assert!(html.contains("databaseOnly"));
+        assert!(html.contains("inspected"));
+        assert!(!html.contains("<th>Source</th>"));
+        assert!(!html.contains("<th>Target</th>"));
+
+        for class_name in [
+            ".status-repodifferent",
+            ".status-insync",
+            ".status-repoonly",
+            ".status-databaseonly",
+            ".status-skipped",
+            ".status-error",
+            ".status-inspected",
+        ] {
+            assert!(
+                css.contains(class_name),
+                "missing status class {class_name}"
+            );
+        }
+
+        for expected in [
+            "identityFromPath",
+            "database/objects/schemas/",
+            "database/objects/tables/",
+            "objectType: \"schema\"",
+            "objectType: \"table\"",
+            "referenceDataRow",
+            "rowMatchesFilter",
+            "object-type-filter",
+            "data.schemas",
+            "data.tables",
+            "data.columns",
+            "updateCompareOptionLists",
+            "updateTableOptions",
+            "updateReferenceDataOptions",
+            "updateObjectTypeFilterOptions",
+            "columnsForSelectedTable",
+            "projectStructureGuidance",
+            "This workspace is a Git repository but not yet an initialized DbState project",
+            "return { scope: \"table\", table: table };",
+            "return { scope: \"schema\", schema: schema };",
+            "return { scope: \"all\" };",
+            "statusBadge(row.status)",
+        ] {
+            assert!(js.contains(expected), "missing JS mapping text {expected}");
+        }
+
+        assert!(!js.contains("objectRef: \"column:"));
+        assert!(js.contains("label === \"Inspect\""));
+        assert!(js.contains("label === \"Reference-data compare\""));
+        assert!(js.contains("appendOption(select, \"referenceData\", \"Reference data\")"));
+        assert!(!js.contains("service:response"));
+        assert!(!js.contains("objectType: \"service\""));
     }
 
     #[test]
