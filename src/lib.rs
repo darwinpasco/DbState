@@ -2,8 +2,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fmt::Write as _;
 use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::time::Duration;
 
 use postgres::{Client, NoTls};
 use serde_yaml::{Mapping, Value};
@@ -606,6 +609,567 @@ pub fn run_cli(
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceConfig {
+    pub host: String,
+    pub port: u16,
+}
+
+impl Default for ServiceConfig {
+    fn default() -> Self {
+        Self {
+            host: "127.0.0.1".to_string(),
+            port: 4587,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ServiceHttpResponse {
+    pub status_code: u16,
+    pub body: String,
+}
+
+pub fn parse_service_args(args: &[String]) -> Result<ServiceConfig, String> {
+    let mut config = ServiceConfig::default();
+    let mut index = 0;
+
+    while index < args.len() {
+        match args[index].as_str() {
+            "--host" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--host requires a value".to_string())?;
+                if value.trim().is_empty() {
+                    return Err("--host must not be empty".to_string());
+                }
+                config.host = value.to_string();
+                index += 2;
+            }
+            "--port" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--port requires a value".to_string())?;
+                config.port = value
+                    .parse::<u16>()
+                    .map_err(|_| "--port must be a number between 1 and 65535".to_string())?;
+                if config.port == 0 {
+                    return Err("--port must be a number between 1 and 65535".to_string());
+                }
+                index += 2;
+            }
+            "--format" => {
+                let value = args
+                    .get(index + 1)
+                    .ok_or_else(|| "--format requires a value".to_string())?;
+                if value != "json" && value != "text" {
+                    return Err("--format must be either json or text".to_string());
+                }
+                index += 2;
+            }
+            "--json" => {
+                index += 1;
+            }
+            "--help" | "-h" => return Err(service_usage()),
+            value if value.starts_with('-') => {
+                return Err(format!("Unknown serve option: {value}"));
+            }
+            value => return Err(format!("Unexpected serve argument: {value}")),
+        }
+    }
+
+    Ok(config)
+}
+
+pub fn service_usage() -> String {
+    "Usage:\n  dbstate serve [--host <host>] [--port <port>] [--format json|--json]".to_string()
+}
+
+pub fn run_service(
+    args: &[String],
+    current_dir: Result<&Path, &std::io::Error>,
+) -> Result<(), String> {
+    let cwd = current_dir.map_err(|error| format!("Could not read current directory: {error}"))?;
+    let config = parse_service_args(args)?;
+    let address = format!("{}:{}", config.host, config.port);
+    let listener = TcpListener::bind(&address)
+        .map_err(|error| format!("Could not start DbState service on {address}: {error}"))?;
+
+    println!("DbState Service listening on http://{address}");
+    if config.host == "127.0.0.1" || config.host == "localhost" {
+        println!("Default service binding is local-only.");
+    } else {
+        println!("Non-local host binding was explicitly requested. Do not expose v0.1 publicly.");
+    }
+    println!("DbState Service does not execute generated SQL or apply changes to databases.");
+
+    for stream in listener.incoming() {
+        match stream {
+            Ok(mut stream) => {
+                if let Err(error) = handle_http_connection(&mut stream, cwd) {
+                    let response = service_error_response(
+                        500,
+                        "service",
+                        &format!("Internal service error: {error}"),
+                    );
+                    let _ = write_http_response(&mut stream, &response);
+                }
+            }
+            Err(error) => {
+                eprintln!("DbState Service connection error: {error}");
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn handle_http_connection(stream: &mut TcpStream, cwd: &Path) -> Result<(), String> {
+    stream
+        .set_read_timeout(Some(Duration::from_secs(5)))
+        .map_err(|error| format!("Could not set read timeout: {error}"))?;
+    let request = read_http_request(stream)?;
+    let response = service_response(&request.method, &request.path, &request.body, cwd);
+    write_http_response(stream, &response)
+}
+
+#[derive(Debug, Clone)]
+struct HttpRequest {
+    method: String,
+    path: String,
+    body: String,
+}
+
+fn read_http_request(stream: &mut TcpStream) -> Result<HttpRequest, String> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0_u8; 1024];
+    let mut header_end = None;
+
+    while header_end.is_none() {
+        let read = stream
+            .read(&mut chunk)
+            .map_err(|error| format!("Could not read HTTP request: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+        header_end = find_header_end(&buffer);
+        if buffer.len() > 64 * 1024 {
+            return Err("HTTP request header is too large.".to_string());
+        }
+    }
+
+    let header_end = header_end.ok_or_else(|| "Invalid HTTP request.".to_string())?;
+    let header_text = String::from_utf8_lossy(&buffer[..header_end]);
+    let mut lines = header_text.lines();
+    let request_line = lines
+        .next()
+        .ok_or_else(|| "HTTP request line is missing.".to_string())?;
+    let mut parts = request_line.split_whitespace();
+    let method = parts
+        .next()
+        .ok_or_else(|| "HTTP method is missing.".to_string())?
+        .to_string();
+    let path = parts
+        .next()
+        .ok_or_else(|| "HTTP path is missing.".to_string())?
+        .split('?')
+        .next()
+        .unwrap_or("")
+        .to_string();
+
+    let mut content_length = 0_usize;
+    for line in lines {
+        let Some((name, value)) = line.split_once(':') else {
+            continue;
+        };
+        if name.trim().eq_ignore_ascii_case("content-length") {
+            content_length = value
+                .trim()
+                .parse::<usize>()
+                .map_err(|_| "Invalid Content-Length header.".to_string())?;
+        }
+    }
+
+    let body_start = header_end + 4;
+    while buffer.len() < body_start + content_length {
+        let read = stream
+            .read(&mut chunk)
+            .map_err(|error| format!("Could not read HTTP request body: {error}"))?;
+        if read == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&chunk[..read]);
+    }
+
+    if buffer.len() < body_start + content_length {
+        return Err("HTTP request body ended before Content-Length was satisfied.".to_string());
+    }
+
+    let body =
+        String::from_utf8_lossy(&buffer[body_start..body_start + content_length]).to_string();
+
+    Ok(HttpRequest { method, path, body })
+}
+
+fn find_header_end(buffer: &[u8]) -> Option<usize> {
+    buffer.windows(4).position(|window| window == b"\r\n\r\n")
+}
+
+fn write_http_response(
+    stream: &mut TcpStream,
+    response: &ServiceHttpResponse,
+) -> Result<(), String> {
+    let reason = match response.status_code {
+        200 => "OK",
+        400 => "Bad Request",
+        404 => "Not Found",
+        409 => "Conflict",
+        500 => "Internal Server Error",
+        503 => "Service Unavailable",
+        _ => "OK",
+    };
+    let http_response = format!(
+        "HTTP/1.1 {} {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        response.status_code,
+        reason,
+        response.body.len(),
+        response.body
+    );
+    stream
+        .write_all(http_response.as_bytes())
+        .map_err(|error| format!("Could not write HTTP response: {error}"))
+}
+
+pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> ServiceHttpResponse {
+    match (method, path) {
+        ("GET", "/health") | ("GET", "/api/v1/health") => service_health_response(),
+        ("POST", "/api/v1/repo/status") => service_cli_endpoint(
+            "repo status",
+            body,
+            cwd,
+            &["repo", "status", "--format", "json"],
+        ),
+        ("POST", "/api/v1/init/plan") => service_init_plan_endpoint(body, cwd),
+        ("POST", "/api/v1/postgres/inspect") => service_postgres_endpoint(
+            "inspect postgres",
+            body,
+            cwd,
+            &["inspect", "postgres"],
+            ScopeRequirement::Optional,
+            EndpointScopeKind::SchemaTable,
+        ),
+        ("POST", "/api/v1/postgres/compare") => service_postgres_endpoint(
+            "compare postgres",
+            body,
+            cwd,
+            &["compare", "postgres"],
+            ScopeRequirement::Required,
+            EndpointScopeKind::SchemaTable,
+        ),
+        ("POST", "/api/v1/postgres/plan") => service_postgres_endpoint(
+            "plan postgres",
+            body,
+            cwd,
+            &["plan", "postgres"],
+            ScopeRequirement::Required,
+            EndpointScopeKind::SchemaTable,
+        ),
+        ("POST", "/api/v1/postgres/data-compare") => service_postgres_endpoint(
+            "data-compare postgres",
+            body,
+            cwd,
+            &["data-compare", "postgres"],
+            ScopeRequirement::Required,
+            EndpointScopeKind::DataCompare,
+        ),
+        _ => service_error_response(404, "service", "Unknown DbState Service route."),
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeRequirement {
+    Required,
+    Optional,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EndpointScopeKind {
+    SchemaTable,
+    DataCompare,
+}
+
+pub fn service_route_definitions() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("GET", "/health"),
+        ("GET", "/api/v1/health"),
+        ("POST", "/api/v1/repo/status"),
+        ("POST", "/api/v1/init/plan"),
+        ("POST", "/api/v1/postgres/inspect"),
+        ("POST", "/api/v1/postgres/compare"),
+        ("POST", "/api/v1/postgres/plan"),
+        ("POST", "/api/v1/postgres/data-compare"),
+    ]
+}
+
+fn service_health_response() -> ServiceHttpResponse {
+    let mut body = String::new();
+    body.push('{');
+    write_json_string_field(&mut body, "command", "service health", true);
+    write_json_bool_field(&mut body, "success", true);
+    write_json_string_field(&mut body, "service", "dbstate", false);
+    write_json_string_field(&mut body, "apiVersion", "v1", false);
+    write_json_array_field(&mut body, "warnings", &[]);
+    write_json_array_field(&mut body, "errors", &[]);
+    body.push('}');
+    ServiceHttpResponse {
+        status_code: 200,
+        body,
+    }
+}
+
+fn service_init_plan_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, "init plan", &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, "init plan", &error);
+    }
+    if matches!(request_bool(&request, "dryRun"), Some(false)) {
+        return service_error_response(
+            400,
+            "init plan",
+            "Slice 11 service supports init planning only. Use dryRun true or omit dryRun.",
+        );
+    }
+    let args = vec![
+        "init".to_string(),
+        "--dry-run".to_string(),
+        "--format".to_string(),
+        "json".to_string(),
+    ];
+    service_run_cli("init plan", cwd, args)
+}
+
+fn service_cli_endpoint(
+    command: &str,
+    body: &str,
+    cwd: &Path,
+    base_args: &[&str],
+) -> ServiceHttpResponse {
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, command, &error);
+    }
+    let mut args: Vec<String> = base_args.iter().map(|value| (*value).to_string()).collect();
+    args.extend(["--format".to_string(), "json".to_string()]);
+    service_run_cli(command, cwd, args)
+}
+
+fn service_postgres_endpoint(
+    command: &str,
+    body: &str,
+    cwd: &Path,
+    base_args: &[&str],
+    scope_requirement: ScopeRequirement,
+    scope_kind: EndpointScopeKind,
+) -> ServiceHttpResponse {
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, command, &error);
+    }
+
+    let mut args: Vec<String> = base_args.iter().map(|value| (*value).to_string()).collect();
+    if let Some(url) = request_string(&request, "postgresUrl") {
+        args.push("--url".to_string());
+        args.push(url);
+    }
+
+    match service_scope_args(&request, scope_requirement, scope_kind) {
+        Ok(scope_args) => args.extend(scope_args),
+        Err(error) => return service_error_response(400, command, &error),
+    }
+
+    for include in request_string_array(&request, "include") {
+        args.push("--include".to_string());
+        args.push(include);
+    }
+    for exclude in request_string_array(&request, "exclude") {
+        args.push("--exclude".to_string());
+        args.push(exclude);
+    }
+
+    args.extend(["--format".to_string(), "json".to_string()]);
+    service_run_cli(command, cwd, args)
+}
+
+fn service_run_cli(command: &str, cwd: &Path, args: Vec<String>) -> ServiceHttpResponse {
+    match run_cli(&args, Ok(cwd)) {
+        Ok(result) => {
+            let body = result.output.to_json();
+            let status_code = service_status_from_cli_result(result.exit_code, &body);
+            ServiceHttpResponse { status_code, body }
+        }
+        Err(error) => service_error_response(400, command, &error),
+    }
+}
+
+fn service_status_from_cli_result(exit_code: u8, body: &str) -> u16 {
+    if exit_code == 0 {
+        200
+    } else if body.contains("PostgreSQL connection failed") {
+        503
+    } else if body.contains("DbState PostgreSQL project structure is incomplete") {
+        409
+    } else {
+        400
+    }
+}
+
+fn parse_service_request(body: &str) -> Result<Value, String> {
+    let trimmed = body.trim();
+    if trimmed.is_empty() {
+        return Ok(Value::Mapping(Mapping::new()));
+    }
+    if !((trimmed.starts_with('{') && trimmed.ends_with('}'))
+        || (trimmed.starts_with('[') && trimmed.ends_with(']')))
+    {
+        return Err("Invalid JSON request body.".to_string());
+    }
+    serde_yaml::from_str::<Value>(trimmed).map_err(|_| "Invalid JSON request body.".to_string())
+}
+
+fn validate_service_request_is_safe(request: &Value) -> Result<(), String> {
+    if request_has_key(request, "repositoryPath") {
+        return Err("repositoryPath is not supported by the Slice 11 service API. Start the service from the repository root.".to_string());
+    }
+    for key in ["write", "apply", "execute", "directApply", "mutateDatabase"] {
+        if matches!(request_bool(request, key), Some(true)) {
+            return Err("Slice 11 service endpoints are read-only or plan-only and do not support write, apply, execute, or database mutation requests.".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn service_scope_args(
+    request: &Value,
+    requirement: ScopeRequirement,
+    kind: EndpointScopeKind,
+) -> Result<Vec<String>, String> {
+    let scope = request_string(request, "scope");
+    let schema = request_string(request, "schema")
+        .or_else(|| request_string_array(request, "schemas").into_iter().next());
+    let table = request_string(request, "table")
+        .or_else(|| request_string_array(request, "tables").into_iter().next());
+
+    if scope.is_none() && schema.is_none() && table.is_none() {
+        return match requirement {
+            ScopeRequirement::Optional => Ok(Vec::new()),
+            ScopeRequirement::Required => {
+                Err("Missing scope selection. Provide scope \"all\", schema, or table.".to_string())
+            }
+        };
+    }
+
+    if let Some(scope) = scope {
+        match scope.as_str() {
+            "all" => return Ok(vec!["--all".to_string()]),
+            "schema" => {
+                if kind == EndpointScopeKind::DataCompare {
+                    return Err("schema scope is not supported for data-compare. Use scope \"all\" or table.".to_string());
+                }
+                let schema =
+                    schema.ok_or_else(|| "schema scope requires a schema value.".to_string())?;
+                return Ok(vec!["--schema".to_string(), schema]);
+            }
+            "table" => {
+                let table =
+                    table.ok_or_else(|| "table scope requires a table value.".to_string())?;
+                return Ok(vec!["--table".to_string(), table]);
+            }
+            other => {
+                return Err(format!(
+                    "Invalid scope '{other}'. Supported scopes are all, schema, and table."
+                ));
+            }
+        }
+    }
+
+    if let Some(table) = table {
+        Ok(vec!["--table".to_string(), table])
+    } else if let Some(schema) = schema {
+        if kind == EndpointScopeKind::DataCompare {
+            Err(
+                "schema scope is not supported for data-compare. Use scope \"all\" or table."
+                    .to_string(),
+            )
+        } else {
+            Ok(vec!["--schema".to_string(), schema])
+        }
+    } else {
+        Ok(Vec::new())
+    }
+}
+
+fn request_has_key(request: &Value, key: &str) -> bool {
+    mapping_get(request, key).is_some()
+}
+
+fn request_string(request: &Value, key: &str) -> Option<String> {
+    match mapping_get(request, key) {
+        Some(Value::String(value)) => Some(value.to_string()),
+        Some(Value::Number(value)) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn request_bool(request: &Value, key: &str) -> Option<bool> {
+    match mapping_get(request, key) {
+        Some(Value::Bool(value)) => Some(*value),
+        _ => None,
+    }
+}
+
+fn request_string_array(request: &Value, key: &str) -> Vec<String> {
+    match mapping_get(request, key) {
+        Some(Value::Sequence(values)) => values
+            .iter()
+            .filter_map(|value| match value {
+                Value::String(value) => Some(value.to_string()),
+                Value::Number(value) => Some(value.to_string()),
+                _ => None,
+            })
+            .collect(),
+        Some(Value::String(value)) => vec![value.to_string()],
+        _ => Vec::new(),
+    }
+}
+
+fn mapping_get<'a>(request: &'a Value, key: &str) -> Option<&'a Value> {
+    let Value::Mapping(mapping) = request else {
+        return None;
+    };
+    mapping.get(Value::String(key.to_string()))
+}
+
+fn service_error_response(status_code: u16, command: &str, message: &str) -> ServiceHttpResponse {
+    let mut body = String::new();
+    body.push('{');
+    write_json_string_field(&mut body, "command", command, true);
+    write_json_bool_field(&mut body, "success", false);
+    write_json_array_field(&mut body, "warnings", &[]);
+    write_json_array_field(&mut body, "errors", &[redact_message(message, "")]);
+    body.push('}');
+    ServiceHttpResponse { status_code, body }
+}
+
 #[derive(Debug, Clone)]
 struct ParsedArgs {
     command: CommandKind,
@@ -822,7 +1386,7 @@ impl ParsedArgs {
 }
 
 pub fn usage() -> String {
-    "Usage:\n  dbstate repo status [--format json|--json]\n  dbstate init [--dry-run] [--format json|--json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json|--json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json|--json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json|--json]\n  dbstate data-compare postgres (--all | --table <schema.table>) [--url <postgres-url>] [--format json|--json]".to_string()
+    "Usage:\n  dbstate repo status [--format json|--json]\n  dbstate init [--dry-run] [--format json|--json]\n  dbstate inspect postgres [--url <postgres-url>] [--format json|--json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json|--json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json|--json]\n  dbstate data-compare postgres (--all | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate serve [--host <host>] [--port <port>] [--format json|--json]".to_string()
 }
 
 pub fn status_report(cwd: &Path, command: CommandKind) -> ProjectReport {
@@ -4161,7 +4725,11 @@ fn empty_reference_data_compare_report() -> ReferenceDataCompareReport {
 }
 
 pub fn redact_message(message: &str, secret: &str) -> String {
-    let redacted = message.replace(secret, "<redacted>");
+    let redacted = if secret.is_empty() {
+        message.to_string()
+    } else {
+        message.replace(secret, "<redacted>")
+    };
     redact_postgres_url(&redacted)
 }
 
@@ -7484,9 +8052,135 @@ rows:
             "--include",
             "--exclude",
             "--name",
+            "dbstate serve",
+            "--host <host>",
+            "--port <port>",
         ] {
             assert!(usage.contains(expected), "usage missing {expected}");
         }
+    }
+
+    #[test]
+    fn slice11_service_routes_include_only_approved_endpoints() {
+        let routes = service_route_definitions();
+
+        for expected in [
+            ("GET", "/health"),
+            ("GET", "/api/v1/health"),
+            ("POST", "/api/v1/repo/status"),
+            ("POST", "/api/v1/init/plan"),
+            ("POST", "/api/v1/postgres/inspect"),
+            ("POST", "/api/v1/postgres/compare"),
+            ("POST", "/api/v1/postgres/plan"),
+            ("POST", "/api/v1/postgres/data-compare"),
+        ] {
+            assert!(routes.contains(&expected), "missing route {expected:?}");
+        }
+
+        for (_, path) in routes {
+            assert!(!path.contains("export"));
+            assert!(!path.contains("sync"));
+            assert!(!path.contains("release/write"));
+            assert!(!path.contains("apply"));
+        }
+    }
+
+    #[test]
+    fn slice11_service_health_and_repo_status_return_json_contract() {
+        let dir = create_temp_dir("slice11-service-status");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let health = service_response("GET", "/health", "", &dir);
+        assert_eq!(health.status_code, 200);
+        assert_common_json_contract(&health.body);
+        assert!(health.body.contains("\"service\":\"dbstate\""));
+
+        let status = service_response("POST", "/api/v1/repo/status", "{}", &dir);
+        assert_eq!(status.status_code, 200);
+        assert_common_json_contract(&status.body);
+        assert_repository_json_contract(&status.body);
+        assert!(status.body.contains("\"command\":\"repo status\""));
+    }
+
+    #[test]
+    fn slice11_service_init_plan_is_dry_run_only() {
+        let dir = create_temp_dir("slice11-init-plan");
+        init_git_repo(&dir);
+
+        let plan = service_response("POST", "/api/v1/init/plan", r#"{ "dryRun": true }"#, &dir);
+        assert_eq!(plan.status_code, 200);
+        assert!(plan.body.contains("\"command\":\"init\""));
+        assert!(plan.body.contains("\"plannedCreates\""));
+        assert!(!dir.join("database").exists());
+
+        let write = service_response("POST", "/api/v1/init/plan", r#"{ "dryRun": false }"#, &dir);
+        assert_eq!(write.status_code, 400);
+        assert!(write.body.contains("init planning only"));
+    }
+
+    #[test]
+    fn slice11_service_rejects_invalid_scope_and_write_requests() {
+        let dir = create_temp_dir("slice11-invalid-requests");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let invalid_scope = service_response(
+            "POST",
+            "/api/v1/postgres/compare",
+            r#"{ "scope": "everything" }"#,
+            &dir,
+        );
+        assert_eq!(invalid_scope.status_code, 400);
+        assert!(invalid_scope.body.contains("Invalid scope"));
+
+        let write_request = service_response(
+            "POST",
+            "/api/v1/postgres/plan",
+            r#"{ "scope": "all", "apply": true }"#,
+            &dir,
+        );
+        assert_eq!(write_request.status_code, 400);
+        assert!(write_request.body.contains("read-only or plan-only"));
+
+        let repo_switch = service_response(
+            "POST",
+            "/api/v1/repo/status",
+            r#"{ "repositoryPath": "D:/other/repo" }"#,
+            &dir,
+        );
+        assert_eq!(repo_switch.status_code, 400);
+        assert!(repo_switch.body.contains("repositoryPath is not supported"));
+    }
+
+    #[test]
+    fn slice11_service_redacts_postgres_url_and_credentials() {
+        let dir = create_temp_dir("slice11-redaction");
+        let raw_url = placeholder_url("service-user", "service-secret-marker");
+        let body = format!(r#"{{ "postgresUrl": "{raw_url}", "scope": "all" }}"#);
+
+        let response = service_response("POST", "/api/v1/postgres/inspect", &body, &dir);
+
+        assert_eq!(response.status_code, 400);
+        assert_common_json_contract(&response.body);
+        assert!(!response.body.contains(&raw_url));
+        assert!(!response.body.contains("service-secret-marker"));
+        assert!(!response.body.contains("postgres://"));
+    }
+
+    #[test]
+    fn slice11_service_rejects_unknown_route_and_invalid_json() {
+        let dir = create_temp_dir("slice11-routing");
+
+        let unknown = service_response("POST", "/api/v1/postgres/apply", "{}", &dir);
+        assert_eq!(unknown.status_code, 404);
+        assert!(!unknown.body.contains("direct apply"));
+
+        let invalid_json = service_response("POST", "/api/v1/repo/status", "{ invalid json", &dir);
+        assert_eq!(invalid_json.status_code, 400);
+        assert!(invalid_json.body.contains("Invalid JSON request body"));
     }
 
     #[test]

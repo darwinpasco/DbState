@@ -130,14 +130,15 @@ Current CLI scope:
 - `dbstate data-compare postgres` compares explicitly configured reference-data table files against PostgreSQL rows with read-only `SELECT`.
 - CLI JSON output is hardened around common `command`, `success`, `warnings`, and `errors` fields, repository context where relevant, and redaction of connection details and masked values.
 - Docker packaging is available for headless CLI automation against mounted repositories.
+- `dbstate serve` starts a minimal local-only HTTP JSON Service API boundary for selected read-only and plan-only operations.
 
 Current implementation limitations:
 
-- No SQL execution, direct target-database apply, reference-data DML generation, arbitrary transactional data compare, browser UI, Docker Compose, CI workflow, MCP, or AI integration exists yet.
+- No SQL execution, direct target-database apply, reference-data DML generation, arbitrary transactional data compare, browser UI, service write endpoints, Docker Compose, CI workflow, MCP, or AI integration exists yet.
 - PostgreSQL access is read-only in product commands.
 - No command applies SQL to a database.
 
-See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, and `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md` for command details.
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, and `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md` for command details.
 
 ## Docker CLI Automation
 
@@ -159,7 +160,28 @@ docker run --rm `
 
 Use `DBSTATE_POSTGRES_URL` for session-only PostgreSQL access. Do not put credentials in the image or repository.
 
-Docker packaging is CLI automation only. It does not add browser UI, service mode, Docker Compose, CI, SQL execution, or direct database apply.
+Docker packaging supports CLI automation and the minimal local Service API boundary. It does not add browser UI, hosted service mode, Docker Compose, CI, SQL execution, or direct database apply.
+
+## Local Service API
+
+Start the local Service API:
+
+```powershell
+cargo run -- serve
+```
+
+Defaults:
+
+- Host: `127.0.0.1`
+- Port: `4587`
+
+Health check:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:4587/health
+```
+
+Slice 11 service mode exposes selected JSON endpoints for status, init planning, PostgreSQL inspect, compare, plan, and configured reference-data compare. It does not include a browser UI, authentication, user accounts, write endpoints, SQL execution, or database apply. Do not expose it publicly.
 
 ## High-level principles
 

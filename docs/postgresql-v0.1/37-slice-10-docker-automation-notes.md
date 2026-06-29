@@ -2,7 +2,7 @@
 
 Slice 10 adds Docker packaging for headless DbState PostgreSQL CLI automation.
 
-The Docker image runs the existing `dbstate` CLI only. It is not a browser UI, service runtime, Docker Compose stack, CI workflow, MCP server, AI integration, Deployment Rehearsal, or deployment engine.
+The Docker image runs the existing `dbstate` binary. In Slice 10 it was CLI-only. After Slice 11, the same image can also run the minimal local Service API boundary. It is not a browser UI, Docker Compose stack, CI workflow, MCP server, AI integration, Deployment Rehearsal, or deployment engine.
 
 Docker does not change DbState safety boundaries. DbState still does not execute generated SQL, apply database changes, mutate PostgreSQL, or hide deployment behavior.
 
@@ -136,6 +136,7 @@ The Docker image exposes the same CLI surface as the native binary:
 - `dbstate plan postgres`
 - `dbstate release postgres`
 - `dbstate data-compare postgres`
+- `dbstate serve`
 
 Representative JSON commands:
 
@@ -148,6 +149,40 @@ docker run --rm -v "${PWD}:/workspace" -w /workspace -e DBSTATE_POSTGRES_URL dbs
 docker run --rm -v "${PWD}:/workspace" -w /workspace -e DBSTATE_POSTGRES_URL dbstate-postgres:dev dbstate release postgres --all --name docker_test --dry-run --format json
 docker run --rm -v "${PWD}:/workspace" -w /workspace -e DBSTATE_POSTGRES_URL dbstate-postgres:dev dbstate data-compare postgres --all --format json
 ```
+
+## Service Mode
+
+Native service mode binds to `127.0.0.1` by default. Inside Docker, bind to `0.0.0.0` in the container only when publishing the host port to a local host address.
+
+PowerShell:
+
+```powershell
+docker run --rm `
+  -p 127.0.0.1:4587:4587 `
+  -v "${PWD}:/workspace" `
+  -w /workspace `
+  dbstate-postgres:dev `
+  dbstate serve --host 0.0.0.0 --port 4587
+```
+
+Host smoke check:
+
+```powershell
+Invoke-RestMethod http://127.0.0.1:4587/health
+```
+
+bash or zsh:
+
+```bash
+docker run --rm \
+  -p 127.0.0.1:4587:4587 \
+  -v "$PWD:/workspace" \
+  -w /workspace \
+  dbstate-postgres:dev \
+  dbstate serve --host 0.0.0.0 --port 4587
+```
+
+The published port should stay bound to `127.0.0.1` on the host. Do not expose the Slice 11 service publicly.
 
 ## Write Behavior
 
@@ -253,12 +288,12 @@ docker network rm dbstate-slice10-net
 
 ## Current Limitations
 
-- Docker packages the CLI only.
-- No browser UI or service mode is included.
+- Docker packages the CLI and the minimal local Service API boundary.
+- No browser UI, hosted service mode, or multi-user server mode is included.
 - No Docker Compose file is provided.
 - No CI workflow is provided.
 - No Kubernetes deployment is provided.
 - No generated SQL is executed by DbState.
 - No direct database apply exists.
-- PostgreSQL object coverage remains limited to existing Slice 1 through Slice 9 behavior.
+- PostgreSQL object coverage remains limited to existing Slice 1 through Slice 11 behavior.
 - `--repo <path>` remains an open decision. Current behavior uses the mounted working directory.
