@@ -1,13 +1,28 @@
 use std::env;
 use std::process::ExitCode;
 
-use dbstate::{run_cli, usage, OutputFormat};
+use dbstate::{run_cli, run_service, service_usage, usage, OutputFormat};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
     if matches!(args.as_slice(), [arg] if arg == "--help" || arg == "-h") {
         println!("{}", usage());
         return ExitCode::SUCCESS;
+    }
+    if matches!(args.as_slice(), [command, help] if command == "serve" && (help == "--help" || help == "-h"))
+    {
+        println!("{}", service_usage());
+        return ExitCode::SUCCESS;
+    }
+    if matches!(args.first(), Some(command) if command == "serve") {
+        let serve_args = &args[1..];
+        return match run_service(serve_args, env::current_dir().as_deref()) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("{message}");
+                ExitCode::from(2)
+            }
+        };
     }
 
     let result = run_cli(&args, env::current_dir().as_deref());
