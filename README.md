@@ -151,6 +151,13 @@ Technical testers can follow the repeatable ParkingDemo walkthrough in `docs/pos
 
 Use `docs/postgresql-v0.1/49-private-beta-feedback-template.md` for private beta feedback. Do not include passwords, full PostgreSQL URLs, production data, or secrets in feedback.
 
+Private beta readiness docs:
+
+- `docs/postgresql-v0.1/51-slice-20-private-beta-readiness-pack.md`
+- `docs/postgresql-v0.1/52-private-beta-known-limitations.md`
+- `docs/postgresql-v0.1/53-private-beta-installer-distribution.md`
+- `docs/postgresql-v0.1/54-private-beta-smoke-test-matrix.md`
+
 ## Windows Private Beta Installer
 
 Windows private beta installer packaging is documented in `docs/postgresql-v0.1/50-slice-19-windows-installer-packaging.md`.

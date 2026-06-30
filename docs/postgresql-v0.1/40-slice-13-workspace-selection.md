@@ -14,7 +14,7 @@ Slice 13 adds session-only workspace selection for service requests:
 
 ```json
 {
-  "repositoryPath": "D:\\SourceCodes\\DbState"
+  "repositoryPath": "C:\\SourceCodes\\DbState"
 }
 ```
 
@@ -43,7 +43,7 @@ Invoke-RestMethod `
   -Method Post `
   -Uri http://127.0.0.1:4587/api/v1/repo/status `
   -ContentType "application/json" `
-  -Body '{ "repositoryPath": "D:\\SourceCodes\\DbState" }'
+  -Body '{ "repositoryPath": "C:\\SourceCodes\\DbState" }'
 ```
 
 Invalid path example:
@@ -140,7 +140,7 @@ The write request requires:
 
 ```json
 {
-  "repositoryPath": "D:\\SourceCodes\\DbState",
+  "repositoryPath": "C:\\SourceCodes\\DbState",
   "confirmInitializeProject": true,
   "confirmationText": "INITIALIZE DBSTATE PROJECT"
 }
@@ -165,7 +165,7 @@ Example:
 ```powershell
 docker run --rm `
   -p 127.0.0.1:4587:4587 `
-  -v "D:\SourceCodes\DbState:/workspace" `
+  -v "C:\SourceCodes\DbState:/workspace" `
   -w /workspace `
   dbstate-postgres:dev `
   dbstate serve --host 0.0.0.0 --port 4587
