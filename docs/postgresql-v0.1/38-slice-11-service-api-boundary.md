@@ -42,6 +42,11 @@ POST /api/v1/postgres/inspect
 POST /api/v1/postgres/compare
 POST /api/v1/postgres/plan
 POST /api/v1/postgres/data-compare
+GET  /api/v1/connections/profiles
+POST /api/v1/connections/profiles
+PUT  /api/v1/connections/profiles/{name}
+DELETE /api/v1/connections/profiles/{name}
+POST /api/v1/connections/test
 ```
 
 No write endpoints are exposed in Slice 11.
@@ -90,6 +95,26 @@ The URL is session-only:
 - It is not logged by the service.
 
 If `postgresUrl` is omitted, the endpoint uses `DBSTATE_POSTGRES_URL` if it is set.
+
+Slice 14 also allows request-level non-secret profile selection:
+
+```json
+{
+  "connection": {
+    "profileName": "exitpass-local",
+    "password": "session-only-password"
+  },
+  "scope": "all"
+}
+```
+
+Connection resolution order:
+
+1. Request `postgresUrl`.
+2. Request `connection.profileName` plus optional session-only `connection.password`.
+3. Service process `DBSTATE_POSTGRES_URL`.
+
+Profiles store only non-secret metadata: name, host, port, database, username, SSL mode, optional description, and optional default schema. Profiles never store passwords, tokens, full URLs, or connection strings.
 
 Preferred local usage:
 
@@ -260,6 +285,22 @@ Invoke-RestMethod `
   -Body '{ "scope": "all" }'
 ```
 
+Connection profiles:
+
+```powershell
+Invoke-RestMethod `
+  -Method Get `
+  -Uri http://127.0.0.1:4587/api/v1/connections/profiles
+```
+
+```powershell
+Invoke-RestMethod `
+  -Method Post `
+  -Uri http://127.0.0.1:4587/api/v1/connections/test `
+  -ContentType "application/json" `
+  -Body '{ "connection": { "profileName": "exitpass-local", "password": "session-only-password" } }'
+```
+
 ## HTTP Status Behavior
 
 Expected status codes:
@@ -323,6 +364,7 @@ Only use disposable test databases. Do not point `DBSTATE_TEST_POSTGRES_URL` at 
 - No write endpoints are included.
 - No project database or workspace database is included.
 - No long-running job queue, background scheduler, or file watcher is included.
+- Connection profiles are local non-secret metadata only. Password persistence, keychain integration, vault integration, cloud sync, and team-shared profiles are not included.
 - No Docker Compose or CI workflow is included.
 - No MCP server or AI integration is included.
 - No SQL execution or database apply exists.

@@ -46,13 +46,13 @@ The workspace path is not persisted. DbState does not maintain a recent-project 
 The Source & Target step presents:
 
 - Source: repository desired state from the selected workspace.
-- Target: PostgreSQL database through a session-only URL or `DBSTATE_POSTGRES_URL`.
+- Target: PostgreSQL database through a session-only URL, a saved non-secret profile plus optional session-only password, or `DBSTATE_POSTGRES_URL`.
 - Workflow mode selector:
   - Repo state to PostgreSQL compare.
   - PostgreSQL inspect only.
   - Reference-data compare.
 
-The PostgreSQL URL is sent only with the clicked operation. It is not stored by the UI, placed in the browser URL, or displayed in response panels.
+The PostgreSQL URL is sent only with the clicked operation. It is not stored by the UI, placed in the browser URL, or displayed in response panels. Slice 14 adds profile mode for non-secret connection metadata. The profile password field is session-only and is not persisted.
 
 ## Compare Options
 
@@ -168,7 +168,7 @@ No React, Vue, Svelte, Angular, Vite, npm, Node, package file, external CDN, ext
 
 Slice 13A does not add:
 
-- Connection profile persistence.
+- Password, token, or full PostgreSQL URL persistence.
 - Project database or workspace database.
 - Recent projects list.
 - Export write workflow in UI.

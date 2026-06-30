@@ -133,6 +133,7 @@ Current CLI scope:
 - `dbstate serve` starts a minimal local-only HTTP JSON Service API boundary for selected read-only and plan-only operations.
 - The local service serves a minimal static schema compare workflow UI shell at `/` and `/ui`, including a results grid with object-type filtering and status badges.
 - Service and UI workflows can use a session-only selected local repository path through `repositoryPath`.
+- Service and UI workflows can use optional local non-secret PostgreSQL connection profiles. Profiles are stored outside the repository and never store passwords, tokens, or full PostgreSQL URLs.
 
 Current implementation limitations:
 
@@ -140,7 +141,7 @@ Current implementation limitations:
 - PostgreSQL access is read-only in product commands.
 - No command applies SQL to a database.
 
-See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md`, `docs/postgresql-v0.1/40-slice-13-workspace-selection.md`, `docs/postgresql-v0.1/41-slice-13a-schema-compare-ui-workflow.md`, and `docs/postgresql-v0.1/42-slice-13b-results-grid-usability.md` for command details.
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md`, `docs/postgresql-v0.1/40-slice-13-workspace-selection.md`, `docs/postgresql-v0.1/41-slice-13a-schema-compare-ui-workflow.md`, `docs/postgresql-v0.1/42-slice-13b-results-grid-usability.md`, and `docs/postgresql-v0.1/43-slice-14-safe-connection-profiles.md` for command details.
 
 ## Docker CLI Automation
 
@@ -161,6 +162,8 @@ docker run --rm `
 ```
 
 Use `DBSTATE_POSTGRES_URL` for session-only PostgreSQL access. Do not put credentials in the image or repository.
+
+For persistent non-secret Docker profiles, mount a config directory and set `DBSTATE_CONFIG_DIR`. Do not bake credentials into the image.
 
 Docker packaging supports CLI automation and the minimal local Service API boundary. It does not add browser UI, hosted service mode, Docker Compose, CI, SQL execution, or direct database apply.
 
@@ -198,6 +201,8 @@ http://127.0.0.1:4587/
 ```
 
 The Slice 13B UI is a static schema compare workflow shell over the service API. It uses a left workflow navigation for workspace, source and target, compare options, results, object diff, warnings, release plan, reports, and safety information. The Results grid includes object-type filtering, status badges, a status legend, and source/target context above the table. Inspect populates schema and table dropdowns, while column details stay in Object Diff for selected tables. It has no frontend framework, no Node build pipeline, no write workflows, no SQL execution, and no direct database apply.
+
+The Source & Target step supports session-only URL mode, saved non-secret profile mode, and service environment variable mode. Saved profiles contain only host, port, database, username, SSL mode, and description. Passwords and full URLs remain session-only and are not persisted.
 
 ## Workspace Selection
 

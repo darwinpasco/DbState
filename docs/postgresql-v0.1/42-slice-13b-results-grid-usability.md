@@ -131,6 +131,8 @@ Slice 13B preserves the existing UI safety boundary:
 - UI calls only approved safe service endpoints.
 - Workspace path remains session-only.
 - PostgreSQL URL remains session-only.
+- Saved connection profiles contain only non-secret metadata and live outside the repository.
+- Profile passwords are session-only and are not persisted.
 - No write buttons are added.
 - No export write workflow is added.
 - No sync write workflow is added.
