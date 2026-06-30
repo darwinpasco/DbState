@@ -67,6 +67,14 @@ Send:
 - feedback channel:
   - `<feedback-channel-to-be-filled-by-Darwin>`
 
+The Slice 21 distribution assembly script creates a versioned folder with the installer, SHA256 file, private beta readme, and approved tester-facing docs:
+
+```powershell
+.\packaging\windows\Build-PrivateBetaPackage.ps1 `
+  -Version v0.1.0-private-beta.1 `
+  -InstallerPath .\packaging\windows\out\DbState-PostgreSQL-v0.1.0-alpha.3-setup.exe
+```
+
 Do not send:
 
 - source code
