@@ -110,6 +110,7 @@ If the selected path is a Git repository without DbState structure:
 The UI includes a Workspace panel with:
 
 - Local repository path input.
+- Browse button backed by the local service.
 - Workspace status button.
 - Repository path display.
 - Git root display.
@@ -127,6 +128,8 @@ The workspace path is session-only:
 - It is sent only in service request bodies when present.
 
 If the field is empty, the UI uses the service working directory.
+
+Slice 15 adds service-backed browsing to this panel. The picker lists service-visible directories only, never files, and does not use browser filesystem APIs. Selecting a folder fills the session-only path field and validates the workspace.
 
 ## Docker Path Mapping
 
@@ -150,6 +153,8 @@ In the UI, use:
 ```
 
 Additional host repositories must be mounted explicitly. The service cannot access arbitrary host paths from inside the container.
+
+The Browse picker follows the same rule. Inside Docker it can browse only mounted container paths, such as `/workspace`.
 
 ## Safety Boundary
 

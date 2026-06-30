@@ -135,6 +135,22 @@ docker run --rm `
 
 Profiles store host, port, database, username, SSL mode, and description only. Passwords, tokens, and full PostgreSQL URLs must remain session-only and must not be baked into images.
 
+## Database To Repository In Docker
+
+After Slice 15, service mode can preview Database to Repository capture and can write supported desired-state object files after explicit confirmation.
+
+In Docker, the target repository path must be a mounted container path. If the host repository is mounted at `/workspace`, use:
+
+```text
+/workspace
+```
+
+The write action can update files only under the mounted repository's `database/objects/` paths. It still requires a clean working tree and typed confirmation in the UI or Service API request.
+
+The Slice 15 workspace Browse button is service-backed. In Docker, it can browse only container-visible paths. Mount the target repository and select the container path, such as `/workspace`.
+
+Docker does not add PostgreSQL mutation, SQL execution, Git stage, Git commit, Git push, Git pull, or Git fetch behavior.
+
 ## Docker Networking
 
 Connecting from a container to PostgreSQL depends on host and Docker networking.
