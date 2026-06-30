@@ -143,7 +143,13 @@ Current implementation limitations:
 - PostgreSQL access is read-only in product commands.
 - No command applies SQL to a database.
 
-See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md`, `docs/postgresql-v0.1/40-slice-13-workspace-selection.md`, `docs/postgresql-v0.1/41-slice-13a-schema-compare-ui-workflow.md`, `docs/postgresql-v0.1/42-slice-13b-results-grid-usability.md`, `docs/postgresql-v0.1/43-slice-14-safe-connection-profiles.md`, `docs/postgresql-v0.1/44-slice-15-database-to-repository-workflow.md`, `docs/postgresql-v0.1/45-slice-16-postgresql-object-coverage.md`, `docs/postgresql-v0.1/46-slice-16a-object-diff-full-context-ddl.md`, and `docs/postgresql-v0.1/47-slice-17-release-artifact-hardening.md` for command details.
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md`, `docs/postgresql-v0.1/40-slice-13-workspace-selection.md`, `docs/postgresql-v0.1/41-slice-13a-schema-compare-ui-workflow.md`, `docs/postgresql-v0.1/42-slice-13b-results-grid-usability.md`, `docs/postgresql-v0.1/43-slice-14-safe-connection-profiles.md`, `docs/postgresql-v0.1/44-slice-15-database-to-repository-workflow.md`, `docs/postgresql-v0.1/45-slice-16-postgresql-object-coverage.md`, `docs/postgresql-v0.1/46-slice-16a-object-diff-full-context-ddl.md`, `docs/postgresql-v0.1/47-slice-17-release-artifact-hardening.md`, and `docs/postgresql-v0.1/48-slice-18-golden-path-private-beta-walkthrough.md` for command details.
+
+## Private Beta Golden Path
+
+Technical testers can follow the repeatable ParkingDemo walkthrough in `docs/postgresql-v0.1/48-slice-18-golden-path-private-beta-walkthrough.md`.
+
+Use `docs/postgresql-v0.1/49-private-beta-feedback-template.md` for private beta feedback. Do not include passwords, full PostgreSQL URLs, production data, or secrets in feedback.
 
 ## Docker CLI Automation
 
@@ -219,7 +225,7 @@ The Source & Target step supports session-only URL mode, saved non-secret profil
 Service and UI requests may include a session-only local repository path:
 
 ```json
-{ "repositoryPath": "D:\\SourceCodes\\DbState" }
+{ "repositoryPath": "C:\\SourceCodes\\DbState" }
 ```
 
 The path must exist, be a directory, and be inside a local Git working tree. DbState does not persist workspace paths, maintain a recent-project list, clone repositories, fetch, pull, push, stage, or commit from service endpoints. Docker users must enter a path inside the container, such as `/workspace`.
