@@ -114,6 +114,27 @@ docker run --rm \
 
 The raw connection URL is not persisted and must not appear in text output, JSON output, generated files, or release artifacts.
 
+## Connection Profiles In Docker
+
+After Slice 14, the Service API and browser UI can use optional local non-secret connection profiles.
+
+Profiles inside Docker are stored in the container filesystem unless a config directory is mounted. For persistent Docker profiles, mount a config directory and set `DBSTATE_CONFIG_DIR`.
+
+PowerShell:
+
+```powershell
+docker run --rm `
+  -p 127.0.0.1:4587:4587 `
+  -v "${PWD}:/workspace" `
+  -v "$env:APPDATA\DbState:/config/dbstate" `
+  -e DBSTATE_CONFIG_DIR=/config/dbstate `
+  -w /workspace `
+  dbstate-postgres:dev `
+  dbstate serve --host 0.0.0.0 --port 4587
+```
+
+Profiles store host, port, database, username, SSL mode, and description only. Passwords, tokens, and full PostgreSQL URLs must remain session-only and must not be baked into images.
+
 ## Docker Networking
 
 Connecting from a container to PostgreSQL depends on host and Docker networking.
