@@ -157,6 +157,7 @@ Private beta readiness docs:
 - `docs/postgresql-v0.1/52-private-beta-known-limitations.md`
 - `docs/postgresql-v0.1/53-private-beta-installer-distribution.md`
 - `docs/postgresql-v0.1/54-private-beta-smoke-test-matrix.md`
+- `docs/postgresql-v0.1/55-slice-21-private-beta-distribution-package.md`
 
 ## Windows Private Beta Installer
 
