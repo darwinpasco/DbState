@@ -136,15 +136,17 @@ Comparison normalizes line endings and trailing whitespace. Slice 16 does not im
 
 Dependency warnings remain intentionally limited. Slice 16 checks simple schema dependencies and keeps full dependency graph extraction deferred.
 
-`dbstate release postgres` can include reviewable CREATE text for repo-only supported objects. For changed objects, release artifacts emit review comments such as:
+`dbstate release postgres` can include reviewable CREATE text for repo-only supported objects. For changed objects, release artifacts emit review comments. Slice 17 standardizes the current review comment as:
 
 ```sql
--- REVIEW REQUIRED: object differs; automatic ALTER is not generated in Slice 16.
+-- REVIEW REQUIRED: object differs; automatic ALTER is not generated in Slice 17.
 ```
 
 Release generation never executes SQL.
 
 Release generation does not generate destructive SQL such as `DROP`, `TRUNCATE`, `DELETE`, destructive `ALTER`, `GRANT`, or `REVOKE`.
+
+Slice 17 hardens release bundles with sectioned SQL, summary markdown, risk JSON, and manifest JSON under `database/releases/`.
 
 ## Service And UI
 

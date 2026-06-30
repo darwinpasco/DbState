@@ -126,7 +126,7 @@ Current CLI scope:
 - `dbstate sync postgres` compares selected source PostgreSQL objects against local desired-state files and creates or updates local files after explicit command invocation.
 - `dbstate compare postgres` reads supported desired-state files, inspects PostgreSQL read-only, and reports repository-to-database differences without writing files.
 - `dbstate plan postgres` builds an in-memory selected plan from compare results and reports limited table-to-schema dependency warnings without writing files.
-- `dbstate release postgres` generates review-only SQL, summary, and risk artifacts under `database/releases/` from the selected plan. It never executes the generated SQL.
+- `dbstate release postgres` generates review-only SQL, summary, risk JSON, and manifest artifacts under `database/releases/` from the selected plan. It never executes the generated SQL.
 - `dbstate data-compare postgres` compares explicitly configured reference-data table files against PostgreSQL rows with read-only `SELECT`.
 - CLI JSON output is hardened around common `command`, `success`, `warnings`, and `errors` fields, repository context where relevant, and redaction of connection details and masked values.
 - Docker packaging is available for headless CLI automation against mounted repositories.
@@ -143,7 +143,7 @@ Current implementation limitations:
 - PostgreSQL access is read-only in product commands.
 - No command applies SQL to a database.
 
-See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md`, `docs/postgresql-v0.1/40-slice-13-workspace-selection.md`, `docs/postgresql-v0.1/41-slice-13a-schema-compare-ui-workflow.md`, `docs/postgresql-v0.1/42-slice-13b-results-grid-usability.md`, `docs/postgresql-v0.1/43-slice-14-safe-connection-profiles.md`, `docs/postgresql-v0.1/44-slice-15-database-to-repository-workflow.md`, and `docs/postgresql-v0.1/45-slice-16-postgresql-object-coverage.md` for command details.
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md`, `docs/postgresql-v0.1/40-slice-13-workspace-selection.md`, `docs/postgresql-v0.1/41-slice-13a-schema-compare-ui-workflow.md`, `docs/postgresql-v0.1/42-slice-13b-results-grid-usability.md`, `docs/postgresql-v0.1/43-slice-14-safe-connection-profiles.md`, `docs/postgresql-v0.1/44-slice-15-database-to-repository-workflow.md`, `docs/postgresql-v0.1/45-slice-16-postgresql-object-coverage.md`, `docs/postgresql-v0.1/46-slice-16a-object-diff-full-context-ddl.md`, and `docs/postgresql-v0.1/47-slice-17-release-artifact-hardening.md` for command details.
 
 ## Docker CLI Automation
 
@@ -208,6 +208,8 @@ Object Diff defaults to Full Context DDL for review. For selected tables, it can
 
 The UI includes Database to Repository preview and an explicit Write Repository Files action. That action requires typed confirmation, a clean working tree, and writes only supported desired-state object files under `database/objects/` in the selected repository. It does not mutate PostgreSQL, execute SQL, write release artifacts, stage Git changes, commit, push, pull, or fetch.
 
+The Release Plan page remains review-only. Release artifact generation is performed through `dbstate release postgres`, which creates a sectioned SQL review artifact, summary markdown, risk JSON, and manifest JSON under `database/releases/`. Dry-run reports planned artifact paths and risk information without writing files.
+
 The UI has no frontend framework, no Node build pipeline, no direct database apply, and no generated SQL execution.
 
 The Source & Target step supports session-only URL mode, saved non-secret profile mode, and service environment variable mode. Saved profiles contain only host, port, database, username, SSL mode, and description. Passwords and full URLs remain session-only and are not persisted.
@@ -223,6 +225,8 @@ Service and UI requests may include a session-only local repository path:
 The path must exist, be a directory, and be inside a local Git working tree. DbState does not persist workspace paths, maintain a recent-project list, clone repositories, fetch, pull, push, stage, or commit from service endpoints. Docker users must enter a path inside the container, such as `/workspace`.
 
 The Workspace page also includes a Browse button backed by the local Service API. It lists service-visible directories only, never files, and does not use browser filesystem APIs. In Docker, the picker can browse only paths mounted into the container.
+
+For a selected Git repository that is not yet a DbState project, the Workspace page can initialize the standard DbState project structure after typed confirmation. Initialization writes only local folders/files such as `database/objects/`, `database/reference-data/dbstate.reference-data.yml`, and `database/releases/`. It does not capture database objects, connect to PostgreSQL, execute SQL, mutate a database, stage Git changes, commit, push, pull, or fetch.
 
 ## High-level principles
 
