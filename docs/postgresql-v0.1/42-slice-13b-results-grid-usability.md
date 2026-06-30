@@ -141,6 +141,10 @@ This workspace is a Git repository but not yet an initialized DbState project. R
 
 The raw JSON remains available in Reports / Raw JSON, but the error is not shown as an object row.
 
+## Object Diff Review Update
+
+Slice 16A keeps the Results grid behavior from this slice and improves Object Diff. Object Diff now defaults to Full Context DDL for review, with Object Only DDL, Related Objects, and Raw Details available as separate modes. Columns still do not become top-level Results rows.
+
 ## Safety Boundary
 
 Slice 13B preserves the existing UI safety boundary. Slice 15 adds Database to Repository preview and an explicitly confirmed repository-file write action, but the database safety boundary remains unchanged:

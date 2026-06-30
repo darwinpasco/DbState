@@ -758,7 +758,7 @@ const UI_HTML: &str = r#"<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DbState PostgreSQL v0.1</title>
-  <link rel="stylesheet" href="/ui/app.css?v=slice15-object-diff-direction">
+  <link rel="stylesheet" href="/ui/app.css?v=slice16a-full-context-ddl">
 </head>
 <body>
   <header class="app-header">
@@ -1078,17 +1078,35 @@ const UI_HTML: &str = r#"<!doctype html>
           <h3 id="selected-object-title">No object selected</h3>
           <dl class="summary-list compact" id="selected-object-summary"></dl>
         </section>
+        <div class="object-diff-tabs" aria-label="Object Diff view mode">
+          <button type="button" class="secondary-button active" data-diff-mode="fullContext">Full Context DDL</button>
+          <button type="button" class="secondary-button" data-diff-mode="objectOnly">Object Only DDL</button>
+          <button type="button" class="secondary-button" data-diff-mode="relatedObjects">Related Objects</button>
+          <button type="button" class="secondary-button" data-diff-mode="rawDetails">Raw Details</button>
+        </div>
         <div id="ddl-comparison-status" class="ddl-comparison-status ddl-unavailable">DDL unavailable</div>
-        <div class="diff-grid" aria-label="Object detail viewer">
+        <div id="ddl-diff-view">
+          <div class="diff-grid" aria-label="Object detail viewer">
+            <section>
+              <h3 id="source-ddl-heading">Source DDL - Full Context DDL</h3>
+              <p class="note">Source type: <strong id="source-type-label">Repository</strong></p>
+              <pre id="source-detail">Diff detail not available yet. DDL not available yet for this object.</pre>
+            </section>
+            <section>
+              <h3 id="target-ddl-heading">Target DDL - Full Context DDL</h3>
+              <p class="note">Target type: <strong id="target-type-label">Database</strong></p>
+              <pre id="target-detail">Diff detail not available yet. DDL not available yet for this object.</pre>
+            </section>
+          </div>
+        </div>
+        <div id="related-objects-view" class="related-objects-grid" hidden>
           <section>
-            <h3>Source DDL</h3>
-            <p class="note">Source type: <strong id="source-type-label">Repository</strong></p>
-            <pre id="source-detail">Diff detail not available yet.</pre>
+            <h3>Source Related Objects</h3>
+            <div id="source-related-objects" class="related-object-list">No related object details loaded.</div>
           </section>
           <section>
-            <h3>Target DDL</h3>
-            <p class="note">Target type: <strong id="target-type-label">Database</strong></p>
-            <pre id="target-detail">Diff detail not available yet.</pre>
+            <h3>Target Related Objects</h3>
+            <div id="target-related-objects" class="related-object-list">No related object details loaded.</div>
           </section>
         </div>
         <section class="subsection">
@@ -1153,7 +1171,7 @@ const UI_HTML: &str = r#"<!doctype html>
     <span>Errors: <strong id="last-errors">0</strong></span>
   </footer>
 
-  <script src="/ui/app.js?v=slice15-object-diff-direction"></script>
+  <script src="/ui/app.js?v=slice16a-full-context-ddl"></script>
 </body>
 </html>
 "#;
@@ -1628,6 +1646,48 @@ button:hover {
   color: #59636e;
 }
 
+.object-diff-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.object-diff-tabs button.active {
+  border-color: var(--accent);
+  background: #dff1f6;
+  color: var(--accent-strong);
+  font-weight: 700;
+}
+
+.related-objects-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.related-object-list {
+  display: grid;
+  gap: 8px;
+}
+
+.related-object-group {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 10px;
+}
+
+.related-object-group h4 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.related-object-group ul {
+  margin: 0;
+  padding-left: 18px;
+}
+
 .summary-list {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -1710,7 +1770,8 @@ pre {
   }
 
   .split-pane,
-  .diff-grid {
+  .diff-grid,
+  .related-objects-grid {
     grid-template-columns: 1fr;
   }
 }
@@ -1763,6 +1824,8 @@ const UI_JS: &str = r#"(function () {
     directoryParentPath: "",
     included: new Set(),
     selectedIndex: -1,
+    selectedObjectDdl: null,
+    objectDiffMode: "fullContext",
     lastOperation: "none"
   };
 
@@ -2880,6 +2943,148 @@ const UI_JS: &str = r#"(function () {
     byId("included-count").textContent = visibleIncluded + " included in filter";
   }
 
+  function clearObjectDiffDetails(message) {
+    state.selectedObjectDdl = null;
+    byId("source-detail").textContent = message || "DDL not available yet for this object.";
+    byId("target-detail").textContent = message || "DDL not available yet for this object.";
+    byId("source-related-objects").textContent = "No related object details loaded.";
+    byId("target-related-objects").textContent = "No related object details loaded.";
+    byId("selected-json").textContent = "{}";
+    updateDdlComparisonStatus(null, null);
+  }
+
+  function setObjectDiffMode(mode) {
+    state.objectDiffMode = mode || "fullContext";
+    document.querySelectorAll("[data-diff-mode]").forEach(function (button) {
+      button.classList.toggle("active", button.dataset.diffMode === state.objectDiffMode);
+    });
+    renderLoadedObjectDiff();
+  }
+
+  function objectDdlSection(detail, mode) {
+    if (!detail) {
+      return {};
+    }
+    if (mode === "objectOnly") {
+      return detail.objectOnly || {
+        repositoryDdl: detail.repositoryDdl || "",
+        databaseDdl: detail.databaseDdl || ""
+      };
+    }
+    if (mode === "fullContext") {
+      return detail.fullContext || detail.objectOnly || {
+        repositoryDdl: detail.repositoryDdl || "",
+        databaseDdl: detail.databaseDdl || ""
+      };
+    }
+    return {};
+  }
+
+  function ddlByDirection(section, direction) {
+    const repositoryDdl = section.repositoryDdl || "";
+    const databaseDdl = section.databaseDdl || "";
+    const ddlBySide = { repository: repositoryDdl, database: databaseDdl, "": "" };
+    return {
+      sourceDdl: ddlBySide[direction.sourceDdlSide] || "",
+      targetDdl: ddlBySide[direction.targetDdlSide] || ""
+    };
+  }
+
+  function relatedObjectsForSide(detail, side) {
+    const related = detail && detail.relatedObjects ? detail.relatedObjects : {};
+    return Array.isArray(related[side]) ? related[side] : [];
+  }
+
+  function groupRelatedObjects(items) {
+    const groups = {};
+    if (!items.length) {
+      groups["Details"] = ["Not available in Slice 16A"];
+      return groups;
+    }
+    items.forEach(function (item) {
+      const group = item.group || "Details";
+      const value = [item.name, item.detail].filter(Boolean).join(" - ") || "Not available in Slice 16A";
+      if (!groups[group]) {
+        groups[group] = [];
+      }
+      groups[group].push(value);
+    });
+    return groups;
+  }
+
+  function renderRelatedObjectList(targetId, items) {
+    const target = byId(targetId);
+    target.innerHTML = "";
+    const groups = groupRelatedObjects(items);
+    Object.keys(groups).sort().forEach(function (group) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "related-object-group";
+      const heading = document.createElement("h4");
+      heading.textContent = group;
+      wrapper.appendChild(heading);
+      const list = document.createElement("ul");
+      groups[group].forEach(function (value) {
+        const item = document.createElement("li");
+        item.textContent = value;
+        list.appendChild(item);
+      });
+      wrapper.appendChild(list);
+      target.appendChild(wrapper);
+    });
+  }
+
+  function renderLoadedObjectDiff() {
+    const row = state.visibleRows[state.selectedIndex];
+    if (!row || !state.selectedObjectDdl) {
+      return;
+    }
+    const direction = directionForResultRow(row);
+    const mode = state.objectDiffMode || "fullContext";
+    const showRelated = mode === "relatedObjects";
+    const showRaw = mode === "rawDetails";
+    byId("ddl-diff-view").hidden = showRelated || showRaw;
+    byId("related-objects-view").hidden = !showRelated;
+    byId("selected-json").parentElement.hidden = false;
+
+    if (showRelated) {
+      byId("ddl-comparison-status").textContent = "DDL unavailable";
+      byId("ddl-comparison-status").className = "ddl-comparison-status ddl-unavailable";
+      renderRelatedObjectList("source-related-objects", relatedObjectsForSide(state.selectedObjectDdl, direction.sourceDdlSide));
+      renderRelatedObjectList("target-related-objects", relatedObjectsForSide(state.selectedObjectDdl, direction.targetDdlSide));
+      byId("selected-json").textContent = redactedJson({
+        selected: objectDiffDisplayPayload(row, direction),
+        objectDdl: state.selectedObjectDdl
+      });
+      return;
+    }
+
+    if (showRaw) {
+      byId("ddl-diff-view").hidden = true;
+      byId("related-objects-view").hidden = true;
+      byId("ddl-comparison-status").textContent = "DDL unavailable";
+      byId("ddl-comparison-status").className = "ddl-comparison-status ddl-unavailable";
+      byId("selected-json").textContent = redactedJson({
+        selected: objectDiffDisplayPayload(row, direction),
+        objectDdl: state.selectedObjectDdl
+      });
+      return;
+    }
+
+    const label = mode === "objectOnly" ? "Object Only DDL" : "Full Context DDL";
+    byId("source-ddl-heading").textContent = "Source DDL - " + label;
+    byId("target-ddl-heading").textContent = "Target DDL - " + label;
+    const section = objectDdlSection(state.selectedObjectDdl, mode);
+    const ddl = ddlByDirection(section, direction);
+    const unavailable = "DDL not available yet for this object.";
+    byId("source-detail").textContent = ddl.sourceDdl || unavailable;
+    byId("target-detail").textContent = ddl.targetDdl || unavailable;
+    updateDdlComparisonStatus(ddl.sourceDdl, ddl.targetDdl);
+    byId("selected-json").textContent = redactedJson({
+      selected: objectDiffDisplayPayload(row, direction),
+      objectDdl: state.selectedObjectDdl
+    });
+  }
+
   function renderSelectedObject() {
     const row = state.visibleRows[state.selectedIndex];
     const direction = directionForResultRow(row);
@@ -2888,10 +3093,7 @@ const UI_JS: &str = r#"(function () {
     if (!row) {
       byId("selected-object-title").textContent = "No object selected";
       byId("selected-object-summary").innerHTML = "";
-      byId("source-detail").textContent = "DDL not available yet for this object.";
-      byId("target-detail").textContent = "DDL not available yet for this object.";
-      byId("selected-json").textContent = "{}";
-      updateDdlComparisonStatus(null, null);
+      clearObjectDiffDetails("DDL not available yet for this object.");
       return;
     }
     if (!rowMatchesCurrentWorkflow(row)) {
@@ -2900,10 +3102,7 @@ const UI_JS: &str = r#"(function () {
       updateSummary("selected-object-summary", {
         message: message
       });
-      byId("source-detail").textContent = "DDL not available yet for this object.";
-      byId("target-detail").textContent = "DDL not available yet for this object.";
-      byId("selected-json").textContent = "{}";
-      updateDdlComparisonStatus(null, null);
+      clearObjectDiffDetails("DDL not available yet for this object.");
       return;
     }
     byId("selected-object-title").textContent = row.objectType + ": " + row.name;
@@ -2919,6 +3118,8 @@ const UI_JS: &str = r#"(function () {
       target: direction.targetLabel,
       targetType: direction.targetType
     });
+    state.selectedObjectDdl = null;
+    setObjectDiffMode(state.objectDiffMode || "fullContext");
     byId("source-detail").textContent = "Loading DDL detail...";
     byId("target-detail").textContent = "Loading DDL detail...";
     updateDdlComparisonStatus(null, null);
@@ -3095,10 +3296,17 @@ const UI_JS: &str = r#"(function () {
   }
 
   function objectDdlRequest(row) {
+    let objectName = row.name || "";
+    if (row.objectType === "index") {
+      const tableName = row.parentName || (row.raw && row.raw.tableName) || "";
+      if (tableName && objectName.indexOf(".") < 0) {
+        objectName = tableName + "." + objectName;
+      }
+    }
     return attachWorkspacePath(attachConnection({
       objectType: row.objectType,
       schema: row.schema || "",
-      objectName: row.name || "",
+      objectName: objectName,
       relativePath: row.relativePath || ""
     }));
   }
@@ -3108,19 +3316,35 @@ const UI_JS: &str = r#"(function () {
     try {
       detail = await requestJson(approvedEndpoints.objectDdl, objectDdlRequest(row));
     } catch (error) {
-      detail = { repositoryDdl: "", databaseDdl: "", warnings: [error.message || "DDL detail request failed."] };
+      detail = { repositoryDdl: "", databaseDdl: "", objectOnly: {}, fullContext: {}, relatedObjects: {}, warnings: [error.message || "DDL detail request failed."] };
     }
 
-    const repositoryDdl = detail.repositoryDdl || "";
-    const databaseDdl = detail.databaseDdl || clientDatabaseDdl(row);
-    const ddlBySide = { repository: repositoryDdl, database: databaseDdl, "": "" };
-    const sourceDdl = ddlBySide[direction.sourceDdlSide] || "";
-    const targetDdl = ddlBySide[direction.targetDdlSide] || "";
-
-    const unavailable = "DDL not available yet for this object.";
-    byId("source-detail").textContent = sourceDdl || unavailable;
-    byId("target-detail").textContent = targetDdl || unavailable;
-    updateDdlComparisonStatus(sourceDdl, targetDdl);
+    if (!detail.databaseDdl && (row.objectType === "schema" || row.objectType === "table")) {
+      detail.databaseDdl = clientDatabaseDdl(row);
+    }
+    if (!detail.objectOnly) {
+      detail.objectOnly = {};
+    }
+    if (!detail.objectOnly.databaseDdl && detail.databaseDdl) {
+      detail.objectOnly.databaseDdl = detail.databaseDdl;
+    }
+    if (!detail.objectOnly.repositoryDdl && detail.repositoryDdl) {
+      detail.objectOnly.repositoryDdl = detail.repositoryDdl;
+    }
+    if (!detail.fullContext) {
+      detail.fullContext = {};
+    }
+    if (!detail.fullContext.databaseDdl && detail.objectOnly.databaseDdl) {
+      detail.fullContext.databaseDdl = detail.objectOnly.databaseDdl;
+    }
+    if (!detail.fullContext.repositoryDdl && detail.objectOnly.repositoryDdl) {
+      detail.fullContext.repositoryDdl = detail.objectOnly.repositoryDdl;
+    }
+    if (!detail.relatedObjects) {
+      detail.relatedObjects = { repository: [], database: [] };
+    }
+    state.selectedObjectDdl = detail;
+    renderLoadedObjectDiff();
   }
 
   function objectDiffDirectionRegressionFixture() {
@@ -3282,6 +3506,8 @@ const UI_JS: &str = r#"(function () {
     state.visibleRows = [];
     state.included = new Set();
     state.selectedIndex = -1;
+    state.selectedObjectDdl = null;
+    state.objectDiffMode = "fullContext";
     responseSummary.textContent = reason || "Select an operation to run.";
     jsonViewer.textContent = "{}";
     byId("last-operation").textContent = "none";
@@ -3293,6 +3519,7 @@ const UI_JS: &str = r#"(function () {
     renderWarnings({ warnings: [], errors: [] });
     updateObjectTypeFilterOptions([], "none");
     renderResults([]);
+    setObjectDiffMode("fullContext");
   }
 
   function renderErrorSummary(data) {
@@ -3438,6 +3665,12 @@ const UI_JS: &str = r#"(function () {
   document.getElementById("object-type-filter").addEventListener("change", function () {
     state.selectedIndex = -1;
     renderResults(state.rows, true);
+  });
+
+  document.querySelectorAll("[data-diff-mode]").forEach(function (button) {
+    button.addEventListener("click", function () {
+      setObjectDiffMode(button.dataset.diffMode);
+    });
   });
 
   document.getElementById("compare-schema").addEventListener("change", function () {
@@ -4594,18 +4827,7 @@ fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
     ) {
         return service_json_response(
             200,
-            &ObjectDdlResponse {
-                success: false,
-                object_type: &object_type,
-                schema: &schema,
-                object_name: &object_name,
-                relative_path: None,
-                repository_ddl: None,
-                database_ddl: None,
-                warnings: &["DDL is available only for supported Slice 16 objects.".to_string()],
-                errors: &[],
-            }
-            .to_json(),
+            &ObjectDdlResponse::unsupported(&object_type, &schema, &object_name).to_json(),
         );
     }
 
@@ -4655,18 +4877,63 @@ fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
         }
     };
 
+    let mut object_only = DdlSection {
+        repository_ddl,
+        database_ddl,
+        notes: Vec::new(),
+    };
+
+    let (repository_full_context, repository_related, repository_notes) =
+        match repository_full_context_ddl(
+            &root,
+            &object_type,
+            &schema,
+            &object_name,
+            relative_path.as_deref(),
+            object_only.repository_ddl.as_deref(),
+        ) {
+            Ok(result) => result,
+            Err(error) => return service_error_response(400, command, &error),
+        };
+    let mut related_objects = RelatedObjectSet {
+        repository: repository_related,
+        database: Vec::new(),
+    };
+    let mut full_context = DdlSection {
+        repository_ddl: repository_full_context,
+        database_ddl: object_only.database_ddl.clone(),
+        notes: repository_notes,
+    };
+
+    if let Ok(Some(connection)) = resolve_service_postgres_connection(&request) {
+        match database_full_context_ddl(&connection.url, &object_type, &schema, &object_name) {
+            Ok((ddl, related, notes)) => {
+                full_context.database_ddl = ddl.or_else(|| object_only.database_ddl.clone());
+                related_objects.database = related;
+                full_context.notes.extend(notes);
+            }
+            Err(error) => warnings.push(error),
+        }
+    }
+
+    object_only.notes.push(
+        "Object Only DDL is the normalized durable object representation used by repository files."
+            .to_string(),
+    );
+
     service_json_response(
         if errors.is_empty() { 200 } else { 400 },
         &ObjectDdlResponse {
             success: errors.is_empty(),
-            object_type: &object_type,
-            schema: &schema,
-            object_name: &object_name,
-            relative_path: relative_path.as_deref(),
-            repository_ddl: repository_ddl.as_deref(),
-            database_ddl: database_ddl.as_deref(),
-            warnings: &warnings,
-            errors: &errors,
+            object_type,
+            schema,
+            object_name,
+            relative_path,
+            object_only,
+            full_context,
+            related_objects,
+            warnings,
+            errors,
         }
         .to_json(),
     )
@@ -4717,6 +4984,185 @@ fn read_repository_object_ddl(root: &Path, relative_path: &str) -> Result<Option
     fs::read_to_string(&canonical)
         .map(Some)
         .map_err(|error| format!("Could not read repository object file: {error}"))
+}
+
+fn repository_full_context_ddl(
+    root: &Path,
+    object_type: &str,
+    schema: &str,
+    object_name: &str,
+    _relative_path: Option<&str>,
+    object_only_ddl: Option<&str>,
+) -> Result<DdlContextResult, String> {
+    let mut related = Vec::new();
+    let mut notes = Vec::new();
+    if object_type != "table" {
+        notes.push("Full context is the same as object-only DDL for this object type.".to_string());
+        return Ok((object_only_ddl.map(ToOwned::to_owned), related, notes));
+    }
+
+    let mut ddl_parts = Vec::new();
+    if let Some(ddl) = object_only_ddl {
+        ddl_parts.push(ddl.to_string());
+    }
+
+    let index_files = repository_index_files_for_table(root, schema, object_name)?;
+    if index_files.is_empty() {
+        related.push(RelatedObjectSummary::new(
+            "Indexes",
+            "No related repository index files found.",
+            "Not available in Slice 16A",
+        ));
+        if !ddl_parts.is_empty() {
+            ddl_parts.push(
+                "-- No related repository index object files were found for this table."
+                    .to_string(),
+            );
+        }
+    } else {
+        for (relative_path, index_name, content) in index_files {
+            related.push(RelatedObjectSummary::new(
+                "Indexes",
+                &index_name,
+                &relative_path,
+            ));
+            ddl_parts.push(format!(
+                "-- Related repository index object: {relative_path}\n{}",
+                content.trim()
+            ));
+        }
+    }
+    related.push(RelatedObjectSummary::new(
+        "Constraints",
+        "Not available in Slice 16A",
+        "Durable constraint object coverage is deferred.",
+    ));
+    related.push(RelatedObjectSummary::new(
+        "Comments",
+        "Not available in Slice 16A",
+        "Durable comment object coverage is deferred.",
+    ));
+
+    Ok((join_ddl_parts(ddl_parts), related, notes))
+}
+
+fn repository_index_files_for_table(
+    root: &Path,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<(String, String, String)>, String> {
+    let schema = safe_file_component(schema)?;
+    let table = safe_file_component(table)?;
+    let index_dir = root.join("database").join("objects").join("indexes");
+    if !index_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let prefix = format!("{schema}.{table}.");
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&index_dir)
+        .map_err(|error| format!("Could not read repository indexes folder: {error}"))?
+    {
+        let entry =
+            entry.map_err(|error| format!("Could not read repository index entry: {error}"))?;
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if !file_name.starts_with(&prefix) || !file_name.ends_with(".sql") {
+            continue;
+        }
+        let index_name = file_name
+            .trim_start_matches(&prefix)
+            .trim_end_matches(".sql")
+            .to_string();
+        let relative_path = format!("database/objects/indexes/{file_name}");
+        if let Some(content) = read_repository_object_ddl(root, &relative_path)? {
+            files.push((relative_path, index_name, content));
+        }
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(files)
+}
+
+fn database_full_context_ddl(
+    connection_url: &str,
+    object_type: &str,
+    schema: &str,
+    object_name: &str,
+) -> Result<DdlContextResult, String> {
+    if object_type != "table" {
+        let ddl = database_object_ddl(connection_url, object_type, schema, object_name)?;
+        return Ok((
+            ddl,
+            Vec::new(),
+            vec!["Full context is the same as object-only DDL for this object type.".to_string()],
+        ));
+    }
+    if !is_postgres_connection_url(connection_url) {
+        return Err(invalid_postgres_url_message());
+    }
+    let inventory =
+        inspect_postgres(connection_url).map_err(|error| redact_message(&error, connection_url))?;
+    let table = inventory
+        .tables
+        .iter()
+        .find(|candidate| candidate.schema_name == schema && candidate.table_name == object_name);
+    if table.is_none() {
+        return Ok((None, Vec::new(), Vec::new()));
+    }
+    let columns: Vec<ColumnInfo> = inventory
+        .columns
+        .iter()
+        .filter(|column| column.schema_name == schema && column.table_name == object_name)
+        .cloned()
+        .collect();
+    let mut ddl_parts = vec![render_table_sql(schema, object_name, &columns)];
+    let mut related = Vec::new();
+    let mut indexes: Vec<IndexInfo> = inventory
+        .indexes
+        .iter()
+        .filter(|index| index.schema_name == schema && index.table_name == object_name)
+        .cloned()
+        .collect();
+    indexes.sort_by(|left, right| left.index_name.cmp(&right.index_name));
+    if indexes.is_empty() {
+        related.push(RelatedObjectSummary::new(
+            "Indexes",
+            "No related database indexes found.",
+            "Not available in Slice 16A",
+        ));
+    } else {
+        for index in indexes {
+            related.push(RelatedObjectSummary::new(
+                "Indexes",
+                &index.index_name,
+                &index.definition,
+            ));
+            ddl_parts.push(render_index_sql(&index));
+        }
+    }
+    related.push(RelatedObjectSummary::new(
+        "Constraints",
+        "Not available in Slice 16A",
+        "Constraint rendering in full context is deferred.",
+    ));
+    related.push(RelatedObjectSummary::new(
+        "Comments",
+        "Not available in Slice 16A",
+        "Comment rendering in full context is deferred.",
+    ));
+
+    Ok((join_ddl_parts(ddl_parts), related, Vec::new()))
+}
+
+fn join_ddl_parts(parts: Vec<String>) -> Option<String> {
+    let cleaned: Vec<String> = parts
+        .into_iter()
+        .map(|part| part.trim().to_string())
+        .filter(|part| !part.is_empty())
+        .collect();
+    if cleaned.is_empty() {
+        None
+    } else {
+        Some(format!("{}\n", cleaned.join("\n\n")))
+    }
 }
 
 fn validate_repository_object_relative_path(relative_path: &str) -> Result<(), String> {
@@ -4825,36 +5271,167 @@ fn database_object_ddl(
     }
 }
 
-struct ObjectDdlResponse<'a> {
-    success: bool,
-    object_type: &'a str,
-    schema: &'a str,
-    object_name: &'a str,
-    relative_path: Option<&'a str>,
-    repository_ddl: Option<&'a str>,
-    database_ddl: Option<&'a str>,
-    warnings: &'a [String],
-    errors: &'a [String],
+#[derive(Debug, Clone)]
+struct DdlSection {
+    repository_ddl: Option<String>,
+    database_ddl: Option<String>,
+    notes: Vec<String>,
 }
 
-impl ObjectDdlResponse<'_> {
+#[derive(Debug, Clone)]
+struct RelatedObjectSummary {
+    group: String,
+    name: String,
+    detail: String,
+}
+
+impl RelatedObjectSummary {
+    fn new(group: &str, name: &str, detail: &str) -> Self {
+        Self {
+            group: group.to_string(),
+            name: name.to_string(),
+            detail: detail.to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct RelatedObjectSet {
+    repository: Vec<RelatedObjectSummary>,
+    database: Vec<RelatedObjectSummary>,
+}
+
+type DdlContextResult = (Option<String>, Vec<RelatedObjectSummary>, Vec<String>);
+
+#[derive(Debug, Clone)]
+struct ObjectDdlResponse {
+    success: bool,
+    object_type: String,
+    schema: String,
+    object_name: String,
+    relative_path: Option<String>,
+    object_only: DdlSection,
+    full_context: DdlSection,
+    related_objects: RelatedObjectSet,
+    warnings: Vec<String>,
+    errors: Vec<String>,
+}
+
+impl ObjectDdlResponse {
+    fn unsupported(object_type: &str, schema: &str, object_name: &str) -> Self {
+        Self {
+            success: false,
+            object_type: object_type.to_string(),
+            schema: schema.to_string(),
+            object_name: object_name.to_string(),
+            relative_path: None,
+            object_only: DdlSection {
+                repository_ddl: None,
+                database_ddl: None,
+                notes: Vec::new(),
+            },
+            full_context: DdlSection {
+                repository_ddl: None,
+                database_ddl: None,
+                notes: Vec::new(),
+            },
+            related_objects: RelatedObjectSet {
+                repository: Vec::new(),
+                database: Vec::new(),
+            },
+            warnings: vec!["DDL is available only for supported Slice 16 objects.".to_string()],
+            errors: Vec::new(),
+        }
+    }
+
     fn to_json(&self) -> String {
         let mut json = String::new();
         json.push('{');
         write_json_string_field(&mut json, "command", "object ddl", true);
         write_json_bool_field(&mut json, "success", self.success);
         write_json_string_field(&mut json, "databaseType", "postgresql", false);
-        write_json_string_field(&mut json, "objectType", self.object_type, false);
-        write_json_string_field(&mut json, "schema", self.schema, false);
-        write_json_string_field(&mut json, "objectName", self.object_name, false);
-        write_json_optional_string_field(&mut json, "relativePath", self.relative_path);
-        write_json_optional_string_field(&mut json, "repositoryDdl", self.repository_ddl);
-        write_json_optional_string_field(&mut json, "databaseDdl", self.database_ddl);
-        write_json_array_field(&mut json, "warnings", self.warnings);
-        write_json_array_field(&mut json, "errors", self.errors);
+        write_json_string_field(&mut json, "objectType", &self.object_type, false);
+        write_json_string_field(&mut json, "schema", &self.schema, false);
+        write_json_string_field(&mut json, "objectName", &self.object_name, false);
+        write_json_optional_string_field(&mut json, "relativePath", self.relative_path.as_deref());
+        write_json_optional_string_field(
+            &mut json,
+            "repositoryDdl",
+            self.object_only.repository_ddl.as_deref(),
+        );
+        write_json_optional_string_field(
+            &mut json,
+            "databaseDdl",
+            self.object_only.database_ddl.as_deref(),
+        );
+        write_ddl_section_field(&mut json, "objectOnly", &self.object_only);
+        write_ddl_section_field(&mut json, "fullContext", &self.full_context);
+        write_related_objects_field(&mut json, "relatedObjects", &self.related_objects);
+        write_json_array_field(&mut json, "warnings", &self.warnings);
+        write_json_array_field(&mut json, "errors", &self.errors);
         json.push('}');
         json
     }
+}
+
+fn write_ddl_section_field(json: &mut String, name: &str, section: &DdlSection) {
+    json.push(',');
+    write!(json, "\"{}\":{{", escape_json(name)).ok();
+    write_json_optional_string_member(
+        json,
+        "repositoryDdl",
+        section.repository_ddl.as_deref(),
+        true,
+    );
+    write_json_optional_string_member(json, "databaseDdl", section.database_ddl.as_deref(), false);
+    write_json_array_field(json, "notes", &section.notes);
+    json.push('}');
+}
+
+fn write_related_objects_field(json: &mut String, name: &str, related: &RelatedObjectSet) {
+    json.push(',');
+    write!(json, "\"{}\":{{", escape_json(name)).ok();
+    write_related_object_array_field(json, "repository", &related.repository, true);
+    write_related_object_array_field(json, "database", &related.database, false);
+    json.push('}');
+}
+
+fn write_related_object_array_field(
+    json: &mut String,
+    name: &str,
+    values: &[RelatedObjectSummary],
+    first: bool,
+) {
+    if !first {
+        json.push(',');
+    }
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "group", &value.group, true);
+        write_json_string_field(json, "name", &value.name, false);
+        write_json_string_field(json, "detail", &value.detail, false);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+fn write_json_optional_string_member(
+    json: &mut String,
+    name: &str,
+    value: Option<&str>,
+    first: bool,
+) {
+    if !first {
+        json.push(',');
+    }
+    match value {
+        Some(value) => write!(json, "\"{}\":\"{}\"", escape_json(name), escape_json(value)).ok(),
+        None => write!(json, "\"{}\":null", escape_json(name)).ok(),
+    };
 }
 
 fn service_repository_sync_endpoint(
@@ -13699,12 +14276,8 @@ rows:
         assert!(js.content_type.contains("application/javascript"));
         assert!(js.body.contains("/api/v1/health"));
 
-        let versioned_js = service_response(
-            "GET",
-            "/ui/app.js?v=slice15-object-diff-direction",
-            "",
-            &dir,
-        );
+        let versioned_js =
+            service_response("GET", "/ui/app.js?v=slice16a-full-context-ddl", "", &dir);
         assert_eq!(versioned_js.status_code, 200);
         assert!(versioned_js.body.contains("directionForWorkflowMode"));
     }
@@ -13746,8 +14319,8 @@ rows:
         assert!(!html.contains("<th>Target</th>"));
         assert!(html.contains("Release artifact preview will be connected"));
         assert!(html.contains("Raw JSON"));
-        assert!(html.contains("/ui/app.css?v=slice15-object-diff-direction"));
-        assert!(html.contains("/ui/app.js?v=slice15-object-diff-direction"));
+        assert!(html.contains("/ui/app.css?v=slice16a-full-context-ddl"));
+        assert!(html.contains("/ui/app.js?v=slice16a-full-context-ddl"));
         assert!(!html.contains("http://"));
         assert!(!html.contains("https://"));
         assert!(!html.contains("cdn"));
@@ -14024,6 +14597,55 @@ rows:
     }
 
     #[test]
+    fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
+        let dir = create_temp_dir("slice16a-object-ddl-context");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        let table_path = dir
+            .join("database")
+            .join("objects")
+            .join("tables")
+            .join("core.accounts.sql");
+        fs::write(
+            &table_path,
+            "CREATE TABLE \"core\".\"accounts\" (\n    \"account_id\" integer NOT NULL\n);\n",
+        )
+        .expect("write table ddl");
+        let index_path = dir
+            .join("database")
+            .join("objects")
+            .join("indexes")
+            .join("core.accounts.accounts_code_idx.sql");
+        fs::write(
+            &index_path,
+            "CREATE INDEX \"accounts_code_idx\" ON \"core\".\"accounts\" (\"account_code\");\n",
+        )
+        .expect("write index ddl");
+        commit_all(&dir, "complete structure with table and index");
+
+        let body = r#"{ "scope": "all", "objectType": "table", "schema": "core", "objectName": "accounts", "relativePath": "database/objects/tables/core.accounts.sql" }"#;
+        let response = service_response("POST", "/api/v1/postgres/object-ddl", body, &dir);
+
+        assert_eq!(response.status_code, 200, "{}", response.body);
+        assert_common_json_contract(&response.body);
+        assert!(response.body.contains("\"objectOnly\""));
+        assert!(response.body.contains("\"fullContext\""));
+        assert!(response.body.contains("\"relatedObjects\""));
+        assert!(response.body.contains("CREATE TABLE"));
+        assert!(response.body.contains("accounts_code_idx"));
+        assert!(response
+            .body
+            .contains("database/objects/indexes/core.accounts.accounts_code_idx.sql"));
+        assert!(response.body.contains("\"group\":\"Indexes\""));
+        assert!(response.body.contains("\"group\":\"Constraints\""));
+        assert!(response.body.contains("\"group\":\"Comments\""));
+        assert!(response
+            .body
+            .contains("Object Only DDL is the normalized durable object"));
+        assert!(!response.body.contains("postgres://"));
+    }
+
+    #[test]
     fn slice15_repository_sync_preview_uses_dry_run_and_does_not_write_without_connection() {
         let dir = create_temp_dir("slice15-preview");
         init_git_repo(&dir);
@@ -14137,6 +14759,13 @@ rows:
             "Target type",
             "Source DDL",
             "Target DDL",
+            "Full Context DDL",
+            "Object Only DDL",
+            "Related Objects",
+            "Raw Details",
+            "data-diff-mode=\"fullContext\"",
+            "source-related-objects",
+            "target-related-objects",
             "DDL unavailable",
             "repository-sync-controls",
             "source-content",
@@ -14205,6 +14834,12 @@ rows:
             "DDL not available yet for this object.",
             "objectDdlRequest",
             "loadSelectedObjectDdl",
+            "objectDdlSection",
+            "renderLoadedObjectDiff",
+            "relatedObjectsForSide",
+            "renderRelatedObjectList",
+            "state.objectDiffMode = \"fullContext\"",
+            "const label = mode === \"objectOnly\" ? \"Object Only DDL\" : \"Full Context DDL\";",
             "openDirectoryPicker",
             "loadDirectoryRoots",
             "listDirectories",
