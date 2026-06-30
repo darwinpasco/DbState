@@ -27,6 +27,7 @@ These endpoints accept optional `repositoryPath`:
 ```text
 POST /api/v1/repo/status
 POST /api/v1/init/plan
+POST /api/v1/init/write
 POST /api/v1/postgres/inspect
 POST /api/v1/postgres/compare
 POST /api/v1/postgres/plan
@@ -118,6 +119,8 @@ The UI includes a Workspace panel with:
 - Working tree status.
 - DbState project status.
 - Missing path count.
+- Init Plan action.
+- Initialize DbState Project action with typed confirmation.
 
 The workspace path is session-only:
 
@@ -130,6 +133,28 @@ The workspace path is session-only:
 If the field is empty, the UI uses the service working directory.
 
 Slice 15 adds service-backed browsing to this panel. The picker lists service-visible directories only, never files, and does not use browser filesystem APIs. Selecting a folder fills the session-only path field and validates the workspace.
+
+The Workspace page can initialize a selected Git repository as a DbState project through `POST /api/v1/init/write`.
+
+The write request requires:
+
+```json
+{
+  "repositoryPath": "D:\\SourceCodes\\DbState",
+  "confirmInitializeProject": true,
+  "confirmationText": "INITIALIZE DBSTATE PROJECT"
+}
+```
+
+Initialization uses the selected repository's Git root as the project root. It creates only missing standard DbState project folders/files and does not overwrite the existing reference-data registry.
+
+Initialization does not:
+
+- Capture database objects.
+- Connect to PostgreSQL.
+- Execute SQL.
+- Mutate PostgreSQL.
+- Stage, commit, push, pull, fetch, or tag Git changes.
 
 ## Docker Path Mapping
 
@@ -158,13 +183,14 @@ The Browse picker follows the same rule. Inside Docker it can browse only mounte
 
 ## Safety Boundary
 
-Workspace selection does not add write workflows.
+Workspace selection itself does not persist paths or add database write workflows.
 
-The UI and service still expose only safe read-only or dry-run/plan-only workflows:
+The UI and service still expose only safe read-only, dry-run/plan-only, or explicitly confirmed local repository initialization workflows:
 
 - Health
 - Repo status
 - Init plan
+- Initialize DbState Project
 - PostgreSQL inspect
 - PostgreSQL compare
 - PostgreSQL plan
@@ -188,7 +214,7 @@ Do not expose the local service publicly.
 - No native folder picker.
 - No browser filesystem access API.
 - No authentication or user model.
-- No write workflows in the UI.
+- No database write workflows in the UI.
 - No export, sync, or release write workflows in the UI.
 - No remote repository access.
 - No Docker Compose or CI workflow.

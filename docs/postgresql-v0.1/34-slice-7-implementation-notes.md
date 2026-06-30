@@ -53,7 +53,7 @@ Dry-run can run when the working tree is dirty. Write mode requires a clean work
 
 ## Generated Artifacts
 
-Slice 7 writes a three-file artifact bundle under `database/releases/`:
+Slice 7 originally wrote a three-file artifact bundle under `database/releases/`:
 
 - `0001_<release-name>.sql`
 - `0001_<release-name>.summary.md`
@@ -62,6 +62,8 @@ Slice 7 writes a three-file artifact bundle under `database/releases/`:
 If `0001_<release-name>.*` already exists, the next available sequence is used, such as `0002_<release-name>.*`.
 
 Release names are normalized to lowercase and must use only letters, numbers, hyphen, or underscore. Path separators, path traversal, spaces, and unsafe characters are rejected.
+
+Slice 17 hardens the current release bundle and adds `0001_<release-name>.manifest.json`, sectioned SQL review output, richer summary markdown, and stable risk JSON fields. See `47-slice-17-release-artifact-hardening.md` for the current artifact contract.
 
 ## SQL Generation
 
@@ -112,6 +114,8 @@ The risk JSON artifact always includes:
 - `destructiveSqlGenerated: false`
 - `directApplyAvailable: false`
 - `generatedSqlExecutionSupported: false`
+
+Slice 17 adds explicit `databaseMutationPerformed: false`, `gitMutationPerformed: false`, and `credentialPersistencePerformed: false` fields to the risk JSON artifact.
 
 ## Tests
 
