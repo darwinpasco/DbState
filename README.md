@@ -121,8 +121,8 @@ Current CLI scope:
 
 - `dbstate repo status` reports Git and DbState project structure status.
 - `dbstate init` initializes missing DbState PostgreSQL project folders and the safe empty reference-data registry.
-- `dbstate inspect postgres` performs read-only PostgreSQL catalog inspection for schemas, tables, and columns.
-- `dbstate export postgres` exports selected inspected schemas and simple ordinary tables to desired-state files under `database/objects/`.
+- `dbstate inspect postgres` performs read-only PostgreSQL catalog inspection for schemas, tables, columns, extensions, enums, sequences, indexes, and views.
+- `dbstate export postgres` exports selected inspected schemas, simple ordinary tables, extensions, enums, sequences, indexes, and views to desired-state files under `database/objects/`.
 - `dbstate sync postgres` compares selected source PostgreSQL objects against local desired-state files and creates or updates local files after explicit command invocation.
 - `dbstate compare postgres` reads supported desired-state files, inspects PostgreSQL read-only, and reports repository-to-database differences without writing files.
 - `dbstate plan postgres` builds an in-memory selected plan from compare results and reports limited table-to-schema dependency warnings without writing files.
@@ -131,10 +131,11 @@ Current CLI scope:
 - CLI JSON output is hardened around common `command`, `success`, `warnings`, and `errors` fields, repository context where relevant, and redaction of connection details and masked values.
 - Docker packaging is available for headless CLI automation against mounted repositories.
 - `dbstate serve` starts a minimal local-only HTTP JSON Service API boundary for selected read-only and plan-only operations.
-- The local service serves a minimal static schema compare workflow UI shell at `/` and `/ui`, including a results grid with object-type filtering and status badges.
+- The local service serves a minimal static schema compare workflow UI shell at `/` and `/ui`, including a results grid with object-type filtering and status badges for supported PostgreSQL object types.
 - Service and UI workflows can use a session-only selected local repository path through `repositoryPath`.
 - Service and UI workflows can use optional local non-secret PostgreSQL connection profiles. Profiles are stored outside the repository and never store passwords, tokens, or full PostgreSQL URLs.
 - Service and UI workflows can preview Database to Repository capture and, after explicit confirmation on a clean working tree, write supported desired-state object files only under the selected repository's `database/objects/` paths.
+- PostgreSQL beta-minimum object coverage currently includes schemas, ordinary tables, extensions, enums, sequences, non-constraint-backed indexes, views, and configured reference-data compare.
 
 Current implementation limitations:
 
@@ -142,7 +143,7 @@ Current implementation limitations:
 - PostgreSQL access is read-only in product commands.
 - No command applies SQL to a database.
 
-See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md`, `docs/postgresql-v0.1/40-slice-13-workspace-selection.md`, `docs/postgresql-v0.1/41-slice-13a-schema-compare-ui-workflow.md`, `docs/postgresql-v0.1/42-slice-13b-results-grid-usability.md`, `docs/postgresql-v0.1/43-slice-14-safe-connection-profiles.md`, and `docs/postgresql-v0.1/44-slice-15-database-to-repository-workflow.md` for command details.
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md`, `docs/postgresql-v0.1/40-slice-13-workspace-selection.md`, `docs/postgresql-v0.1/41-slice-13a-schema-compare-ui-workflow.md`, `docs/postgresql-v0.1/42-slice-13b-results-grid-usability.md`, `docs/postgresql-v0.1/43-slice-14-safe-connection-profiles.md`, `docs/postgresql-v0.1/44-slice-15-database-to-repository-workflow.md`, and `docs/postgresql-v0.1/45-slice-16-postgresql-object-coverage.md` for command details.
 
 ## Docker CLI Automation
 

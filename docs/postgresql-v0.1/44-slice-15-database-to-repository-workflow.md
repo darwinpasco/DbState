@@ -31,7 +31,7 @@ The workflow must not:
 - Stage, commit, push, pull, fetch, or tag Git changes.
 - Hide local file changes from the user.
 
-PostgreSQL access remains read-only. The service uses the existing PostgreSQL inspection and repository sync engine that already renders supported schema and table desired-state files.
+PostgreSQL access remains read-only. The service uses the existing PostgreSQL inspection and repository sync engine that renders supported desired-state files. Slice 16 expands that set from schemas and ordinary tables to include extensions, enums, sequences, non-constraint-backed indexes, and views.
 
 ## Service Endpoints
 
@@ -169,7 +169,7 @@ The old labels "Repository Side" and "Database Side" are not used.
 
 ## Object Diff DDL
 
-Object Diff shows Source DDL and Target DDL panels for supported schema and table objects where detail is available.
+Object Diff shows Source DDL and Target DDL panels for supported objects where detail is available. Slice 16 supports DDL detail for schemas, ordinary tables, extensions, enums, sequences, non-constraint-backed indexes, and views.
 
 Repository DDL is read only from known DbState object files under:
 
@@ -179,7 +179,7 @@ database/objects/
 
 The service rejects arbitrary paths, path traversal, non-SQL files, and paths outside the selected repository.
 
-Database DDL uses the existing deterministic PostgreSQL schema and table renderers backed by read-only inspection. It does not add object coverage and does not execute SQL.
+Database DDL uses deterministic PostgreSQL renderers backed by read-only inspection. It does not execute SQL and does not mutate PostgreSQL.
 
 The UI normalizes DDL by trimming whitespace, normalizing line endings, and collapsing repeated blank lines before comparison:
 
@@ -221,7 +221,7 @@ The service-backed directory picker can browse only paths visible inside the con
 ## Current Limitations
 
 - Only supported PostgreSQL schema and simple ordinary table object files are captured.
-- Constraints, indexes, views, functions, triggers, grants, and other deferred object types remain out of scope.
+- Constraints, functions, triggers, grants, materialized views, and other deferred object types remain out of scope.
 - Configured reference-data DML is not generated.
 - No SQL is executed by DbState.
 - No PostgreSQL mutation exists.
