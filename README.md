@@ -151,6 +151,12 @@ Technical testers can follow the repeatable ParkingDemo walkthrough in `docs/pos
 
 Use `docs/postgresql-v0.1/49-private-beta-feedback-template.md` for private beta feedback. Do not include passwords, full PostgreSQL URLs, production data, or secrets in feedback.
 
+## Windows Private Beta Installer
+
+Windows private beta installer packaging is documented in `docs/postgresql-v0.1/50-slice-19-windows-installer-packaging.md`.
+
+The packaging script is `packaging/windows/Build-WindowsInstaller.ps1`. It stages only the release binary and beta-facing installer assets, then validates that source files, Cargo files, Git history, tests, connection profiles, local workspaces, and secrets are not included.
+
 ## Docker CLI Automation
 
 Build the local CLI image:

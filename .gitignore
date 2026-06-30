@@ -1,2 +1,9 @@
 # Rust build output
 target/
+
+# Generated packaging outputs
+dist/
+packaging/windows/out/
+packaging/windows/staging/
+*.exe
+*.msi
