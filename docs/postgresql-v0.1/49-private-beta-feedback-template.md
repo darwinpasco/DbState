@@ -2,6 +2,12 @@
 
 Do not paste passwords, full PostgreSQL URLs, production data, customer data, tokens, certificates, or other secrets into feedback.
 
+Feedback channel:
+
+```text
+<feedback-channel-to-be-filled-by-Darwin>
+```
+
 ## Tester
 
 - Name or handle:
@@ -53,6 +59,8 @@ Check all that apply:
 - Commands run:
 - Screenshots attached:
 - Logs attached:
+- DbState version or tag:
+- OS and browser:
 - Does any attached material contain secrets:
 
 If attached material contains secrets, redact it before sending.
