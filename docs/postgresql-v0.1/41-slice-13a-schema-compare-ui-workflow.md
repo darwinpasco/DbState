@@ -9,9 +9,9 @@ The goal is to make the private beta UI feel like a database compare tool while 
 - Plans and release artifacts remain reviewable outputs.
 - No direct database apply exists.
 - No generated SQL execution exists.
-- No write workflows are exposed in this UI shell.
+- No database write workflows are exposed in this UI shell.
 
-This slice is a corrective UI slice. It does not add connection profiles, backend database capability, object coverage, service write endpoints, or release artifact writing from the UI.
+This slice is a corrective UI slice. It does not add connection profiles, backend database capability, object coverage, or release artifact writing from the UI. Slice 15 later adds a tightly gated Database to Repository repository-file write workflow.
 
 ## Workflow Model
 
@@ -51,6 +51,7 @@ The Source & Target step presents:
   - Repo state to PostgreSQL compare.
   - PostgreSQL inspect only.
   - Reference-data compare.
+  - Database to Repository, added in Slice 15.
 
 The PostgreSQL URL is sent only with the clicked operation. It is not stored by the UI, placed in the browser URL, or displayed in response panels. Slice 14 adds profile mode for non-secret connection metadata. The profile password field is session-only and is not persisted.
 
@@ -72,6 +73,8 @@ Buttons call only existing safe service endpoints:
 - Run Compare.
 - Run Plan.
 - Run Reference Data Compare.
+- Preview Repository Sync, added in Slice 15 for Database to Repository.
+- Write Repository Files, added in Slice 15 and gated by typed confirmation plus clean working tree.
 
 ## Results Grid
 
@@ -108,8 +111,8 @@ The Object Diff step shows the selected row:
 - Status.
 - Planned operation.
 - Warning count.
-- Repository-side detail when available.
-- Database-side detail when available.
+- Source detail when available.
+- Target detail when available.
 - Selected JSON item.
 
 Detailed DDL diffing is not implemented in this slice. Unavailable details are labeled as not available yet.
@@ -134,7 +137,7 @@ The Slice 13A UI does not write release artifacts and does not expose a release 
 
 ## Reports And Raw JSON
 
-The Reports / Raw JSON step shows the latest service response summary and redacted JSON.
+The Reports / Raw JSON step shows the latest service response summary and redacted JSON. Slice 15 adds Copy JSON, which copies the redacted JSON currently displayed.
 
 The UI defensively redacts obvious PostgreSQL URLs, password markers, and token markers before display. The service remains responsible for response redaction.
 
@@ -150,9 +153,11 @@ POST /api/v1/postgres/inspect
 POST /api/v1/postgres/compare
 POST /api/v1/postgres/plan
 POST /api/v1/postgres/data-compare
+POST /api/v1/postgres/repository-sync/preview
+POST /api/v1/postgres/repository-sync/write
 ```
 
-No write endpoints are added.
+The repository-sync write endpoint writes only repository object files after explicit confirmation. It does not mutate PostgreSQL, execute SQL, or write release artifacts.
 
 ## Technology Boundary
 

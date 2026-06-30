@@ -26,6 +26,8 @@ PostgreSQL service operations resolve connection input in this order:
 
 The CLI behavior remains unchanged. CLI commands still use `--url` or `DBSTATE_POSTGRES_URL`.
 
+Slice 15 Database to Repository service endpoints use the same precedence. Session URL and profile password values remain request-only and are not persisted when previewing or writing repository object files.
+
 ## Profile Storage
 
 Profiles are stored outside the repository.

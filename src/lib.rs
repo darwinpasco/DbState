@@ -710,7 +710,7 @@ const UI_HTML: &str = r#"<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DbState PostgreSQL v0.1</title>
-  <link rel="stylesheet" href="/ui/app.css">
+  <link rel="stylesheet" href="/ui/app.css?v=slice15-object-diff-direction">
 </head>
 <body>
   <header class="app-header">
@@ -761,10 +761,32 @@ const UI_HTML: &str = r#"<!doctype html>
         </div>
         <p class="note">Session-only. The path is not persisted. DbState does not clone or fetch repositories. The service must already have filesystem access.</p>
         <div class="button-row">
+          <button type="button" data-action="workspace-browse">Browse</button>
           <button type="button" data-action="health">Health</button>
           <button type="button" data-action="workspace-status">Check Workspace</button>
           <button type="button" data-action="repo-status">Repo Status</button>
           <button type="button" data-action="init-plan">Init Plan</button>
+        </div>
+        <div class="directory-picker" id="directory-picker" hidden>
+          <div class="directory-picker-header">
+            <h3>Select Workspace Folder</h3>
+            <button type="button" class="secondary-button" data-action="directory-close">Cancel</button>
+          </div>
+          <p class="note">Browse folders visible to the DbState service process. In Docker, this means container paths such as /workspace.</p>
+          <div class="directory-picker-error" id="directory-picker-error"></div>
+          <div class="directory-picker-controls">
+            <label for="directory-picker-path">Current path
+              <input id="directory-picker-path" type="text" autocomplete="off" spellcheck="false">
+            </label>
+            <div class="button-row">
+              <button type="button" data-action="directory-roots">Roots</button>
+              <button type="button" data-action="directory-up">Up</button>
+              <button type="button" data-action="directory-refresh">Refresh</button>
+              <button type="button" data-action="directory-select">Select this folder</button>
+            </div>
+          </div>
+          <div class="directory-root-list" id="directory-root-list"></div>
+          <div class="directory-list" id="directory-list"></div>
         </div>
         <dl class="summary-list" id="workspace-summary"></dl>
       </section>
@@ -772,96 +794,113 @@ const UI_HTML: &str = r#"<!doctype html>
       <section class="workflow-panel" id="step-source-target">
         <div class="panel-heading">
           <h2>Source &amp; Target</h2>
-          <p>DbState compares repository desired state to a PostgreSQL database through read-only service operations.</p>
-        </div>
-        <div class="split-pane">
-          <section class="subsection">
-            <h3>Source</h3>
-            <p><strong>Repository desired state</strong></p>
-            <dl class="summary-list compact" id="source-summary">
-              <dt>Workspace</dt><dd id="source-workspace">service working directory</dd>
-              <dt>Git root</dt><dd id="source-git-root">unknown</dd>
-            </dl>
-          </section>
-          <section class="subsection">
-            <h3>Target</h3>
-            <label for="connection-mode">Connection mode
-              <select id="connection-mode">
-                <option value="sessionUrl">Use session URL</option>
-                <option value="profile">Use saved profile</option>
-                <option value="environment">Use service environment variable</option>
-              </select>
-            </label>
-            <div id="session-url-panel">
-              <label for="postgres-url">PostgreSQL session-only URL
-                <input id="postgres-url" type="password" autocomplete="off" spellcheck="false" placeholder="Prefer DBSTATE_POSTGRES_URL in the service environment">
-              </label>
-              <p class="note">The URL is sent only with the operation you click. It is not persisted, logged by the UI, or displayed in response panels.</p>
-            </div>
-            <div id="profile-panel" hidden>
-              <div class="form-grid">
-                <label for="profile-select">Saved profile
-                  <select id="profile-select">
-                    <option value="">No profile selected</option>
-                  </select>
-                </label>
-                <label for="profile-password">Session-only password
-                  <input id="profile-password" type="password" autocomplete="off" spellcheck="false">
-                </label>
-              </div>
-              <dl class="summary-list compact" id="profile-summary"></dl>
-              <details>
-                <summary>Manage non-secret profile</summary>
-                <div class="form-grid">
-                  <label for="profile-name">Name
-                    <input id="profile-name" type="text" autocomplete="off">
-                  </label>
-                  <label for="profile-host">Host
-                    <input id="profile-host" type="text" autocomplete="off">
-                  </label>
-                  <label for="profile-port">Port
-                    <input id="profile-port" type="number" min="1" max="65535" value="5432">
-                  </label>
-                  <label for="profile-database">Database
-                    <input id="profile-database" type="text" autocomplete="off">
-                  </label>
-                  <label for="profile-username">Username
-                    <input id="profile-username" type="text" autocomplete="off">
-                  </label>
-                  <label for="profile-sslmode">SSL mode
-                    <select id="profile-sslmode">
-                      <option value="disable">disable</option>
-                      <option value="prefer" selected>prefer</option>
-                      <option value="require">require</option>
-                      <option value="verify-ca">verify-ca</option>
-                      <option value="verify-full">verify-full</option>
-                    </select>
-                  </label>
-                  <label for="profile-description">Description
-                    <input id="profile-description" type="text" autocomplete="off">
-                  </label>
-                </div>
-              </details>
-              <div class="button-row">
-                <button type="button" data-action="profiles-refresh">Refresh Profiles</button>
-                <button type="button" data-action="profile-save">Save Profile</button>
-                <button type="button" data-action="profile-delete">Delete Profile</button>
-                <button type="button" data-action="connection-test">Test Connection</button>
-              </div>
-              <p class="note">Profiles store host, port, database, username, SSL mode, and description only. Passwords, tokens, and full URLs are never saved.</p>
-            </div>
-            <div id="environment-panel" hidden>
-              <p class="note">The service will use DBSTATE_POSTGRES_URL from its process environment. The UI sends no URL or password.</p>
-            </div>
-          </section>
+          <p id="source-target-description">DbState compares repository desired state to a PostgreSQL database through read-only service operations.</p>
         </div>
         <div class="subsection">
           <h3>Workflow Mode</h3>
           <select id="workflow-mode">
-            <option value="compare">Repo state to PostgreSQL compare</option>
+            <option value="compare">Repository to Database Compare</option>
             <option value="inspect">PostgreSQL inspect only</option>
             <option value="data">Reference-data compare</option>
+            <option value="databaseToRepository">Database to Repository</option>
           </select>
+        </div>
+        <div class="split-pane">
+          <section class="subsection" id="source-panel">
+            <h3>Source</h3>
+            <p><strong id="source-kind">Repository desired state</strong> <span class="muted">(<span id="source-type">Repository</span>)</span></p>
+            <div id="source-content">
+              <div id="repository-context">
+                <dl class="summary-list compact" id="source-summary">
+                  <dt>Workspace</dt><dd id="repository-workspace">service working directory</dd>
+                  <dt>Git root</dt><dd id="repository-git-root">unknown</dd>
+                  <dt>Branch</dt><dd id="repository-branch">unknown</dd>
+                  <dt>Working tree</dt><dd id="repository-tree">unknown</dd>
+                  <dt>DbState project</dt><dd id="repository-project">unknown</dd>
+                  <dt>Dirty</dt><dd id="repository-dirty">unknown</dd>
+                </dl>
+              </div>
+            </div>
+          </section>
+          <section class="subsection" id="target-panel">
+            <h3>Target</h3>
+            <p><strong id="target-kind">PostgreSQL database</strong> <span class="muted">(<span id="target-type">Database</span>)</span></p>
+            <div id="target-content">
+              <div id="postgres-connection-context">
+                <label for="connection-mode">Connection mode
+                  <select id="connection-mode">
+                    <option value="sessionUrl">Use session URL</option>
+                    <option value="profile">Use saved profile</option>
+                    <option value="environment">Use service environment variable</option>
+                  </select>
+                </label>
+                <div id="session-url-panel">
+                  <label for="postgres-url">PostgreSQL session-only URL
+                    <input id="postgres-url" type="password" autocomplete="off" spellcheck="false" placeholder="Prefer DBSTATE_POSTGRES_URL in the service environment">
+                  </label>
+                  <p class="note">The URL is sent only with the operation you click. It is not persisted, logged by the UI, or displayed in response panels.</p>
+                </div>
+                <div id="profile-panel" hidden>
+                  <div class="form-grid">
+                    <label for="profile-select">Saved profile
+                      <select id="profile-select">
+                        <option value="">No profile selected</option>
+                      </select>
+                    </label>
+                    <label for="profile-password">Session-only password
+                      <input id="profile-password" type="password" autocomplete="off" spellcheck="false">
+                    </label>
+                  </div>
+                  <dl class="summary-list compact" id="profile-summary"></dl>
+                  <details>
+                    <summary>Manage non-secret profile</summary>
+                    <div class="form-grid">
+                      <label for="profile-name">Name
+                        <input id="profile-name" type="text" autocomplete="off">
+                      </label>
+                      <label for="profile-host">Host
+                        <input id="profile-host" type="text" autocomplete="off">
+                      </label>
+                      <label for="profile-port">Port
+                        <input id="profile-port" type="number" min="1" max="65535" value="5432">
+                      </label>
+                      <label for="profile-database">Database
+                        <input id="profile-database" type="text" autocomplete="off">
+                      </label>
+                      <label for="profile-username">Username
+                        <input id="profile-username" type="text" autocomplete="off">
+                      </label>
+                      <label for="profile-sslmode">SSL mode
+                        <select id="profile-sslmode">
+                          <option value="disable">disable</option>
+                          <option value="prefer" selected>prefer</option>
+                          <option value="require">require</option>
+                          <option value="verify-ca">verify-ca</option>
+                          <option value="verify-full">verify-full</option>
+                        </select>
+                      </label>
+                      <label for="profile-description">Description
+                        <input id="profile-description" type="text" autocomplete="off">
+                      </label>
+                    </div>
+                  </details>
+                  <div class="button-row">
+                    <button type="button" data-action="profiles-refresh">Refresh Profiles</button>
+                    <button type="button" data-action="profile-save">Save Profile</button>
+                    <button type="button" data-action="profile-delete">Delete Profile</button>
+                    <button type="button" data-action="connection-test">Test Connection</button>
+                  </div>
+                  <p class="note">Profiles store host, port, database, username, SSL mode, and description only. Passwords, tokens, and full URLs are never saved.</p>
+                </div>
+                <div id="environment-panel" hidden>
+                  <p class="note">The service will use DBSTATE_POSTGRES_URL from its process environment. The UI sends no URL or password.</p>
+                </div>
+              </div>
+              <div id="catalog-context" class="note" hidden>
+                Read-only catalog view. PostgreSQL inspect reads schemas, tables, and columns without changing repository files or the database.
+              </div>
+            </div>
+          </section>
         </div>
       </section>
 
@@ -911,10 +950,22 @@ const UI_HTML: &str = r#"<!doctype html>
           <label><input type="checkbox" disabled> grants future</label>
         </div>
         <div class="button-row">
-          <button type="button" data-action="inspect">Inspect</button>
-          <button type="button" data-action="compare">Run Compare</button>
-          <button type="button" data-action="plan">Run Plan</button>
-          <button type="button" data-action="data-compare">Run Reference Data Compare</button>
+          <button type="button" data-action="inspect" data-standard-operation-action>Inspect</button>
+          <button type="button" data-action="compare" data-standard-operation-action>Run Compare</button>
+          <button type="button" data-action="plan" data-standard-operation-action>Run Plan</button>
+          <button type="button" data-action="data-compare" data-standard-operation-action>Run Reference Data Compare</button>
+        </div>
+        <div id="repository-sync-controls" class="subsection" hidden>
+          <h3>Database to Repository</h3>
+          <p class="note">Preview reads PostgreSQL and the selected repository without writing files. Write Repository Files writes only under the selected repository's database/objects/ paths, requires a clean working tree, and never changes PostgreSQL.</p>
+          <label for="repository-write-confirmation">Typed confirmation
+            <input id="repository-write-confirmation" type="text" autocomplete="off">
+          </label>
+          <p class="note">Type WRITE REPOSITORY FILES to enable the repository file write action.</p>
+          <div class="button-row">
+            <button type="button" data-action="repository-sync-preview">Preview Repository Sync</button>
+            <button type="button" data-action="repository-sync-write" disabled>Write Repository Files</button>
+          </div>
         </div>
       </section>
 
@@ -979,13 +1030,16 @@ const UI_HTML: &str = r#"<!doctype html>
           <h3 id="selected-object-title">No object selected</h3>
           <dl class="summary-list compact" id="selected-object-summary"></dl>
         </section>
+        <div id="ddl-comparison-status" class="ddl-comparison-status ddl-unavailable">DDL unavailable</div>
         <div class="diff-grid" aria-label="Object detail viewer">
           <section>
-            <h3>Repository Side</h3>
+            <h3>Source DDL</h3>
+            <p class="note">Source type: <strong id="source-type-label">Repository</strong></p>
             <pre id="source-detail">Diff detail not available yet.</pre>
           </section>
           <section>
-            <h3>Database Side</h3>
+            <h3>Target DDL</h3>
+            <p class="note">Target type: <strong id="target-type-label">Database</strong></p>
             <pre id="target-detail">Diff detail not available yet.</pre>
           </section>
         </div>
@@ -1018,6 +1072,10 @@ const UI_HTML: &str = r#"<!doctype html>
           <p>Transparent redacted service output for review and troubleshooting.</p>
         </div>
         <div id="response-summary" class="response-summary">Run a workflow to see results.</div>
+        <div class="button-row">
+          <button type="button" data-action="copy-json">Copy JSON</button>
+          <span id="copy-json-status" class="note"></span>
+        </div>
         <pre id="json-viewer">{}</pre>
       </section>
 
@@ -1047,7 +1105,7 @@ const UI_HTML: &str = r#"<!doctype html>
     <span>Errors: <strong id="last-errors">0</strong></span>
   </footer>
 
-  <script src="/ui/app.js"></script>
+  <script src="/ui/app.js?v=slice15-object-diff-direction"></script>
 </body>
 </html>
 "#;
@@ -1278,6 +1336,71 @@ button:hover {
   background: var(--accent-strong);
 }
 
+.secondary-button {
+  background: #e7eef3;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.secondary-button:hover {
+  background: #d8e3eb;
+}
+
+.directory-picker {
+  margin: 14px 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px;
+  background: #fbfcfd;
+}
+
+.directory-picker-header,
+.directory-picker-controls {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  justify-content: space-between;
+}
+
+.directory-picker-header h3 {
+  margin: 0;
+}
+
+.directory-picker-controls label {
+  flex: 1 1 320px;
+}
+
+.directory-picker-error {
+  margin: 10px 0;
+  border-left: 4px solid var(--danger);
+  background: #ffe9e6;
+  color: #5d160f;
+  padding: 8px 10px;
+}
+
+.directory-root-list,
+.directory-list {
+  display: grid;
+  gap: 6px;
+  margin-top: 12px;
+}
+
+.directory-root-list {
+  grid-template-columns: repeat(auto-fit, minmax(120px, max-content));
+}
+
+.directory-entry {
+  width: 100%;
+  text-align: left;
+  background: #ffffff;
+  color: var(--text);
+  border: 1px solid var(--border);
+}
+
+.directory-entry:hover {
+  background: #edf7fb;
+}
+
 .object-filter-row {
   margin-bottom: 14px;
   color: var(--muted);
@@ -1393,6 +1516,9 @@ button:hover {
   color: #195899;
 }
 
+.status-added,
+.status-plannedcreate,
+.status-created,
 .status-databaseonly,
 .status-planned,
 .status-review {
@@ -1401,6 +1527,10 @@ button:hover {
   color: #775000;
 }
 
+.status-changed,
+.status-plannedupdate,
+.status-updated,
+.status-unchanged,
 .status-skipped,
 .status-unknown {
   border-color: #c7ced5;
@@ -1420,6 +1550,36 @@ button:hover {
   color: #176b87;
 }
 
+.ddl-comparison-status {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  margin: 0 0 12px;
+  padding: 4px 10px;
+  border: 1px solid #c7ced5;
+  background: #f1f3f5;
+  color: #59636e;
+  font-weight: 700;
+}
+
+.ddl-similar {
+  border-color: #9bd6b5;
+  background: #e7f7ee;
+  color: #146c43;
+}
+
+.ddl-different {
+  border-color: #ecaaa3;
+  background: #ffe9e6;
+  color: #9f2d20;
+}
+
+.ddl-unavailable {
+  border-color: #c7ced5;
+  background: #f1f3f5;
+  color: #59636e;
+}
+
 .summary-list {
   display: grid;
   grid-template-columns: max-content 1fr;
@@ -1432,6 +1592,10 @@ button:hover {
 }
 
 dt {
+  color: var(--muted);
+}
+
+.muted {
   color: var(--muted);
 }
 
@@ -1527,6 +1691,12 @@ const UI_JS: &str = r#"(function () {
     compare: "/api/v1/postgres/compare",
     plan: "/api/v1/postgres/plan",
     dataCompare: "/api/v1/postgres/data-compare",
+    objectDdl: "/api/v1/postgres/object-ddl",
+    repositorySyncPreview: "/api/v1/postgres/repository-sync/preview",
+    repositorySyncWrite: "/api/v1/postgres/repository-sync/write",
+    workspaceRoots: "/api/v1/workspace/roots",
+    workspaceListDirectories: "/api/v1/workspace/list-directories",
+    workspaceValidate: "/api/v1/workspace/validate",
     profiles: "/api/v1/connections/profiles",
     connectionTest: "/api/v1/connections/test"
   };
@@ -1540,6 +1710,9 @@ const UI_JS: &str = r#"(function () {
     inspectColumns: [],
     referenceDataTables: [],
     profiles: [],
+    directoryRoots: [],
+    directoryCurrentPath: "",
+    directoryParentPath: "",
     included: new Set(),
     selectedIndex: -1,
     lastOperation: "none"
@@ -1643,6 +1816,31 @@ const UI_JS: &str = r#"(function () {
     return body;
   }
 
+  function repositorySyncWriteConfirmed() {
+    return value("repository-write-confirmation") === "WRITE REPOSITORY FILES";
+  }
+
+  function standardOperationAllowed(actionLabel) {
+    if (!isDatabaseToRepositoryMode(currentWorkflowMode())) {
+      return true;
+    }
+    clearOperationResults("Workflow mode changed. Run an operation to load results.");
+    const message = actionLabel === "Compare"
+      ? "Compare is not available in Database to Repository mode. Use Preview Repository Sync."
+      : actionLabel + " is not available in Database to Repository mode. Use Preview Repository Sync.";
+    responseSummary.textContent = message;
+    return false;
+  }
+
+  function repositorySyncBody(write) {
+    const body = attachWorkspacePath(attachConnection(buildScope()));
+    if (write) {
+      body.confirmRepositoryWrite = true;
+      body.confirmationText = value("repository-write-confirmation");
+    }
+    return body;
+  }
+
   function redactedJson(input) {
     return JSON.stringify(input, null, 2)
       .replace(/postgres(?:ql)?:\/\/[^"\s]+/gi, "<redacted-postgres-url>")
@@ -1693,22 +1891,141 @@ const UI_JS: &str = r#"(function () {
     });
   }
 
+  function friendlyPath(path) {
+    let text = textOrEmpty(path);
+    text = text.replace(/\\/g, "/");
+    text = text.replace(/^\/{2,3}\?\//, "");
+    return text;
+  }
+
+  function setDirectoryPickerError(message) {
+    const target = byId("directory-picker-error");
+    target.textContent = message || "";
+    target.hidden = !message;
+  }
+
+  function renderDirectoryRoots(roots) {
+    const target = byId("directory-root-list");
+    target.innerHTML = "";
+    if (!Array.isArray(roots) || !roots.length) {
+      target.textContent = "No browse roots are available.";
+      return;
+    }
+    roots.forEach(function (root) {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "secondary-button";
+      button.textContent = root.name || root.path;
+      button.addEventListener("click", function () {
+        listDirectories(root.path);
+      });
+      target.appendChild(button);
+    });
+  }
+
+  function renderDirectoryList(data) {
+    const target = byId("directory-list");
+    target.innerHTML = "";
+    state.directoryCurrentPath = data.path || "";
+    state.directoryParentPath = data.parentPath || "";
+    byId("directory-picker-path").value = state.directoryCurrentPath;
+    if (!Array.isArray(data.directories) || !data.directories.length) {
+      target.textContent = "No child directories are available.";
+      return;
+    }
+    data.directories.forEach(function (directory) {
+      const row = document.createElement("button");
+      row.type = "button";
+      row.className = "directory-entry";
+      row.textContent = directory.name || directory.path;
+      row.addEventListener("click", function () {
+        listDirectories(directory.path);
+      });
+      target.appendChild(row);
+    });
+  }
+
+  async function loadDirectoryRoots() {
+    try {
+      setDirectoryPickerError("");
+      const data = await requestJson(approvedEndpoints.workspaceRoots, null);
+      state.directoryRoots = Array.isArray(data.roots) ? data.roots : [];
+      renderDirectoryRoots(state.directoryRoots);
+      const preferredPath = workspacePath() || data.currentPath || (state.directoryRoots[0] && state.directoryRoots[0].path) || "";
+      if (preferredPath) {
+        await listDirectories(preferredPath);
+      }
+    } catch (error) {
+      setDirectoryPickerError(error.message);
+    }
+  }
+
+  async function listDirectories(path) {
+    const selectedPath = (path || value("directory-picker-path") || workspacePath()).trim();
+    if (!selectedPath) {
+      setDirectoryPickerError("Choose a root or enter a local folder path.");
+      return;
+    }
+    try {
+      setDirectoryPickerError("");
+      const data = await requestJson(approvedEndpoints.workspaceListDirectories, { path: selectedPath });
+      if (data.success === false) {
+        setDirectoryPickerError((data.errors || []).join(" ") || "Could not list directories.");
+        return;
+      }
+      renderDirectoryList(data);
+    } catch (error) {
+      setDirectoryPickerError(error.message);
+    }
+  }
+
+  async function selectDirectoryAsWorkspace() {
+    const selectedPath = state.directoryCurrentPath || value("directory-picker-path");
+    if (!selectedPath) {
+      setDirectoryPickerError("Select a folder first.");
+      return;
+    }
+    byId("workspace-path").value = selectedPath;
+    byId("directory-picker").hidden = true;
+    await run("Workspace validate", approvedEndpoints.workspaceValidate, attachWorkspacePath({}), { summaryId: "workspace-summary", step: "workspace" });
+  }
+
+  function openDirectoryPicker() {
+    byId("directory-picker").hidden = false;
+    byId("directory-picker-path").value = workspacePath();
+    loadDirectoryRoots();
+  }
+
   function updateWorkspaceContext(data) {
     if (!data) {
       return;
     }
-    if (data.repositoryPath) {
-      byId("header-workspace").textContent = data.repositoryPath;
-      byId("source-workspace").textContent = data.repositoryPath;
+    const repositoryPath = friendlyPath(data.repositoryPath);
+    const gitRoot = friendlyPath(data.gitRoot);
+    const workspaceDisplay = gitRoot || repositoryPath;
+    if (workspaceDisplay) {
+      byId("header-workspace").textContent = workspaceDisplay;
+      byId("repository-workspace").textContent = workspaceDisplay;
+      if (gitRoot) {
+        byId("workspace-path").value = gitRoot;
+      }
     }
-    if (data.gitRoot) {
-      byId("source-git-root").textContent = data.gitRoot;
+    if (gitRoot) {
+      byId("repository-git-root").textContent = gitRoot;
     }
     if (data.branch) {
       byId("header-branch").textContent = data.branch;
+      byId("repository-branch").textContent = data.branch;
     }
     if (data.workingTreeStatus) {
       byId("header-tree").textContent = data.workingTreeStatus;
+      byId("repository-tree").textContent = data.workingTreeStatus;
+    }
+    if (data.dbstateProjectStatus) {
+      byId("repository-project").textContent = data.dbstateProjectStatus;
+    }
+    if (typeof data.isDirty === "boolean") {
+      byId("repository-dirty").textContent = data.isDirty ? "dirty" : "clean";
     }
   }
 
@@ -1717,6 +2034,104 @@ const UI_JS: &str = r#"(function () {
     byId("session-url-panel").hidden = mode !== "sessionUrl";
     byId("profile-panel").hidden = mode !== "profile";
     byId("environment-panel").hidden = mode !== "environment";
+  }
+
+  function updateWorkflowModePanels() {
+    const mode = value("workflow-mode") || "compare";
+    const layout = workflowLayout(mode);
+    byId("repository-sync-controls").hidden = !isDatabaseToRepositoryMode(mode);
+    document.querySelectorAll("[data-standard-operation-action]").forEach(function (button) {
+      button.hidden = isDatabaseToRepositoryMode(mode);
+      button.disabled = isDatabaseToRepositoryMode(mode);
+    });
+    byId("source-target-description").textContent = layout.description;
+    byId("source-kind").textContent = layout.sourceKind;
+    byId("target-kind").textContent = layout.targetKind;
+    byId("source-type").textContent = layout.sourceType;
+    byId("target-type").textContent = layout.targetType;
+    placeSourceTargetContext(layout.sourceContext, layout.targetContext);
+    updateRepositoryWriteButton();
+  }
+
+  function workflowLayout(mode) {
+    if (isDatabaseToRepositoryMode(mode)) {
+      return {
+        description: "DbState captures supported PostgreSQL database state into the selected repository after preview and explicit confirmation.",
+        sourceKind: "PostgreSQL database",
+        sourceType: "Database",
+        sourceContext: "connection",
+        targetKind: "Repository desired state",
+        targetType: "Repository",
+        targetContext: "repository"
+      };
+    }
+    if (mode === "inspect") {
+      return {
+        description: "DbState reads PostgreSQL catalog state through read-only inspection.",
+        sourceKind: "PostgreSQL database",
+        sourceType: "Database",
+        sourceContext: "connection",
+        targetKind: "Read-only catalog view",
+        targetType: "Catalog",
+        targetContext: "catalog"
+      };
+    }
+    if (mode === "data") {
+      return {
+        description: "DbState compares configured repository reference data to PostgreSQL through read-only service operations.",
+        sourceKind: "Repository configured reference data",
+        sourceType: "Repository",
+        sourceContext: "repository",
+        targetKind: "PostgreSQL database",
+        targetType: "Database",
+        targetContext: "connection"
+      };
+    }
+    return {
+      description: "DbState compares repository desired state to PostgreSQL through read-only service operations.",
+      sourceKind: "Repository desired state",
+      sourceType: "Repository",
+      sourceContext: "repository",
+      targetKind: "PostgreSQL database",
+      targetType: "Database",
+      targetContext: "connection"
+    };
+  }
+
+  function placeSourceTargetContext(sourceContext, targetContext) {
+    const sourceContent = byId("source-content");
+    const targetContent = byId("target-content");
+    const repositoryContext = byId("repository-context");
+    const connectionContext = byId("postgres-connection-context");
+    const catalogContext = byId("catalog-context");
+
+    catalogContext.hidden = true;
+    [repositoryContext, connectionContext, catalogContext].forEach(function (element) {
+      element.hidden = true;
+    });
+
+    function appendContext(name, target) {
+      if (name === "repository") {
+        repositoryContext.hidden = false;
+        target.appendChild(repositoryContext);
+      } else if (name === "connection") {
+        connectionContext.hidden = false;
+        target.appendChild(connectionContext);
+      } else if (name === "catalog") {
+        catalogContext.hidden = false;
+        target.appendChild(catalogContext);
+      }
+    }
+
+    appendContext(sourceContext, sourceContent);
+    appendContext(targetContext, targetContent);
+  }
+
+  function updateRepositoryWriteButton() {
+    const button = document.querySelector("[data-action='repository-sync-write']");
+    if (button) {
+      button.disabled = !repositorySyncWriteConfirmed();
+    }
   }
 
   function updateProfileList(data) {
@@ -2010,16 +2425,28 @@ const UI_JS: &str = r#"(function () {
     const tableIdentity = raw.tableName ? identityFromTableName(raw.tableName) : null;
     const identity = pathIdentity || refIdentity || tableIdentity || splitIdentity(objectRef || raw.name || "");
     const objectType = normalizeObjectType(raw.objectType || identity.objectType || fallbackType || "unknown");
+    const repositorySyncStatuses = ["added", "changed", "unchanged", "plannedCreate", "plannedUpdate", "created", "updated"];
+    const isRepositorySync = repositorySyncStatuses.indexOf(status) >= 0;
+    const operationByStatus = {
+      added: "planned repository create",
+      changed: "planned repository update",
+      unchanged: "none",
+      plannedCreate: "planned repository create",
+      plannedUpdate: "planned repository update",
+      created: "repository file created",
+      updated: "repository file updated"
+    };
     return {
       objectRef: objectRef || objectType + ":" + (raw.name || status),
       objectType: objectType,
       schema: raw.schema || raw.schemaName || identity.schema || "",
       name: raw.name || raw.table || identity.name || fileNameWithoutSql(raw.relativePath) || status,
       status: raw.compareClassification || raw.classification || status,
-      operation: raw.planIntent || raw.plannedOperation || (status === "inspected" ? "" : ""),
+      operation: raw.planIntent || raw.plannedOperation || operationByStatus[status] || (status === "inspected" ? "" : ""),
       warnings: raw.warnings || raw.dependencyWarnings || [],
-      source: raw.relativePath || raw.source || "repository",
-      target: raw.target || "postgresql",
+      source: raw.source || (isRepositorySync ? "PostgreSQL database" : "repository"),
+      target: raw.relativePath || raw.target || raw.value || (isRepositorySync ? "repository desired-state file" : "postgresql"),
+      relativePath: raw.relativePath || (textOrEmpty(raw.value).indexOf("database/objects/") === 0 ? raw.value : ""),
       raw: raw
     };
   }
@@ -2042,6 +2469,14 @@ const UI_JS: &str = r#"(function () {
     appendObjectList(rows, data, "skipped", "skipped", "unknown");
     appendObjectList(rows, data, "planItems", "planned", "unknown");
     appendObjectList(rows, data, "blockedItems", "blocked", "unknown");
+    appendObjectList(rows, data, "addedFiles", "added", "unknown");
+    appendObjectList(rows, data, "changedFiles", "changed", "unknown");
+    appendObjectList(rows, data, "unchangedFiles", "unchanged", "unknown");
+    appendObjectList(rows, data, "skippedFiles", "skipped", "unknown");
+    appendObjectList(rows, data, "plannedCreates", "plannedCreate", "unknown");
+    appendObjectList(rows, data, "plannedUpdates", "plannedUpdate", "unknown");
+    appendObjectList(rows, data, "createdFiles", "created", "unknown");
+    appendObjectList(rows, data, "updatedFiles", "updated", "unknown");
 
     if (label === "Inspect" && data.success !== false) {
       if (Array.isArray(data.schemas)) {
@@ -2111,7 +2546,25 @@ const UI_JS: &str = r#"(function () {
         }
       });
     }
+    rows.forEach(function (row) {
+      row.resultOperation = label;
+      row.producingWorkflowMode = workflowModeForOperation(label);
+      row.workflowMode = row.producingWorkflowMode;
+    });
     return rows;
+  }
+
+  function workflowModeForOperation(label) {
+    if (label === "Inspect") {
+      return "inspect";
+    }
+    if (label === "Database to Repository Preview" || label === "Database to Repository Write") {
+      return "databaseToRepository";
+    }
+    if (label === "Reference-data compare") {
+      return "data";
+    }
+    return "compare";
   }
 
   function rowMatchesFilter(row) {
@@ -2134,7 +2587,9 @@ const UI_JS: &str = r#"(function () {
     if (!keepUnderlying) {
       state.rows = rows;
     }
-    const visibleRows = state.rows.filter(rowMatchesFilter);
+    const visibleRows = state.rows.filter(function (row) {
+      return rowMatchesFilter(row) && rowMatchesCurrentWorkflow(row);
+    });
     state.visibleRows = visibleRows;
     if (state.selectedIndex < 0 || state.selectedIndex >= visibleRows.length) {
       state.selectedIndex = visibleRows.length ? 0 : -1;
@@ -2223,29 +2678,325 @@ const UI_JS: &str = r#"(function () {
 
   function renderSelectedObject() {
     const row = state.visibleRows[state.selectedIndex];
+    const direction = directionForResultRow(row);
+    byId("source-type-label").textContent = direction.sourceType;
+    byId("target-type-label").textContent = direction.targetType;
     if (!row) {
       byId("selected-object-title").textContent = "No object selected";
       byId("selected-object-summary").innerHTML = "";
-      byId("source-detail").textContent = "Diff detail not available yet.";
-      byId("target-detail").textContent = "Diff detail not available yet.";
+      byId("source-detail").textContent = "DDL not available yet for this object.";
+      byId("target-detail").textContent = "DDL not available yet for this object.";
       byId("selected-json").textContent = "{}";
+      updateDdlComparisonStatus(null, null);
       return;
     }
-    const columns = columnsForSelectedTable(row);
-    const columnText = columns.length ? "\n\nColumns:\n" + columns.map(function (column) {
-      const nullable = column.isNullable === false ? " not null" : "";
-      return "- " + column.columnName + " " + textOrEmpty(column.dataType) + nullable;
-    }).join("\n") : "";
+    if (!rowMatchesCurrentWorkflow(row)) {
+      const message = "Selected result belongs to a different workflow. Run the current workflow again.";
+      byId("selected-object-title").textContent = "No object selected";
+      updateSummary("selected-object-summary", {
+        message: message
+      });
+      byId("source-detail").textContent = "DDL not available yet for this object.";
+      byId("target-detail").textContent = "DDL not available yet for this object.";
+      byId("selected-json").textContent = "{}";
+      updateDdlComparisonStatus(null, null);
+      return;
+    }
     byId("selected-object-title").textContent = row.objectType + ": " + row.name;
     updateSummary("selected-object-summary", {
+      objectType: row.objectType,
       schema: row.schema,
+      objectName: row.name,
       status: row.status,
-      operation: row.operation || "review",
-      warnings: Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings)
+      operation: row.resultOperation || row.operation || "review",
+      warnings: Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings),
+      source: direction.sourceLabel,
+      sourceType: direction.sourceType,
+      target: direction.targetLabel,
+      targetType: direction.targetType
     });
-    byId("source-detail").textContent = row.source || "Diff detail not available yet.";
-    byId("target-detail").textContent = (row.target || "Diff detail not available yet.") + columnText;
-    byId("selected-json").textContent = redactedJson(row.raw || row);
+    byId("source-detail").textContent = "Loading DDL detail...";
+    byId("target-detail").textContent = "Loading DDL detail...";
+    updateDdlComparisonStatus(null, null);
+    byId("selected-json").textContent = redactedJson(objectDiffDisplayPayload(row, direction));
+    loadSelectedObjectDdl(row, direction);
+  }
+
+  function objectDiffDisplayPayload(row, direction) {
+    const payload = Object.assign({}, row.raw || row);
+    payload.operation = row.resultOperation || row.operation || payload.operation || "review";
+    payload.producingWorkflowMode = row.producingWorkflowMode || workflowModeForOperation(payload.operation);
+    payload.source = direction.sourceLabel;
+    payload.sourceType = direction.sourceType;
+    payload.target = direction.targetLabel;
+    payload.targetType = direction.targetType;
+    return payload;
+  }
+
+  function directionForResultRow(row) {
+    let mode = row && row.producingWorkflowMode ? row.producingWorkflowMode : "";
+    if (!mode && row && row.workflowMode) {
+      mode = row.workflowMode;
+    }
+    const operation = row && row.resultOperation ? row.resultOperation : state.lastOperation;
+    if (!mode) {
+      mode = workflowModeForOperation(operation);
+    }
+    if (mode === "compare" && row && isDatabaseToRepositoryRow(row)) {
+      mode = "databaseToRepository";
+    }
+    return directionForWorkflowMode(mode);
+  }
+
+  function isDatabaseToRepositoryMode(mode) {
+    return mode === "databaseToRepository" || mode === "dbToRepo";
+  }
+
+  function currentWorkflowMode() {
+    return value("workflow-mode") || "compare";
+  }
+
+  function workflowModesMatch(rowMode, selectedMode) {
+    if (isDatabaseToRepositoryMode(rowMode) && isDatabaseToRepositoryMode(selectedMode)) {
+      return true;
+    }
+    return textOrEmpty(rowMode || "compare") === textOrEmpty(selectedMode || "compare");
+  }
+
+  function rowMatchesCurrentWorkflow(row) {
+    return rowMatchesWorkflowMode(row, currentWorkflowMode());
+  }
+
+  function rowMatchesWorkflowMode(row, selectedMode) {
+    if (!row) {
+      return false;
+    }
+    const rowMode = row.producingWorkflowMode || row.workflowMode || workflowModeForOperation(row.resultOperation || row.operation || state.lastOperation);
+    return workflowModesMatch(rowMode, selectedMode);
+  }
+
+  function isDatabaseToRepositoryRow(row) {
+    const operation = textOrEmpty(row.resultOperation);
+    const repositorySyncStatuses = ["added", "changed", "unchanged", "plannedCreate", "plannedUpdate", "created", "updated"];
+    return operation.indexOf("Database to Repository") === 0 || repositorySyncStatuses.indexOf(row.status) >= 0 || textOrEmpty(row.source) === "PostgreSQL database";
+  }
+
+  function directionForWorkflowMode(mode) {
+    if (mode === "inspect") {
+      return {
+        sourceLabel: "PostgreSQL database",
+        sourceType: "Database",
+        targetLabel: "Read-only catalog view",
+        targetType: "Catalog",
+        sourceDdlSide: "database",
+        targetDdlSide: ""
+      };
+    }
+    if (isDatabaseToRepositoryMode(mode)) {
+      return {
+        sourceLabel: "PostgreSQL database",
+        sourceType: "Database",
+        targetLabel: "Repository desired state",
+        targetType: "Repository",
+        sourceDdlSide: "database",
+        targetDdlSide: "repository"
+      };
+    }
+    if (mode === "data") {
+      return {
+        sourceLabel: "Repository configured reference data",
+        sourceType: "Repository",
+        targetLabel: "PostgreSQL database",
+        targetType: "Database",
+        sourceDdlSide: "repository",
+        targetDdlSide: "database"
+      };
+    }
+    return {
+      sourceLabel: "Repository desired state",
+      sourceType: "Repository",
+      targetLabel: "PostgreSQL database",
+      targetType: "Database",
+      sourceDdlSide: "repository",
+      targetDdlSide: "database"
+    };
+  }
+
+  function normalizeDdlForComparison(ddl) {
+    if (!ddl) {
+      return "";
+    }
+    return String(ddl).replace(/\r\n/g, "\n").replace(/\r/g, "\n").replace(/\n{3,}/g, "\n\n").trim();
+  }
+
+  function updateDdlComparisonStatus(sourceDdl, targetDdl) {
+    const status = byId("ddl-comparison-status");
+    status.className = "ddl-comparison-status";
+    const source = normalizeDdlForComparison(sourceDdl);
+    const target = normalizeDdlForComparison(targetDdl);
+    if (!source || !target) {
+      status.textContent = "DDL unavailable";
+      status.classList.add("ddl-unavailable");
+      return;
+    }
+    if (source === target) {
+      status.textContent = "Similar";
+      status.classList.add("ddl-similar");
+    } else {
+      status.textContent = "Different";
+      status.classList.add("ddl-different");
+    }
+  }
+
+  function quoteIdentifier(identifier) {
+    return "\"" + textOrEmpty(identifier).replace(/"/g, "\"\"") + "\"";
+  }
+
+  function clientSchemaDdl(row) {
+    const schema = row.schema || row.name;
+    if (!schema) {
+      return "";
+    }
+    return "-- DbState PostgreSQL desired-state object\n-- Object type: schema\n-- Object name: " + schema + "\n\nCREATE SCHEMA " + quoteIdentifier(schema) + ";\n";
+  }
+
+  function clientTableDdl(row) {
+    const columns = columnsForSelectedTable(row);
+    if (!columns.length) {
+      return "";
+    }
+    const lines = [];
+    lines.push("-- DbState PostgreSQL desired-state object");
+    lines.push("-- Object type: table");
+    lines.push("-- Object name: " + row.schema + "." + row.name);
+    lines.push("");
+    lines.push("CREATE TABLE " + quoteIdentifier(row.schema) + "." + quoteIdentifier(row.name) + " (");
+    columns.forEach(function (column, index) {
+      const comma = index + 1 === columns.length ? "" : ",";
+      const nullable = column.isNullable === false ? " NOT NULL" : "";
+      lines.push("    " + quoteIdentifier(column.columnName) + " " + textOrEmpty(column.dataType) + nullable + comma);
+    });
+    lines.push(");");
+    return lines.join("\n") + "\n";
+  }
+
+  function clientDatabaseDdl(row) {
+    if (row.objectType === "schema") {
+      return clientSchemaDdl(row);
+    }
+    if (row.objectType === "table") {
+      return clientTableDdl(row);
+    }
+    return "";
+  }
+
+  function objectDdlRequest(row) {
+    return attachWorkspacePath(attachConnection({
+      objectType: row.objectType,
+      schema: row.schema || "",
+      objectName: row.name || "",
+      relativePath: row.relativePath || ""
+    }));
+  }
+
+  async function loadSelectedObjectDdl(row, direction) {
+    if (row.objectType !== "schema" && row.objectType !== "table") {
+      const unavailable = "DDL not available yet for this object.";
+      byId("source-detail").textContent = unavailable;
+      byId("target-detail").textContent = unavailable;
+      updateDdlComparisonStatus(null, null);
+      return;
+    }
+    let detail = {};
+    try {
+      detail = await requestJson(approvedEndpoints.objectDdl, objectDdlRequest(row));
+    } catch (error) {
+      detail = { repositoryDdl: "", databaseDdl: "", warnings: [error.message || "DDL detail request failed."] };
+    }
+
+    const repositoryDdl = detail.repositoryDdl || "";
+    const databaseDdl = detail.databaseDdl || clientDatabaseDdl(row);
+    const ddlBySide = { repository: repositoryDdl, database: databaseDdl, "": "" };
+    const sourceDdl = ddlBySide[direction.sourceDdlSide] || "";
+    const targetDdl = ddlBySide[direction.targetDdlSide] || "";
+
+    const unavailable = "DDL not available yet for this object.";
+    byId("source-detail").textContent = sourceDdl || unavailable;
+    byId("target-detail").textContent = targetDdl || unavailable;
+    updateDdlComparisonStatus(sourceDdl, targetDdl);
+  }
+
+  function objectDiffDirectionRegressionFixture() {
+    const staleRow = {
+      producingWorkflowMode: "databaseToRepository",
+      workflowMode: "databaseToRepository",
+      resultOperation: "Database to Repository Preview",
+      sourceType: "Repository",
+      targetType: "Database",
+      status: "changed",
+      source: "Repository desired state",
+      target: "PostgreSQL database",
+      repositoryDdl: "-- repo ddl",
+      databaseDdl: "-- db ddl"
+    };
+    const direction = directionForResultRow(staleRow);
+    const displayPayload = objectDiffDisplayPayload(staleRow, direction);
+    const ddlBySide = { repository: staleRow.repositoryDdl, database: staleRow.databaseDdl, "": "" };
+    const sourceDdl = ddlBySide[direction.sourceDdlSide] || "";
+    const targetDdl = ddlBySide[direction.targetDdlSide] || "";
+    return {
+      operation: staleRow.resultOperation,
+      source: displayPayload.source,
+      sourceType: displayPayload.sourceType,
+      target: displayPayload.target,
+      targetType: displayPayload.targetType,
+      sourceDdl: sourceDdl,
+      targetDdl: targetDdl,
+      renderedText: [
+        "Operation: " + displayPayload.operation,
+        "source " + displayPayload.source,
+        "sourceType " + displayPayload.sourceType,
+        "target " + displayPayload.target,
+        "targetType " + displayPayload.targetType,
+        "Source type: " + direction.sourceType,
+        "Target type: " + direction.targetType,
+        "Source DDL " + sourceDdl,
+        "Target DDL " + targetDdl
+      ].join("\n")
+    };
+  }
+
+  function staleCompareResultInDatabaseToRepositoryFixture() {
+    const staleCompareRow = {
+      producingWorkflowMode: "compare",
+      workflowMode: "compare",
+      resultOperation: "Compare",
+      operation: "Compare",
+      objectType: "table",
+      schema: "core",
+      name: "parking_sessions",
+      source: "Repository desired state",
+      sourceType: "Repository",
+      target: "PostgreSQL database",
+      targetType: "Database"
+    };
+    const selectedMode = "databaseToRepository";
+    const canRender = rowMatchesWorkflowMode(staleCompareRow, selectedMode);
+    return {
+      selectedWorkflowMode: selectedMode,
+      rowOperation: staleCompareRow.operation,
+      rowProducingWorkflowMode: staleCompareRow.producingWorkflowMode,
+      canRender: canRender,
+      message: canRender ? "" : "Selected result belongs to a different workflow. Run the current workflow again.",
+      visibleRows: canRender ? 1 : 0
+    };
+  }
+
+  if (typeof window !== "undefined") {
+    window.dbstateUiTestHooks = {
+      objectDiffDirectionRegressionFixture: objectDiffDirectionRegressionFixture,
+      staleCompareResultInDatabaseToRepositoryFixture: staleCompareResultInDatabaseToRepositoryFixture
+    };
   }
 
   function columnsForSelectedTable(row) {
@@ -2303,9 +3054,19 @@ const UI_JS: &str = r#"(function () {
 
   function updateResultsContext(label, data) {
     byId("results-operation").textContent = label || "none";
+    if (!label || label === "none") {
+      byId("results-source").textContent = "none";
+      byId("results-target").textContent = "none";
+      return;
+    }
     if (label === "Inspect") {
       byId("results-source").textContent = "PostgreSQL inspect";
       byId("results-target").textContent = "Read-only catalog view";
+      return;
+    }
+    if (label === "Database to Repository Preview" || label === "Database to Repository Write") {
+      byId("results-source").textContent = "PostgreSQL database";
+      byId("results-target").textContent = data && data.repositoryPath ? "Repository desired state: " + data.repositoryPath : "Repository desired state";
       return;
     }
     if (label === "Reference-data compare") {
@@ -2315,6 +3076,26 @@ const UI_JS: &str = r#"(function () {
     }
     byId("results-source").textContent = data && data.repositoryPath ? "Repository desired state: " + data.repositoryPath : "Repository desired state";
     byId("results-target").textContent = data && data.databaseType ? data.databaseType + " target" : "PostgreSQL target";
+  }
+
+  function clearOperationResults(reason) {
+    state.lastResponse = null;
+    state.lastOperation = "none";
+    state.rows = [];
+    state.visibleRows = [];
+    state.included = new Set();
+    state.selectedIndex = -1;
+    responseSummary.textContent = reason || "Select an operation to run.";
+    jsonViewer.textContent = "{}";
+    byId("last-operation").textContent = "none";
+    byId("last-status").textContent = "not run";
+    byId("last-warnings").textContent = "0";
+    byId("last-errors").textContent = "0";
+    updateResultsContext("none", {});
+    renderErrorSummary({ success: true, warnings: [], errors: [] });
+    renderWarnings({ warnings: [], errors: [] });
+    updateObjectTypeFilterOptions([], "none");
+    renderResults([]);
   }
 
   function renderErrorSummary(data) {
@@ -2358,6 +3139,31 @@ const UI_JS: &str = r#"(function () {
     }
     data.httpStatus = response.status;
     return data;
+  }
+
+  async function copyRedactedJson() {
+    const text = jsonViewer.textContent || "{}";
+    const status = byId("copy-json-status");
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const textarea = document.createElement("textarea");
+        textarea.value = text;
+        textarea.setAttribute("readonly", "readonly");
+        textarea.style.position = "fixed";
+        textarea.style.left = "-9999px";
+        document.body.appendChild(textarea);
+        textarea.select();
+        if (!document.execCommand("copy")) {
+          throw new Error("Clipboard API unavailable.");
+        }
+        document.body.removeChild(textarea);
+      }
+      status.textContent = "Copied";
+    } catch (error) {
+      status.textContent = "Copy failed";
+    }
   }
 
   async function run(label, endpoint, body, options) {
@@ -2442,9 +3248,11 @@ const UI_JS: &str = r#"(function () {
   });
 
   document.getElementById("workflow-mode").addEventListener("change", function () {
-    updateObjectTypeFilterOptions(state.rows, state.lastOperation);
-    renderResults(state.rows, true);
+    updateWorkflowModePanels();
+    clearOperationResults("Workflow mode changed. Run the selected operation again.");
   });
+
+  document.getElementById("repository-write-confirmation").addEventListener("input", updateRepositoryWriteButton);
 
   document.getElementById("connection-mode").addEventListener("change", function () {
     updateConnectionModePanels();
@@ -2486,12 +3294,36 @@ const UI_JS: &str = r#"(function () {
     run("Connection test", approvedEndpoints.connectionTest, attachConnection({}), { step: "source-target" });
   });
 
+  document.querySelector("[data-action='workspace-browse']").addEventListener("click", openDirectoryPicker);
+
+  document.querySelector("[data-action='directory-close']").addEventListener("click", function () {
+    byId("directory-picker").hidden = true;
+  });
+
+  document.querySelector("[data-action='directory-roots']").addEventListener("click", loadDirectoryRoots);
+
+  document.querySelector("[data-action='directory-refresh']").addEventListener("click", function () {
+    listDirectories();
+  });
+
+  document.querySelector("[data-action='directory-up']").addEventListener("click", function () {
+    if (state.directoryParentPath) {
+      listDirectories(state.directoryParentPath);
+    } else {
+      setDirectoryPickerError("No parent folder is available.");
+    }
+  });
+
+  document.querySelector("[data-action='directory-select']").addEventListener("click", function () {
+    selectDirectoryAsWorkspace();
+  });
+
   document.querySelector("[data-action='health']").addEventListener("click", function () {
     run("Health", approvedEndpoints.health, null, { summaryId: "workspace-summary", step: "workspace" });
   });
 
   document.querySelector("[data-action='workspace-status']").addEventListener("click", function () {
-    run("Workspace status", approvedEndpoints.repoStatus, attachWorkspacePath({}), { summaryId: "workspace-summary", step: "workspace" });
+    run("Workspace validate", approvedEndpoints.workspaceValidate, attachWorkspacePath({}), { summaryId: "workspace-summary", step: "workspace" });
   });
 
   document.querySelector("[data-action='repo-status']").addEventListener("click", function () {
@@ -2504,6 +3336,9 @@ const UI_JS: &str = r#"(function () {
 
   document.querySelector("[data-action='inspect']").addEventListener("click", function () {
     try {
+      if (!standardOperationAllowed("Inspect")) {
+        return;
+      }
       const body = attachWorkspacePath(attachConnection(buildScope()));
       run("Inspect", approvedEndpoints.inspect, body, { step: "results" });
     } catch (error) {
@@ -2513,6 +3348,9 @@ const UI_JS: &str = r#"(function () {
 
   document.querySelector("[data-action='compare']").addEventListener("click", function () {
     try {
+      if (!standardOperationAllowed("Compare")) {
+        return;
+      }
       run("Compare", approvedEndpoints.compare, attachWorkspacePath(attachConnection(buildScope())), { step: "results" });
     } catch (error) {
       responseSummary.textContent = "Compare: " + error.message;
@@ -2521,6 +3359,9 @@ const UI_JS: &str = r#"(function () {
 
   document.querySelector("[data-action='plan']").addEventListener("click", function () {
     try {
+      if (!standardOperationAllowed("Plan")) {
+        return;
+      }
       const body = attachWorkspacePath(attachConnection(buildScope()));
       body.include = commaList(value("plan-include"));
       body.exclude = commaList(value("plan-exclude"));
@@ -2532,13 +3373,38 @@ const UI_JS: &str = r#"(function () {
 
   document.querySelector("[data-action='data-compare']").addEventListener("click", function () {
     try {
+      if (!standardOperationAllowed("Reference-data compare")) {
+        return;
+      }
       run("Reference-data compare", approvedEndpoints.dataCompare, attachWorkspacePath(attachConnection(dataScope())), { step: "results" });
     } catch (error) {
       responseSummary.textContent = "Reference-data compare: " + error.message;
     }
   });
 
+  document.querySelector("[data-action='repository-sync-preview']").addEventListener("click", function () {
+    try {
+      run("Database to Repository Preview", approvedEndpoints.repositorySyncPreview, repositorySyncBody(false), { step: "results" });
+    } catch (error) {
+      responseSummary.textContent = "Database to Repository Preview: " + error.message;
+    }
+  });
+
+  document.querySelector("[data-action='repository-sync-write']").addEventListener("click", function () {
+    try {
+      if (!repositorySyncWriteConfirmed()) {
+        throw new Error("Type WRITE REPOSITORY FILES before writing repository files.");
+      }
+      run("Database to Repository Write", approvedEndpoints.repositorySyncWrite, repositorySyncBody(true), { step: "results" });
+    } catch (error) {
+      responseSummary.textContent = "Database to Repository Write: " + error.message;
+    }
+  });
+
+  document.querySelector("[data-action='copy-json']").addEventListener("click", copyRedactedJson);
+
   updateConnectionModePanels();
+  updateWorkflowModePanels();
   run("Health", approvedEndpoints.health, null, { summaryId: "workspace-summary", step: "workspace" });
 }());
 "#;
@@ -2743,7 +3609,7 @@ fn write_http_response(
         _ => "OK",
     };
     let http_response = format!(
-        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        "HTTP/1.1 {} {}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\nConnection: close\r\n\r\n{}",
         response.status_code,
         reason,
         response.content_type,
@@ -2756,6 +3622,7 @@ fn write_http_response(
 }
 
 pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> ServiceHttpResponse {
+    let path = path.split('?').next().unwrap_or(path);
     match (method, path) {
         ("GET", "/") | ("GET", "/ui") | ("GET", "/ui/") => {
             service_static_response(200, "text/html; charset=utf-8", UI_HTML)
@@ -2765,6 +3632,11 @@ pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> Ser
             service_static_response(200, "application/javascript; charset=utf-8", UI_JS)
         }
         ("GET", "/health") | ("GET", "/api/v1/health") => service_health_response(),
+        ("GET", "/api/v1/workspace/roots") => service_workspace_roots(cwd),
+        ("POST", "/api/v1/workspace/list-directories") => {
+            service_workspace_list_directories(body, cwd)
+        }
+        ("POST", "/api/v1/workspace/validate") => service_workspace_validate(body, cwd),
         ("GET", "/api/v1/connections/profiles") => service_connection_profiles_list(),
         ("POST", "/api/v1/connections/profiles") => service_connection_profile_create(body),
         ("POST", "/api/v1/connections/test") => service_connection_test(body),
@@ -2807,6 +3679,13 @@ pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> Ser
             ScopeRequirement::Required,
             EndpointScopeKind::DataCompare,
         ),
+        ("POST", "/api/v1/postgres/object-ddl") => service_object_ddl_endpoint(body, cwd),
+        ("POST", "/api/v1/postgres/repository-sync/preview") => {
+            service_repository_sync_endpoint("repository-sync preview", body, cwd, true)
+        }
+        ("POST", "/api/v1/postgres/repository-sync/write") => {
+            service_repository_sync_endpoint("repository-sync write", body, cwd, false)
+        }
         _ if method == "PUT" && path.starts_with("/api/v1/connections/profiles/") => {
             service_connection_profile_update(path, body)
         }
@@ -2838,6 +3717,9 @@ pub fn service_route_definitions() -> Vec<(&'static str, &'static str)> {
         ("GET", "/ui/app.js"),
         ("GET", "/health"),
         ("GET", "/api/v1/health"),
+        ("GET", "/api/v1/workspace/roots"),
+        ("POST", "/api/v1/workspace/list-directories"),
+        ("POST", "/api/v1/workspace/validate"),
         ("GET", "/api/v1/connections/profiles"),
         ("POST", "/api/v1/connections/profiles"),
         ("PUT", "/api/v1/connections/profiles/{name}"),
@@ -2849,6 +3731,9 @@ pub fn service_route_definitions() -> Vec<(&'static str, &'static str)> {
         ("POST", "/api/v1/postgres/compare"),
         ("POST", "/api/v1/postgres/plan"),
         ("POST", "/api/v1/postgres/data-compare"),
+        ("POST", "/api/v1/postgres/object-ddl"),
+        ("POST", "/api/v1/postgres/repository-sync/preview"),
+        ("POST", "/api/v1/postgres/repository-sync/write"),
     ]
 }
 
@@ -2867,6 +3752,225 @@ fn service_health_response() -> ServiceHttpResponse {
         content_type: "application/json; charset=utf-8".to_string(),
         body,
     }
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceDirectoryEntry {
+    name: String,
+    path: String,
+}
+
+fn service_workspace_roots(cwd: &Path) -> ServiceHttpResponse {
+    let mut roots = workspace_root_candidates(cwd);
+    roots.sort_by(|left, right| {
+        left.path
+            .to_ascii_lowercase()
+            .cmp(&right.path.to_ascii_lowercase())
+    });
+    roots.dedup_by(|left, right| left.path.eq_ignore_ascii_case(&right.path));
+    service_json_response(200, &workspace_roots_json(&roots, cwd))
+}
+
+fn service_workspace_list_directories(body: &str, cwd: &Path) -> ServiceHttpResponse {
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, "workspace list-directories", &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, "workspace list-directories", &error);
+    }
+    let path_value = request_string(&request, "path").unwrap_or_else(|| display_path(cwd));
+    let directory = match validate_browse_directory_value(&path_value) {
+        Ok(path) => path,
+        Err(error) => return service_error_response(400, "workspace list-directories", &error),
+    };
+    let report = match workspace_directory_listing(&directory) {
+        Ok(report) => report,
+        Err(error) => return service_error_response(400, "workspace list-directories", &error),
+    };
+    service_json_response(200, &workspace_directory_listing_json(&report))
+}
+
+fn service_workspace_validate(body: &str, cwd: &Path) -> ServiceHttpResponse {
+    service_cli_endpoint("workspace validate", body, cwd, &["repo", "status"])
+}
+
+fn workspace_root_candidates(cwd: &Path) -> Vec<WorkspaceDirectoryEntry> {
+    let mut roots = Vec::new();
+    if let Ok(canonical) = fs::canonicalize(cwd) {
+        if canonical.is_dir() {
+            roots.push(WorkspaceDirectoryEntry {
+                name: "Service working directory".to_string(),
+                path: display_path(&canonical),
+            });
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        for letter in b'A'..=b'Z' {
+            let path = format!("{}:\\", letter as char);
+            let candidate = PathBuf::from(&path);
+            if candidate.is_dir() {
+                roots.push(WorkspaceDirectoryEntry {
+                    name: path.clone(),
+                    path,
+                });
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    {
+        let root = PathBuf::from("/");
+        if root.is_dir() {
+            roots.push(WorkspaceDirectoryEntry {
+                name: "/".to_string(),
+                path: "/".to_string(),
+            });
+        }
+        if let Ok(home) = env::var("HOME") {
+            if !home.trim().is_empty() {
+                let home_path = PathBuf::from(&home);
+                if home_path.is_dir() {
+                    roots.push(WorkspaceDirectoryEntry {
+                        name: "Home".to_string(),
+                        path: display_path(&home_path),
+                    });
+                }
+            }
+        }
+    }
+
+    roots
+}
+
+#[derive(Debug, Clone)]
+struct WorkspaceDirectoryListing {
+    path: String,
+    parent_path: Option<String>,
+    directories: Vec<WorkspaceDirectoryEntry>,
+    warnings: Vec<String>,
+}
+
+fn validate_browse_directory_value(value: &str) -> Result<PathBuf, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("path is required.".to_string());
+    }
+    if trimmed.contains('\0') {
+        return Err("path contains an invalid null byte.".to_string());
+    }
+    if is_url_like_repository_path(trimmed) {
+        return Err(
+            "path must be a local filesystem path, not a URL or remote repository reference."
+                .to_string(),
+        );
+    }
+    let canonical = fs::canonicalize(PathBuf::from(normalize_local_path_input(trimmed)))
+        .map_err(|_| "path does not exist or cannot be accessed.".to_string())?;
+    if !canonical.is_dir() {
+        return Err("path must point to a directory.".to_string());
+    }
+    Ok(canonical)
+}
+
+fn workspace_directory_listing(path: &Path) -> Result<WorkspaceDirectoryListing, String> {
+    let mut directories = Vec::new();
+    let mut warnings = Vec::new();
+    let entries =
+        fs::read_dir(path).map_err(|error| format!("Could not read directory: {error}"))?;
+    for entry in entries {
+        let entry = match entry {
+            Ok(entry) => entry,
+            Err(error) => {
+                warnings.push(format!("Could not read one directory entry: {error}"));
+                continue;
+            }
+        };
+        let file_type = match entry.file_type() {
+            Ok(file_type) => file_type,
+            Err(error) => {
+                warnings.push(format!("Could not read one directory entry type: {error}"));
+                continue;
+            }
+        };
+        if !file_type.is_dir() {
+            continue;
+        }
+        let child_path = entry.path();
+        directories.push(WorkspaceDirectoryEntry {
+            name: entry.file_name().to_string_lossy().to_string(),
+            path: display_path(&child_path),
+        });
+    }
+    directories.sort_by(|left, right| {
+        left.name
+            .to_ascii_lowercase()
+            .cmp(&right.name.to_ascii_lowercase())
+    });
+    let parent_path = path
+        .parent()
+        .filter(|parent| *parent != path)
+        .map(display_path);
+    Ok(WorkspaceDirectoryListing {
+        path: display_path(path),
+        parent_path,
+        directories,
+        warnings,
+    })
+}
+
+fn workspace_roots_json(roots: &[WorkspaceDirectoryEntry], cwd: &Path) -> String {
+    let current_path = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
+    let mut json = String::new();
+    json.push('{');
+    write_json_string_field(&mut json, "command", "workspace roots", true);
+    write_json_bool_field(&mut json, "success", true);
+    write_json_string_field(
+        &mut json,
+        "currentPath",
+        &display_path(&current_path),
+        false,
+    );
+    write_workspace_directory_array_field(&mut json, "roots", roots);
+    write_json_array_field(&mut json, "warnings", &[]);
+    write_json_array_field(&mut json, "errors", &[]);
+    json.push('}');
+    json
+}
+
+fn workspace_directory_listing_json(report: &WorkspaceDirectoryListing) -> String {
+    let mut json = String::new();
+    json.push('{');
+    write_json_string_field(&mut json, "command", "workspace list-directories", true);
+    write_json_bool_field(&mut json, "success", true);
+    write_json_string_field(&mut json, "path", &report.path, false);
+    write_json_optional_string_field(&mut json, "parentPath", report.parent_path.as_deref());
+    write_workspace_directory_array_field(&mut json, "directories", &report.directories);
+    write_json_array_field(&mut json, "warnings", &report.warnings);
+    write_json_array_field(&mut json, "errors", &[]);
+    json.push('}');
+    json
+}
+
+fn write_workspace_directory_array_field(
+    json: &mut String,
+    name: &str,
+    values: &[WorkspaceDirectoryEntry],
+) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "name", &value.name, true);
+        write_json_string_field(json, "path", &value.path, false);
+        json.push('}');
+    }
+    json.push(']');
 }
 
 fn service_connection_profiles_list() -> ServiceHttpResponse {
@@ -3268,6 +4372,300 @@ fn service_postgres_endpoint(
     service_run_cli(command, &workspace, args)
 }
 
+fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
+    let command = "object ddl";
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, command, &error);
+    }
+    let workspace = match resolve_service_workspace(&request, cwd) {
+        Ok(workspace) => workspace,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+
+    let object_type = request_string(&request, "objectType").unwrap_or_default();
+    let schema = request_string(&request, "schema").unwrap_or_default();
+    let object_name = request_string(&request, "objectName")
+        .or_else(|| request_string(&request, "name"))
+        .unwrap_or_default();
+    if object_type != "schema" && object_type != "table" {
+        return service_json_response(
+            200,
+            &ObjectDdlResponse {
+                success: false,
+                object_type: &object_type,
+                schema: &schema,
+                object_name: &object_name,
+                relative_path: None,
+                repository_ddl: None,
+                database_ddl: None,
+                warnings: &[
+                    "DDL is available only for supported schema and table objects.".to_string(),
+                ],
+                errors: &[],
+            }
+            .to_json(),
+        );
+    }
+
+    let root = match git_root(&workspace) {
+        Some(root) => root,
+        None => {
+            return service_error_response(
+                400,
+                command,
+                "repositoryPath must be inside a local Git working tree.",
+            )
+        }
+    };
+
+    let relative_path = request_string(&request, "relativePath")
+        .or_else(|| default_object_relative_path(&object_type, &schema, &object_name).ok());
+    let repository_ddl = match relative_path.as_deref() {
+        Some(path) => match read_repository_object_ddl(&root, path) {
+            Ok(content) => content,
+            Err(error) => return service_error_response(400, command, &error),
+        },
+        None => None,
+    };
+
+    let mut warnings = Vec::new();
+    let mut errors = Vec::new();
+    let database_ddl = match resolve_service_postgres_connection(&request) {
+        Ok(Some(connection)) => {
+            match database_object_ddl(&connection.url, &object_type, &schema, &object_name) {
+                Ok(ddl) => ddl,
+                Err(error) => {
+                    warnings.push(error);
+                    None
+                }
+            }
+        }
+        Ok(None) => {
+            warnings.push(
+                "Database DDL is unavailable because no PostgreSQL connection was provided."
+                    .to_string(),
+            );
+            None
+        }
+        Err(error) => {
+            errors.push(error);
+            None
+        }
+    };
+
+    service_json_response(
+        if errors.is_empty() { 200 } else { 400 },
+        &ObjectDdlResponse {
+            success: errors.is_empty(),
+            object_type: &object_type,
+            schema: &schema,
+            object_name: &object_name,
+            relative_path: relative_path.as_deref(),
+            repository_ddl: repository_ddl.as_deref(),
+            database_ddl: database_ddl.as_deref(),
+            warnings: &warnings,
+            errors: &errors,
+        }
+        .to_json(),
+    )
+}
+
+fn default_object_relative_path(
+    object_type: &str,
+    schema: &str,
+    object_name: &str,
+) -> Result<String, String> {
+    match object_type {
+        "schema" => schema_file_path(if schema.is_empty() {
+            object_name
+        } else {
+            schema
+        }),
+        "table" => table_file_path(schema, object_name),
+        _ => Err("Unsupported object type for DDL detail.".to_string()),
+    }
+}
+
+fn read_repository_object_ddl(root: &Path, relative_path: &str) -> Result<Option<String>, String> {
+    validate_repository_object_relative_path(relative_path)?;
+    let root = fs::canonicalize(root)
+        .map_err(|_| "Could not resolve selected repository root.".to_string())?;
+    let target = root.join(relative_path);
+    if !target.exists() {
+        return Ok(None);
+    }
+    let canonical = fs::canonicalize(&target)
+        .map_err(|_| "Could not resolve repository object file path.".to_string())?;
+    let objects_root = root.join("database").join("objects");
+    if !canonical.starts_with(&objects_root) {
+        return Err("Refusing to read outside database/objects/.".to_string());
+    }
+    fs::read_to_string(&canonical)
+        .map(Some)
+        .map_err(|error| format!("Could not read repository object file: {error}"))
+}
+
+fn validate_repository_object_relative_path(relative_path: &str) -> Result<(), String> {
+    if relative_path.contains('\0')
+        || relative_path.contains("..")
+        || relative_path.contains('\\')
+        || relative_path.starts_with('/')
+        || relative_path.contains(':')
+        || !relative_path.ends_with(".sql")
+    {
+        return Err("Unsafe repository object file path.".to_string());
+    }
+    if relative_path.starts_with("database/objects/schemas/")
+        || relative_path.starts_with("database/objects/tables/")
+    {
+        Ok(())
+    } else {
+        Err("DDL detail can read only schema and table files under database/objects/.".to_string())
+    }
+}
+
+fn database_object_ddl(
+    connection_url: &str,
+    object_type: &str,
+    schema: &str,
+    object_name: &str,
+) -> Result<Option<String>, String> {
+    if !is_postgres_connection_url(connection_url) {
+        return Err(invalid_postgres_url_message());
+    }
+    let inventory =
+        inspect_postgres(connection_url).map_err(|error| redact_message(&error, connection_url))?;
+    match object_type {
+        "schema" => {
+            let schema_name = if schema.is_empty() {
+                object_name
+            } else {
+                schema
+            };
+            if inventory
+                .schemas
+                .iter()
+                .any(|candidate| candidate.name == schema_name)
+            {
+                Ok(Some(render_schema_sql(schema_name)))
+            } else {
+                Ok(None)
+            }
+        }
+        "table" => {
+            let table = inventory.tables.iter().find(|candidate| {
+                candidate.schema_name == schema && candidate.table_name == object_name
+            });
+            if table.is_none() {
+                return Ok(None);
+            }
+            let columns: Vec<ColumnInfo> = inventory
+                .columns
+                .iter()
+                .filter(|column| column.schema_name == schema && column.table_name == object_name)
+                .cloned()
+                .collect();
+            Ok(Some(render_table_sql(schema, object_name, &columns)))
+        }
+        _ => Ok(None),
+    }
+}
+
+struct ObjectDdlResponse<'a> {
+    success: bool,
+    object_type: &'a str,
+    schema: &'a str,
+    object_name: &'a str,
+    relative_path: Option<&'a str>,
+    repository_ddl: Option<&'a str>,
+    database_ddl: Option<&'a str>,
+    warnings: &'a [String],
+    errors: &'a [String],
+}
+
+impl ObjectDdlResponse<'_> {
+    fn to_json(&self) -> String {
+        let mut json = String::new();
+        json.push('{');
+        write_json_string_field(&mut json, "command", "object ddl", true);
+        write_json_bool_field(&mut json, "success", self.success);
+        write_json_string_field(&mut json, "databaseType", "postgresql", false);
+        write_json_string_field(&mut json, "objectType", self.object_type, false);
+        write_json_string_field(&mut json, "schema", self.schema, false);
+        write_json_string_field(&mut json, "objectName", self.object_name, false);
+        write_json_optional_string_field(&mut json, "relativePath", self.relative_path);
+        write_json_optional_string_field(&mut json, "repositoryDdl", self.repository_ddl);
+        write_json_optional_string_field(&mut json, "databaseDdl", self.database_ddl);
+        write_json_array_field(&mut json, "warnings", self.warnings);
+        write_json_array_field(&mut json, "errors", self.errors);
+        json.push('}');
+        json
+    }
+}
+
+fn service_repository_sync_endpoint(
+    command: &str,
+    body: &str,
+    cwd: &Path,
+    dry_run: bool,
+) -> ServiceHttpResponse {
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, command, &error);
+    }
+    if !dry_run {
+        let confirmed = matches!(request_bool(&request, "confirmRepositoryWrite"), Some(true))
+            && matches!(
+                request_string(&request, "confirmationText").as_deref(),
+                Some("WRITE REPOSITORY FILES")
+            );
+        if !confirmed {
+            return service_error_response(
+                400,
+                command,
+                "Repository file write requires confirmRepositoryWrite true and confirmationText WRITE REPOSITORY FILES.",
+            );
+        }
+    }
+    let workspace = match resolve_service_workspace(&request, cwd) {
+        Ok(workspace) => workspace,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+
+    let mut args = vec!["sync".to_string(), "postgres".to_string()];
+    match resolve_service_postgres_connection(&request) {
+        Ok(Some(connection)) => {
+            if connection.source != "environment" {
+                args.push("--url".to_string());
+                args.push(connection.url);
+            }
+        }
+        Ok(None) => {}
+        Err(error) => return service_error_response(400, command, &error),
+    }
+
+    match service_scope_args(
+        &request,
+        ScopeRequirement::Required,
+        EndpointScopeKind::SchemaTable,
+    ) {
+        Ok(scope_args) => args.extend(scope_args),
+        Err(error) => return service_error_response(400, command, &error),
+    }
+    if dry_run {
+        args.push("--dry-run".to_string());
+    }
+    args.extend(["--format".to_string(), "json".to_string()]);
+    service_run_cli(command, &workspace, args)
+}
+
 fn service_run_cli(command: &str, cwd: &Path, args: Vec<String>) -> ServiceHttpResponse {
     match run_cli(&args, Ok(cwd)) {
         Ok(result) => {
@@ -3336,7 +4734,7 @@ fn validate_repository_path_value(value: &str) -> Result<PathBuf, String> {
         return Err("repositoryPath must be a local filesystem path, not a URL or remote repository reference.".to_string());
     }
 
-    let path = PathBuf::from(value);
+    let path = PathBuf::from(normalize_local_path_input(value));
     let canonical = fs::canonicalize(&path)
         .map_err(|_| "repositoryPath does not exist or cannot be accessed.".to_string())?;
     if !canonical.is_dir() {
@@ -3356,6 +4754,15 @@ fn is_url_like_repository_path(value: &str) -> bool {
         || lower.starts_with("postgres://")
         || lower.starts_with("postgresql://")
         || lower.starts_with("git@")
+}
+
+fn normalize_local_path_input(value: &str) -> String {
+    let normalized = value.trim().replace('\\', "/");
+    normalized
+        .strip_prefix("///?/")
+        .or_else(|| normalized.strip_prefix("//?/"))
+        .unwrap_or(&normalized)
+        .to_string()
 }
 
 fn config_dir() -> Result<PathBuf, String> {
@@ -7599,7 +9006,12 @@ fn git_working_tree_status(root: &Path) -> WorkingTreeStatus {
 }
 
 fn display_path(path: &Path) -> String {
-    path.to_string_lossy().replace('\\', "/")
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    normalized
+        .strip_prefix("///?/")
+        .or_else(|| normalized.strip_prefix("//?/"))
+        .unwrap_or(&normalized)
+        .to_string()
 }
 
 impl ProjectReport {
@@ -10811,6 +12223,9 @@ rows:
             ("GET", "/ui/app.js"),
             ("GET", "/health"),
             ("GET", "/api/v1/health"),
+            ("GET", "/api/v1/workspace/roots"),
+            ("POST", "/api/v1/workspace/list-directories"),
+            ("POST", "/api/v1/workspace/validate"),
             ("GET", "/api/v1/connections/profiles"),
             ("POST", "/api/v1/connections/profiles"),
             ("PUT", "/api/v1/connections/profiles/{name}"),
@@ -10822,13 +12237,16 @@ rows:
             ("POST", "/api/v1/postgres/compare"),
             ("POST", "/api/v1/postgres/plan"),
             ("POST", "/api/v1/postgres/data-compare"),
+            ("POST", "/api/v1/postgres/object-ddl"),
+            ("POST", "/api/v1/postgres/repository-sync/preview"),
+            ("POST", "/api/v1/postgres/repository-sync/write"),
         ] {
             assert!(routes.contains(&expected), "missing route {expected:?}");
         }
 
         for (_, path) in routes {
             assert!(!path.contains("export"));
-            assert!(!path.contains("sync"));
+            assert!(!path.contains("/api/v1/postgres/sync"));
             assert!(!path.contains("release/write"));
             assert!(!path.contains("apply"));
         }
@@ -10860,6 +12278,15 @@ rows:
         assert_eq!(js.status_code, 200);
         assert!(js.content_type.contains("application/javascript"));
         assert!(js.body.contains("/api/v1/health"));
+
+        let versioned_js = service_response(
+            "GET",
+            "/ui/app.js?v=slice15-object-diff-direction",
+            "",
+            &dir,
+        );
+        assert_eq!(versioned_js.status_code, 200);
+        assert!(versioned_js.body.contains("directionForWorkflowMode"));
     }
 
     #[test]
@@ -10882,6 +12309,10 @@ rows:
         assert!(html.contains("Reports / Raw JSON"));
         assert!(html.contains("About / Safety"));
         assert!(html.contains("workspace-path"));
+        assert!(html.contains("workspace-browse"));
+        assert!(html.contains("directory-picker"));
+        assert!(html.contains("directory-picker-path"));
+        assert!(html.contains("directory-list"));
         assert!(html.contains("Session-only"));
         assert!(html.contains("does not clone or fetch repositories"));
         assert!(html.contains("results-grid"));
@@ -10895,6 +12326,8 @@ rows:
         assert!(!html.contains("<th>Target</th>"));
         assert!(html.contains("Release artifact preview will be connected"));
         assert!(html.contains("Raw JSON"));
+        assert!(html.contains("/ui/app.css?v=slice15-object-diff-direction"));
+        assert!(html.contains("/ui/app.js?v=slice15-object-diff-direction"));
         assert!(!html.contains("http://"));
         assert!(!html.contains("https://"));
         assert!(!html.contains("cdn"));
@@ -10915,6 +12348,12 @@ rows:
             "/api/v1/postgres/compare",
             "/api/v1/postgres/plan",
             "/api/v1/postgres/data-compare",
+            "/api/v1/postgres/object-ddl",
+            "/api/v1/postgres/repository-sync/preview",
+            "/api/v1/postgres/repository-sync/write",
+            "/api/v1/workspace/roots",
+            "/api/v1/workspace/list-directories",
+            "/api/v1/workspace/validate",
         ];
 
         for endpoint in approved {
@@ -10926,13 +12365,13 @@ rows:
 
         for forbidden in [
             "/api/v1/postgres/export",
-            "/api/v1/postgres/sync",
             "/api/v1/postgres/release",
             "/api/v1/release",
             "/api/v1/postgres/apply",
             "release/write",
             "localStorage",
             "sessionStorage",
+            "showDirectoryPicker",
             "console.log",
             "execute generated SQL",
             "execute SQL",
@@ -10970,8 +12409,10 @@ rows:
             "results-grid",
             "Object type",
             "Planned operation",
-            "Repository Side",
-            "Database Side",
+            "Source",
+            "Target",
+            "Source type",
+            "Target type",
             "Diff detail not available yet",
             "Review-only",
         ] {
@@ -11080,6 +12521,398 @@ rows:
         assert!(js.contains("appendOption(select, \"referenceData\", \"Reference data\")"));
         assert!(!js.contains("service:response"));
         assert!(!js.contains("objectType: \"service\""));
+    }
+
+    #[test]
+    fn slice15_service_routes_and_write_confirmation_are_present() {
+        let routes = service_route_definitions();
+        assert!(routes.contains(&("POST", "/api/v1/postgres/object-ddl")));
+        assert!(routes.contains(&("POST", "/api/v1/postgres/repository-sync/preview")));
+        assert!(routes.contains(&("POST", "/api/v1/postgres/repository-sync/write")));
+        assert!(routes.contains(&("GET", "/api/v1/workspace/roots")));
+        assert!(routes.contains(&("POST", "/api/v1/workspace/list-directories")));
+        assert!(routes.contains(&("POST", "/api/v1/workspace/validate")));
+
+        let dir = create_temp_dir("slice15-confirmation");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+
+        let missing_confirmation = service_response(
+            "POST",
+            "/api/v1/postgres/repository-sync/write",
+            r#"{ "scope": "all" }"#,
+            &dir,
+        );
+
+        assert_eq!(missing_confirmation.status_code, 400);
+        assert_common_json_contract(&missing_confirmation.body);
+        assert!(missing_confirmation.body.contains("WRITE REPOSITORY FILES"));
+        assert!(!missing_confirmation.body.contains("postgres://"));
+    }
+
+    #[test]
+    fn slice15_object_ddl_reads_only_database_objects_under_workspace() {
+        let dir = create_temp_dir("slice15-object-ddl");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        let schema_path = dir
+            .join("database")
+            .join("objects")
+            .join("schemas")
+            .join("core.sql");
+        fs::write(&schema_path, "CREATE SCHEMA \"core\";\n").expect("write schema ddl");
+        commit_all(&dir, "complete structure");
+
+        let body = r#"{ "scope": "all", "objectType": "schema", "schema": "core", "objectName": "core", "relativePath": "database/objects/schemas/core.sql" }"#;
+        let response = service_response("POST", "/api/v1/postgres/object-ddl", body, &dir);
+
+        assert_eq!(response.status_code, 200, "{}", response.body);
+        assert_common_json_contract(&response.body);
+        assert!(response.body.contains("\"repositoryDdl\":\"CREATE SCHEMA"));
+        assert!(response.body.contains("Database DDL is unavailable"));
+        assert!(!response.body.contains("postgres://"));
+
+        for unsafe_path in [
+            "database/releases/0001.sql",
+            "database/objects/../secrets.sql",
+            "/database/objects/schemas/core.sql",
+            "database/objects/schemas/core.txt",
+        ] {
+            let body = format!(
+                r#"{{ "objectType": "schema", "schema": "core", "objectName": "core", "relativePath": "{}" }}"#,
+                unsafe_path
+            );
+            let rejected = service_response("POST", "/api/v1/postgres/object-ddl", &body, &dir);
+            assert_eq!(rejected.status_code, 400, "{}", rejected.body);
+        }
+    }
+
+    #[test]
+    fn slice15_repository_sync_preview_uses_dry_run_and_does_not_write_without_connection() {
+        let dir = create_temp_dir("slice15-preview");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+        let objects = dir.join("database").join("objects");
+        let before = fs::read_dir(&objects).expect("read objects").count();
+
+        let response = service_response(
+            "POST",
+            "/api/v1/postgres/repository-sync/preview",
+            r#"{ "scope": "all" }"#,
+            &dir,
+        );
+
+        assert_eq!(response.status_code, 400);
+        assert_common_json_contract(&response.body);
+        assert!(response.body.contains("Missing PostgreSQL connection URL"));
+        assert_eq!(
+            fs::read_dir(&objects).expect("read objects").count(),
+            before
+        );
+    }
+
+    #[test]
+    fn slice15_repository_sync_write_rejects_dirty_tree_before_files_are_written() {
+        let dir = create_temp_dir("slice15-dirty-write");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        commit_all(&dir, "complete structure");
+        fs::write(dir.join("dirty.txt"), "dirty").expect("dirty tree");
+
+        let report =
+            sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
+
+        assert!(!report.success);
+        assert!(report.created_files.is_empty());
+        assert!(report.updated_files.is_empty());
+        assert!(report
+            .errors
+            .iter()
+            .any(|error| error.contains("working tree has changes")));
+    }
+
+    #[test]
+    fn slice15_workspace_directory_picker_endpoints_are_safe_and_directory_only() {
+        let dir = create_temp_dir("slice15-directory-picker");
+        init_git_repo(&dir);
+        create_complete_structure(&dir);
+        fs::create_dir_all(dir.join("child-a")).expect("create child-a");
+        fs::create_dir_all(dir.join("child-b")).expect("create child-b");
+        fs::write(dir.join("not-listed.txt"), "not a directory").expect("write file");
+
+        let roots = service_response("GET", "/api/v1/workspace/roots", "", &dir);
+        assert_eq!(roots.status_code, 200, "{}", roots.body);
+        assert_common_json_contract(&roots.body);
+        assert!(roots.body.contains("workspace roots"));
+        assert!(roots.body.contains("Service working directory"));
+
+        let list_body = format!(r#"{{ "path": "{}" }}"#, escape_json(&display_path(&dir)));
+        let list = service_response(
+            "POST",
+            "/api/v1/workspace/list-directories",
+            &list_body,
+            &dir,
+        );
+        assert_eq!(list.status_code, 200, "{}", list.body);
+        assert_common_json_contract(&list.body);
+        assert!(list.body.contains("child-a"));
+        assert!(list.body.contains("child-b"));
+        assert!(!list.body.contains("not-listed.txt"));
+
+        for body in [
+            r#"{ "path": "https://example.com/repo.git" }"#.to_string(),
+            r#"{ "path": "bad\u0000path" }"#.to_string(),
+            format!(
+                r#"{{ "path": "{}" }}"#,
+                escape_json(&display_path(&dir.join("missing")))
+            ),
+        ] {
+            let rejected =
+                service_response("POST", "/api/v1/workspace/list-directories", &body, &dir);
+            assert_eq!(rejected.status_code, 400, "{}", rejected.body);
+            assert_common_json_contract(&rejected.body);
+        }
+
+        let validate_body = format!(
+            r#"{{ "repositoryPath": "{}" }}"#,
+            escape_json(&display_path(&dir))
+        );
+        let validate = service_response("POST", "/api/v1/workspace/validate", &validate_body, &dir);
+        assert_eq!(validate.status_code, 200, "{}", validate.body);
+        assert_common_json_contract(&validate.body);
+        assert!(validate.body.contains("repositoryPath"));
+        assert!(validate.body.contains("dbstateProjectStatus"));
+    }
+
+    #[test]
+    fn slice15_ui_database_to_repository_workflow_contract_is_present() {
+        let html = ui_html();
+        let js = ui_js();
+        let css = ui_css();
+
+        for expected in [
+            "Database to Repository",
+            "Preview Repository Sync",
+            "Write Repository Files",
+            "WRITE REPOSITORY FILES",
+            "Copy JSON",
+            "Source type",
+            "Target type",
+            "Source DDL",
+            "Target DDL",
+            "DDL unavailable",
+            "repository-sync-controls",
+            "source-content",
+            "target-content",
+            "repository-context",
+            "postgres-connection-context",
+            "catalog-context",
+            "repository-branch",
+            "repository-tree",
+            "repository-project",
+            "repository-dirty",
+            "workspace-browse",
+            "directory-picker",
+            "Select Workspace Folder",
+            "Select this folder",
+        ] {
+            assert!(html.contains(expected), "missing UI text {expected}");
+        }
+        assert!(html.find("Workflow Mode").unwrap() < html.find("id=\"source-panel\"").unwrap());
+        assert!(html.find("Workflow Mode").unwrap() < html.find("id=\"target-panel\"").unwrap());
+        assert!(!html.contains("Repository Side"));
+        assert!(!html.contains("Database Side"));
+
+        for expected in [
+            "/api/v1/postgres/object-ddl",
+            "/api/v1/postgres/repository-sync/preview",
+            "/api/v1/postgres/repository-sync/write",
+            "/api/v1/workspace/roots",
+            "/api/v1/workspace/list-directories",
+            "/api/v1/workspace/validate",
+            "repositorySyncBody",
+            "confirmRepositoryWrite",
+            "confirmationText",
+            "data-standard-operation-action",
+            "standardOperationAllowed",
+            "Compare is not available in Database to Repository mode. Use Preview Repository Sync.",
+            "copyRedactedJson",
+            "jsonViewer.textContent",
+            "Database to Repository Preview",
+            "Database to Repository Write",
+            "directionForResultRow",
+            "directionForWorkflowMode",
+            "rowMatchesWorkflowMode",
+            "rowMatchesCurrentWorkflow",
+            "isDatabaseToRepositoryRow",
+            "workflowLayout",
+            "placeSourceTargetContext",
+            "sourceContext: \"connection\"",
+            "targetContext: \"repository\"",
+            "sourceContext: \"repository\"",
+            "targetContext: \"connection\"",
+            "targetContext: \"catalog\"",
+            "Repository configured reference data",
+            "Read-only catalog view",
+            "DbState captures supported PostgreSQL database state into the selected repository after preview and explicit confirmation.",
+            "DbState compares repository desired state to PostgreSQL through read-only service operations.",
+            "DbState reads PostgreSQL catalog state through read-only inspection.",
+            "DbState compares configured repository reference data to PostgreSQL through read-only service operations.",
+            "normalizeDdlForComparison",
+            "updateDdlComparisonStatus",
+            "ddl-similar",
+            "ddl-different",
+            "ddl-unavailable",
+            "Similar",
+            "Different",
+            "DDL not available yet for this object.",
+            "objectDdlRequest",
+            "loadSelectedObjectDdl",
+            "openDirectoryPicker",
+            "loadDirectoryRoots",
+            "listDirectories",
+            "selectDirectoryAsWorkspace",
+            "approvedEndpoints.workspaceValidate",
+            "friendlyPath",
+            "row.producingWorkflowMode = workflowModeForOperation(label);",
+            "row.workflowMode = row.producingWorkflowMode;",
+            "const direction = directionForResultRow(row);",
+            "objectDiffDisplayPayload(row, direction)",
+            "clearOperationResults",
+            "Workflow mode changed. Run the selected operation again.",
+            "operation: row.resultOperation || row.operation || \"review\"",
+            "objectDiffDirectionRegressionFixture",
+            "staleCompareResultInDatabaseToRepositoryFixture",
+            "window.dbstateUiTestHooks",
+            "sourceType: \"Repository\"",
+            "targetType: \"Database\"",
+            "sourceType: displayPayload.sourceType",
+            "targetType: displayPayload.targetType",
+            "renderedText",
+            "\"sourceType \" + displayPayload.sourceType",
+            "\"targetType \" + displayPayload.targetType",
+            "\"Source type: \" + direction.sourceType",
+            "\"Target type: \" + direction.targetType",
+            "\"Source DDL \" + sourceDdl",
+            "\"Target DDL \" + targetDdl",
+        ] {
+            assert!(js.contains(expected), "missing JS text {expected}");
+        }
+        assert!(js.contains(
+            "const visibleRows = state.rows.filter(function (row) {\n      return rowMatchesFilter(row) && rowMatchesCurrentWorkflow(row);"
+        ));
+        assert!(js.contains(
+            "Selected result belongs to a different workflow. Run the current workflow again."
+        ));
+        let direction_index = js.rfind("if (isDatabaseToRepositoryMode(mode))").unwrap();
+        let direction_block = &js[direction_index..direction_index + 360];
+        assert!(direction_block.contains("sourceType: \"Database\""));
+        assert!(direction_block.contains("targetType: \"Repository\""));
+        assert!(direction_block.contains("sourceDdlSide: \"database\""));
+        assert!(direction_block.contains("targetDdlSide: \"repository\""));
+        assert!(js.contains(
+            "const ddlBySide = { repository: repositoryDdl, database: databaseDdl, \"\": \"\" };"
+        ));
+        assert!(js.contains("const sourceDdl = ddlBySide[direction.sourceDdlSide] || \"\";"));
+        assert!(js.contains("const targetDdl = ddlBySide[direction.targetDdlSide] || \"\";"));
+        assert!(js.contains("byId(\"selected-json\").textContent = redactedJson(objectDiffDisplayPayload(row, direction));"));
+        assert!(!js.contains("row.sourceType"));
+        assert!(!js.contains("row.targetType"));
+        let fixture_index = js
+            .find("function objectDiffDirectionRegressionFixture()")
+            .unwrap();
+        let fixture_end = js[fixture_index..]
+            .find("if (typeof window !== \"undefined\")")
+            .map(|offset| fixture_index + offset)
+            .unwrap();
+        let fixture_block = &js[fixture_index..fixture_end];
+        assert!(fixture_block.contains("producingWorkflowMode: \"databaseToRepository\""));
+        assert!(fixture_block.contains("resultOperation: \"Database to Repository Preview\""));
+        assert!(fixture_block.contains("sourceType: \"Repository\""));
+        assert!(fixture_block.contains("targetType: \"Database\""));
+        assert!(fixture_block.contains("sourceType: displayPayload.sourceType"));
+        assert!(fixture_block.contains("targetType: displayPayload.targetType"));
+        assert!(fixture_block.contains("const sourceDdl = ddlBySide[direction.sourceDdlSide]"));
+        assert!(fixture_block.contains("const targetDdl = ddlBySide[direction.targetDdlSide]"));
+        assert!(fixture_block.contains("sourceDdl: sourceDdl"));
+        assert!(fixture_block.contains("targetDdl: targetDdl"));
+        assert!(fixture_block.contains("\"sourceType \" + displayPayload.sourceType"));
+        assert!(fixture_block.contains("\"targetType \" + displayPayload.targetType"));
+        assert!(fixture_block.contains("\"Source type: \" + direction.sourceType"));
+        assert!(fixture_block.contains("\"Target type: \" + direction.targetType"));
+        assert!(fixture_block.contains("\"Source DDL \" + sourceDdl"));
+        assert!(fixture_block.contains("\"Target DDL \" + targetDdl"));
+        assert!(!fixture_block.contains("\"sourceType \" + staleRow.sourceType"));
+        assert!(!fixture_block.contains("\"targetType \" + staleRow.targetType"));
+        let stale_fixture_index = js
+            .find("function staleCompareResultInDatabaseToRepositoryFixture()")
+            .unwrap();
+        let stale_fixture_end = js[stale_fixture_index..]
+            .find("if (typeof window !== \"undefined\")")
+            .map(|offset| stale_fixture_index + offset)
+            .unwrap();
+        let stale_fixture_block = &js[stale_fixture_index..stale_fixture_end];
+        assert!(stale_fixture_block.contains("producingWorkflowMode: \"compare\""));
+        assert!(stale_fixture_block.contains("operation: \"Compare\""));
+        assert!(stale_fixture_block.contains("sourceType: \"Repository\""));
+        assert!(stale_fixture_block.contains("targetType: \"Database\""));
+        assert!(stale_fixture_block.contains("const selectedMode = \"databaseToRepository\""));
+        assert!(stale_fixture_block
+            .contains("const canRender = rowMatchesWorkflowMode(staleCompareRow, selectedMode);"));
+        assert!(stale_fixture_block.contains("canRender: canRender"));
+        assert!(stale_fixture_block.contains("visibleRows: canRender ? 1 : 0"));
+        assert!(stale_fixture_block.contains(
+            "Selected result belongs to a different workflow. Run the current workflow again."
+        ));
+        for expected in [
+            "addedFiles",
+            "changedFiles",
+            "unchangedFiles",
+            "plannedCreates",
+            "plannedUpdates",
+            "createdFiles",
+            "updatedFiles",
+        ] {
+            assert!(js.contains(expected), "missing sync mapping {expected}");
+        }
+        assert!(css.contains(".status-plannedcreate"));
+        assert!(css.contains(".status-updated"));
+
+        for forbidden in [
+            "Deploy to database",
+            "Execute SQL",
+            "Execute generated SQL",
+            "Sync to Database",
+            "Apply to Target",
+            "Push to Target Database",
+            "localStorage",
+            "sessionStorage",
+            "showDirectoryPicker",
+        ] {
+            assert!(
+                !html.contains(forbidden) && !js.contains(forbidden),
+                "UI contains forbidden pattern {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn slice15_workspace_path_display_normalizes_windows_verbatim_prefixes() {
+        let verbatim = Path::new(r"\\?\D:\DbState\ExitPassDb");
+        assert_eq!(display_path(verbatim), "D:/DbState/ExitPassDb");
+        assert_eq!(
+            normalize_local_path_input("///?/D:/DbState/ExitPassDb"),
+            "D:/DbState/ExitPassDb"
+        );
+
+        let js = ui_js();
+        assert!(js.contains("text.replace(/^\\/{2,3}\\?\\//, \"\")"));
+        assert!(js.contains("byId(\"workspace-path\").value = gitRoot"));
+        assert!(!js.contains("localStorage"));
+        assert!(!js.contains("sessionStorage"));
+        assert!(!js.contains("showDirectoryPicker"));
     }
 
     #[test]

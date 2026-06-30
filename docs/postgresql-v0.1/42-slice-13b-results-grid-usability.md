@@ -2,7 +2,7 @@
 
 Slice 13B refines the browser UI Results grid from the Slice 13A schema compare workflow shell.
 
-This is a UI-only usability slice. It does not add backend database capability, service write endpoints, connection profiles, SQL execution, direct database apply, database mutation, or new PostgreSQL object coverage.
+This is a UI-only usability slice. It does not add backend database capability, connection profiles, SQL execution, direct database apply, database mutation, or new PostgreSQL object coverage. Slice 15 later adds a tightly gated repository-file write workflow for Database to Repository capture.
 
 ## Results Grid Changes
 
@@ -126,20 +126,21 @@ The raw JSON remains available in Reports / Raw JSON, but the error is not shown
 
 ## Safety Boundary
 
-Slice 13B preserves the existing UI safety boundary:
+Slice 13B preserves the existing UI safety boundary. Slice 15 adds Database to Repository preview and an explicitly confirmed repository-file write action, but the database safety boundary remains unchanged:
 
 - UI calls only approved safe service endpoints.
 - Workspace path remains session-only.
 - PostgreSQL URL remains session-only.
 - Saved connection profiles contain only non-secret metadata and live outside the repository.
 - Profile passwords are session-only and are not persisted.
-- No write buttons are added.
 - No export write workflow is added.
-- No sync write workflow is added.
+- No sync-to-database workflow is added.
 - No release artifact write workflow is added.
 - No direct database apply exists.
 - No generated SQL execution exists.
 - No database mutation exists.
+
+Database to Repository write in Slice 15 writes only supported desired-state files under `database/objects/` after typed confirmation and a clean working tree check.
 
 No React, Vue, Svelte, Angular, Vite, npm, Node, package file, external CDN, external fonts, or external scripts are added.
 

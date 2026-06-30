@@ -134,14 +134,15 @@ Current CLI scope:
 - The local service serves a minimal static schema compare workflow UI shell at `/` and `/ui`, including a results grid with object-type filtering and status badges.
 - Service and UI workflows can use a session-only selected local repository path through `repositoryPath`.
 - Service and UI workflows can use optional local non-secret PostgreSQL connection profiles. Profiles are stored outside the repository and never store passwords, tokens, or full PostgreSQL URLs.
+- Service and UI workflows can preview Database to Repository capture and, after explicit confirmation on a clean working tree, write supported desired-state object files only under the selected repository's `database/objects/` paths.
 
 Current implementation limitations:
 
-- No SQL execution, direct target-database apply, reference-data DML generation, arbitrary transactional data compare, full browser UI product, service write endpoints, Docker Compose, CI workflow, MCP, or AI integration exists yet.
+- No SQL execution, direct target-database apply, reference-data DML generation, arbitrary transactional data compare, full browser UI product, database mutation workflow, Docker Compose, CI workflow, MCP, or AI integration exists yet.
 - PostgreSQL access is read-only in product commands.
 - No command applies SQL to a database.
 
-See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md`, `docs/postgresql-v0.1/40-slice-13-workspace-selection.md`, `docs/postgresql-v0.1/41-slice-13a-schema-compare-ui-workflow.md`, `docs/postgresql-v0.1/42-slice-13b-results-grid-usability.md`, and `docs/postgresql-v0.1/43-slice-14-safe-connection-profiles.md` for command details.
+See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-v0.1/29-slice-2-implementation-notes.md`, `docs/postgresql-v0.1/30-slice-3-implementation-notes.md`, `docs/postgresql-v0.1/31-slice-4-implementation-notes.md`, `docs/postgresql-v0.1/32-slice-5-implementation-notes.md`, `docs/postgresql-v0.1/33-slice-6-implementation-notes.md`, `docs/postgresql-v0.1/34-slice-7-implementation-notes.md`, `docs/postgresql-v0.1/35-slice-8-implementation-notes.md`, `docs/postgresql-v0.1/36-slice-9-cli-json-contracts.md`, `docs/postgresql-v0.1/37-slice-10-docker-automation-notes.md`, `docs/postgresql-v0.1/38-slice-11-service-api-boundary.md`, `docs/postgresql-v0.1/39-slice-12-browser-ui-workflow-shell.md`, `docs/postgresql-v0.1/40-slice-13-workspace-selection.md`, `docs/postgresql-v0.1/41-slice-13a-schema-compare-ui-workflow.md`, `docs/postgresql-v0.1/42-slice-13b-results-grid-usability.md`, `docs/postgresql-v0.1/43-slice-14-safe-connection-profiles.md`, and `docs/postgresql-v0.1/44-slice-15-database-to-repository-workflow.md` for command details.
 
 ## Docker CLI Automation
 
@@ -200,7 +201,11 @@ cargo run -- serve
 http://127.0.0.1:4587/
 ```
 
-The Slice 13B UI is a static schema compare workflow shell over the service API. It uses a left workflow navigation for workspace, source and target, compare options, results, object diff, warnings, release plan, reports, and safety information. The Results grid includes object-type filtering, status badges, a status legend, and source/target context above the table. Inspect populates schema and table dropdowns, while column details stay in Object Diff for selected tables. It has no frontend framework, no Node build pipeline, no write workflows, no SQL execution, and no direct database apply.
+The Slice 15 UI is a static schema compare workflow shell over the service API. It uses a left workflow navigation for workspace, source and target, compare options, results, object diff, warnings, release plan, reports, and safety information. The Results grid includes object-type filtering, status badges, a status legend, and source/target context above the table. Inspect populates schema and table dropdowns, while column details stay in Object Diff for selected tables.
+
+The UI includes Database to Repository preview and an explicit Write Repository Files action. That action requires typed confirmation, a clean working tree, and writes only supported desired-state object files under `database/objects/` in the selected repository. It does not mutate PostgreSQL, execute SQL, write release artifacts, stage Git changes, commit, push, pull, or fetch.
+
+The UI has no frontend framework, no Node build pipeline, no direct database apply, and no generated SQL execution.
 
 The Source & Target step supports session-only URL mode, saved non-secret profile mode, and service environment variable mode. Saved profiles contain only host, port, database, username, SSL mode, and description. Passwords and full URLs remain session-only and are not persisted.
 
@@ -213,6 +218,8 @@ Service and UI requests may include a session-only local repository path:
 ```
 
 The path must exist, be a directory, and be inside a local Git working tree. DbState does not persist workspace paths, maintain a recent-project list, clone repositories, fetch, pull, push, stage, or commit from service endpoints. Docker users must enter a path inside the container, such as `/workspace`.
+
+The Workspace page also includes a Browse button backed by the local Service API. It lists service-visible directories only, never files, and does not use browser filesystem APIs. In Docker, the picker can browse only paths mounted into the container.
 
 ## High-level principles
 
