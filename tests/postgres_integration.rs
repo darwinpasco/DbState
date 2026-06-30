@@ -15,6 +15,8 @@ use postgres::{Client, NoTls};
 const FIXTURE_SQL: &str = include_str!("fixtures/postgresql/slice2-basic.sql");
 const REFERENCE_DATA_FIXTURE_SQL: &str =
     include_str!("fixtures/postgresql/slice8-reference-data.sql");
+const SLICE16_OBJECT_COVERAGE_SQL: &str =
+    include_str!("fixtures/postgresql/slice16-object-coverage.sql");
 
 static POSTGRES_FIXTURE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -57,7 +59,10 @@ fn local_postgres_fixture_inspection_is_read_only_and_redacted() {
 
     let inventory = inspect_postgres(&url).expect("inspect local disposable PostgreSQL fixture");
 
-    assert_eq!(inventory.schemas[0].name, "dbstate_slice2");
+    assert!(inventory
+        .schemas
+        .iter()
+        .any(|schema| schema.name == "dbstate_slice2"));
     assert!(inventory.tables.iter().any(
         |table| table.schema_name == "dbstate_slice2" && table.table_name == "sample_accounts"
     ));
@@ -96,13 +101,73 @@ fn local_postgres_fixture_inspection_is_read_only_and_redacted() {
     let json = report.to_json();
     let text = report.to_text();
     assert!(report.success);
-    assert!(report
+    assert!(!report
         .deferred_object_types
         .contains(&"extensions".to_string()));
     assert!(!json.contains(&url));
     assert!(!text.contains(&url));
     assert!(!json.contains("slice2-sensitive-marker"));
     assert!(!text.contains("slice2-sensitive-marker"));
+}
+
+#[test]
+fn local_postgres_slice16_fixture_inspection_does_not_panic() {
+    let Some(url) = std::env::var("DBSTATE_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping PostgreSQL integration test: DBSTATE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let _fixture_guard = lock_postgres_fixture();
+    assert_safe_test_url(&url);
+
+    let mut client =
+        Client::connect(&url, NoTls).expect("connect to local disposable test database");
+    client
+        .batch_execute(SLICE16_OBJECT_COVERAGE_SQL)
+        .expect("apply test-only Slice 16 fixture SQL");
+
+    let inventory =
+        inspect_postgres(&url).expect("inspect local disposable Slice 16 PostgreSQL fixture");
+
+    assert!(inventory
+        .schemas
+        .iter()
+        .any(|schema| schema.name == "dbstate_slice16"));
+    assert!(inventory
+        .extensions
+        .iter()
+        .any(|extension| extension.extension_name == "pgcrypto"));
+    assert!(inventory.enums.iter().any(|enum_info| {
+        enum_info.schema_name == "dbstate_slice16"
+            && enum_info.enum_name == "account_status"
+            && enum_info.labels == vec!["active".to_string(), "closed".to_string()]
+    }));
+    assert!(inventory.sequences.iter().any(|sequence| {
+        sequence.schema_name == "dbstate_slice16"
+            && sequence.sequence_name == "account_number_seq"
+            && sequence.data_type.as_deref() == Some("bigint")
+    }));
+    assert!(inventory.indexes.iter().any(|index| {
+        index.schema_name == "dbstate_slice16"
+            && index.table_name == "sample_accounts"
+            && index.index_name == "sample_accounts_code_idx"
+    }));
+    assert!(inventory.views.iter().any(|view| {
+        view.schema_name == "dbstate_slice16" && view.view_name == "active_accounts"
+    }));
+
+    let report = inspect_postgres_command(Some(url.clone()), None);
+    let json = report.to_json();
+
+    assert!(report.success, "{:?}", report.errors);
+    assert!(json.contains("\"extensions\""));
+    assert!(json.contains("\"sequences\""));
+    assert!(json.contains("\"indexes\""));
+    assert!(json.contains("\"views\""));
+    assert!(!json.contains(&url));
+    assert!(!json.contains("dbstate_test_only"));
 }
 
 #[test]
@@ -341,7 +406,7 @@ fn local_postgres_fixture_compare_classifies_supported_objects_read_only() {
     assert!(in_sync
         .in_sync
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
-    assert!(in_sync
+    assert!(!in_sync
         .deferred_object_types
         .contains(&"indexes".to_string()));
 
@@ -674,7 +739,7 @@ fn local_postgres_fixture_release_generates_artifacts_without_database_apply() {
     let text = release.to_text();
 
     assert!(sql.contains("CREATE SCHEMA IF NOT EXISTS \"local_only\";"));
-    assert!(sql.contains("does not generate ALTER TABLE statements yet"));
+    assert!(sql.contains("REVIEW REQUIRED: object differs"));
     for forbidden in [
         "DROP TABLE",
         "DROP SCHEMA",

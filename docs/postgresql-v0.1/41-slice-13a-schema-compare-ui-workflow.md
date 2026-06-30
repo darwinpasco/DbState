@@ -11,7 +11,7 @@ The goal is to make the private beta UI feel like a database compare tool while 
 - No generated SQL execution exists.
 - No database write workflows are exposed in this UI shell.
 
-This slice is a corrective UI slice. It does not add connection profiles, backend database capability, object coverage, or release artifact writing from the UI. Slice 15 later adds a tightly gated Database to Repository repository-file write workflow.
+This slice is a corrective UI slice. It does not add connection profiles, backend database capability, object coverage, or release artifact writing from the UI. Slice 15 later adds a tightly gated Database to Repository repository-file write workflow. Slice 16 later expands the object types shown in this workflow to include extensions, enums, sequences, indexes, and views in addition to schemas and tables.
 
 ## Workflow Model
 
@@ -65,7 +65,7 @@ The Compare Options step includes:
 - Include refs input.
 - Exclude refs input.
 - Reference-data scope and table input.
-- Disabled future object-type filters for indexes, views, functions, triggers, and grants.
+- Disabled future object-type filters for functions, triggers, grants, and other deferred object types. Slice 16 enables result filters for indexes and views.
 
 Buttons call only existing safe service endpoints:
 

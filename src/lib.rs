@@ -13,15 +13,10 @@ use serde_yaml::{Mapping, Value};
 
 const DEFAULT_REGISTRY: &str = "version: 1\ntables: []\n";
 const DEFERRED_OBJECT_TYPES: &[&str] = &[
-    "extensions",
-    "enums",
-    "sequences",
     "primaryKeys",
     "foreignKeys",
     "uniqueConstraints",
     "checkConstraints",
-    "indexes",
-    "views",
     "materializedViews",
     "functions",
     "triggers",
@@ -260,10 +255,58 @@ pub struct ColumnInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExtensionInfo {
+    pub extension_name: String,
+    pub schema_name: Option<String>,
+    pub version: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumInfo {
+    pub schema_name: String,
+    pub enum_name: String,
+    pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SequenceInfo {
+    pub schema_name: String,
+    pub sequence_name: String,
+    pub data_type: Option<String>,
+    pub start_value: Option<i64>,
+    pub min_value: Option<i64>,
+    pub max_value: Option<i64>,
+    pub increment_by: Option<i64>,
+    pub cycle: bool,
+    pub cache_size: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IndexInfo {
+    pub schema_name: String,
+    pub table_name: String,
+    pub index_name: String,
+    pub is_unique: bool,
+    pub definition: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ViewInfo {
+    pub schema_name: String,
+    pub view_name: String,
+    pub definition: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectionCounts {
     pub schemas: usize,
     pub tables: usize,
     pub columns: usize,
+    pub extensions: usize,
+    pub enums: usize,
+    pub sequences: usize,
+    pub indexes: usize,
+    pub views: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -275,6 +318,11 @@ pub struct InspectionReport {
     pub schemas: Vec<SchemaInfo>,
     pub tables: Vec<TableInfo>,
     pub columns: Vec<ColumnInfo>,
+    pub extensions: Vec<ExtensionInfo>,
+    pub enums: Vec<EnumInfo>,
+    pub sequences: Vec<SequenceInfo>,
+    pub indexes: Vec<IndexInfo>,
+    pub views: Vec<ViewInfo>,
     pub counts: InspectionCounts,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
@@ -2277,6 +2325,11 @@ const UI_JS: &str = r#"(function () {
     select.options[0].value = "all";
     appendOption(select, "schema", "Schema");
     appendOption(select, "table", "Table");
+    ["extension", "enum", "sequence", "index", "view"].forEach(function (type) {
+      if (rows.some(function (row) { return row.objectType === type; })) {
+        appendOption(select, type, type.charAt(0).toUpperCase() + type.slice(1));
+      }
+    });
     const hasReferenceData = value("workflow-mode") === "data" || label === "Reference-data compare" || rows.some(function (row) {
       return row.objectType === "referenceDataTable" || row.objectType === "referenceDataRow";
     });
@@ -2366,6 +2419,54 @@ const UI_JS: &str = r#"(function () {
         name: fileBase
       };
     }
+    if (normalized.indexOf("database/objects/extensions/") >= 0) {
+      return {
+        objectType: "extension",
+        schema: "",
+        name: fileBase
+      };
+    }
+    if (normalized.indexOf("database/objects/enums/") >= 0) {
+      const dot = fileBase.indexOf(".");
+      if (dot > 0) {
+        return {
+          objectType: "enum",
+          schema: fileBase.slice(0, dot),
+          name: fileBase.slice(dot + 1)
+        };
+      }
+    }
+    if (normalized.indexOf("database/objects/sequences/") >= 0) {
+      const dot = fileBase.indexOf(".");
+      if (dot > 0) {
+        return {
+          objectType: "sequence",
+          schema: fileBase.slice(0, dot),
+          name: fileBase.slice(dot + 1)
+        };
+      }
+    }
+    if (normalized.indexOf("database/objects/indexes/") >= 0) {
+      const parts = fileBase.split(".");
+      if (parts.length >= 3) {
+        return {
+          objectType: "index",
+          schema: parts[0],
+          name: parts.slice(2).join("."),
+          parentName: parts[1]
+        };
+      }
+    }
+    if (normalized.indexOf("database/objects/views/") >= 0) {
+      const dot = fileBase.indexOf(".");
+      if (dot > 0) {
+        return {
+          objectType: "view",
+          schema: fileBase.slice(0, dot),
+          name: fileBase.slice(dot + 1)
+        };
+      }
+    }
     return null;
   }
 
@@ -2387,6 +2488,29 @@ const UI_JS: &str = r#"(function () {
         name: identity.name
       };
     }
+    if (text.indexOf("extension:") === 0) {
+      const name = text.slice("extension:".length);
+      return { objectType: "extension", schema: "", name: name };
+    }
+    if (text.indexOf("enum:") === 0) {
+      const identity = splitIdentity(text);
+      return { objectType: "enum", schema: identity.schema, name: identity.name };
+    }
+    if (text.indexOf("sequence:") === 0) {
+      const identity = splitIdentity(text);
+      return { objectType: "sequence", schema: identity.schema, name: identity.name };
+    }
+    if (text.indexOf("index:") === 0) {
+      const identity = text.slice("index:".length);
+      const parts = identity.split(".");
+      if (parts.length >= 3) {
+        return { objectType: "index", schema: parts[0], name: parts.slice(2).join("."), parentName: parts[1] };
+      }
+    }
+    if (text.indexOf("view:") === 0) {
+      const identity = splitIdentity(text);
+      return { objectType: "view", schema: identity.schema, name: identity.name };
+    }
     return null;
   }
 
@@ -2407,7 +2531,7 @@ const UI_JS: &str = r#"(function () {
     if (text === "reference table") {
       return "referenceDataTable";
     }
-    if (["schema", "table", "column", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
+    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
       return text;
     }
     return text || "unknown";
@@ -2508,6 +2632,86 @@ const UI_JS: &str = r#"(function () {
             source: "PostgreSQL inspect",
             target: "Read-only catalog view",
             raw: table
+          });
+        });
+      }
+      if (Array.isArray(data.extensions)) {
+        data.extensions.forEach(function (extension) {
+          rows.push({
+            objectRef: "extension:" + extension.extensionName,
+            objectType: "extension",
+            schema: extension.schemaName || "",
+            name: extension.extensionName,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: extension
+          });
+        });
+      }
+      if (Array.isArray(data.enums)) {
+        data.enums.forEach(function (item) {
+          rows.push({
+            objectRef: "enum:" + item.schemaName + "." + item.enumName,
+            objectType: "enum",
+            schema: item.schemaName,
+            name: item.enumName,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: item
+          });
+        });
+      }
+      if (Array.isArray(data.sequences)) {
+        data.sequences.forEach(function (item) {
+          rows.push({
+            objectRef: "sequence:" + item.schemaName + "." + item.sequenceName,
+            objectType: "sequence",
+            schema: item.schemaName,
+            name: item.sequenceName,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: item
+          });
+        });
+      }
+      if (Array.isArray(data.indexes)) {
+        data.indexes.forEach(function (item) {
+          rows.push({
+            objectRef: "index:" + item.schemaName + "." + item.tableName + "." + item.indexName,
+            objectType: "index",
+            schema: item.schemaName,
+            name: item.indexName,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: item
+          });
+        });
+      }
+      if (Array.isArray(data.views)) {
+        data.views.forEach(function (item) {
+          rows.push({
+            objectRef: "view:" + item.schemaName + "." + item.viewName,
+            objectType: "view",
+            schema: item.schemaName,
+            name: item.viewName,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: item
           });
         });
       }
@@ -2900,13 +3104,6 @@ const UI_JS: &str = r#"(function () {
   }
 
   async function loadSelectedObjectDdl(row, direction) {
-    if (row.objectType !== "schema" && row.objectType !== "table") {
-      const unavailable = "DDL not available yet for this object.";
-      byId("source-detail").textContent = unavailable;
-      byId("target-detail").textContent = unavailable;
-      updateDdlComparisonStatus(null, null);
-      return;
-    }
     let detail = {};
     try {
       detail = await requestJson(approvedEndpoints.objectDdl, objectDdlRequest(row));
@@ -4391,7 +4588,10 @@ fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
     let object_name = request_string(&request, "objectName")
         .or_else(|| request_string(&request, "name"))
         .unwrap_or_default();
-    if object_type != "schema" && object_type != "table" {
+    if !matches!(
+        object_type.as_str(),
+        "schema" | "table" | "extension" | "enum" | "sequence" | "index" | "view"
+    ) {
         return service_json_response(
             200,
             &ObjectDdlResponse {
@@ -4402,9 +4602,7 @@ fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
                 relative_path: None,
                 repository_ddl: None,
                 database_ddl: None,
-                warnings: &[
-                    "DDL is available only for supported schema and table objects.".to_string(),
-                ],
+                warnings: &["DDL is available only for supported Slice 16 objects.".to_string()],
                 errors: &[],
             }
             .to_json(),
@@ -4486,6 +4684,18 @@ fn default_object_relative_path(
             schema
         }),
         "table" => table_file_path(schema, object_name),
+        "extension" => extension_file_path(object_name),
+        "enum" => enum_file_path(schema, object_name),
+        "sequence" => sequence_file_path(schema, object_name),
+        "index" => {
+            let parts: Vec<&str> = object_name.split('.').collect();
+            if parts.len() == 2 {
+                index_file_path(schema, parts[0], parts[1])
+            } else {
+                Err("Index DDL detail requires objectName as table.index.".to_string())
+            }
+        }
+        "view" => view_file_path(schema, object_name),
         _ => Err("Unsupported object type for DDL detail.".to_string()),
     }
 }
@@ -4521,10 +4731,15 @@ fn validate_repository_object_relative_path(relative_path: &str) -> Result<(), S
     }
     if relative_path.starts_with("database/objects/schemas/")
         || relative_path.starts_with("database/objects/tables/")
+        || relative_path.starts_with("database/objects/extensions/")
+        || relative_path.starts_with("database/objects/enums/")
+        || relative_path.starts_with("database/objects/sequences/")
+        || relative_path.starts_with("database/objects/indexes/")
+        || relative_path.starts_with("database/objects/views/")
     {
         Ok(())
     } else {
-        Err("DDL detail can read only schema and table files under database/objects/.".to_string())
+        Err("DDL detail can read only supported SQL files under database/objects/.".to_string())
     }
 }
 
@@ -4571,6 +4786,41 @@ fn database_object_ddl(
                 .collect();
             Ok(Some(render_table_sql(schema, object_name, &columns)))
         }
+        "extension" => Ok(inventory
+            .extensions
+            .iter()
+            .find(|candidate| candidate.extension_name == object_name)
+            .map(render_extension_sql)),
+        "enum" => Ok(inventory
+            .enums
+            .iter()
+            .find(|candidate| candidate.schema_name == schema && candidate.enum_name == object_name)
+            .map(render_enum_sql)),
+        "sequence" => Ok(inventory
+            .sequences
+            .iter()
+            .find(|candidate| {
+                candidate.schema_name == schema && candidate.sequence_name == object_name
+            })
+            .map(render_sequence_sql)),
+        "index" => {
+            let index_name = object_name
+                .rsplit_once('.')
+                .map(|(_, index)| index)
+                .unwrap_or(object_name);
+            Ok(inventory
+                .indexes
+                .iter()
+                .find(|candidate| {
+                    candidate.schema_name == schema && candidate.index_name == index_name
+                })
+                .map(render_index_sql))
+        }
+        "view" => Ok(inventory
+            .views
+            .iter()
+            .find(|candidate| candidate.schema_name == schema && candidate.view_name == object_name)
+            .map(render_view_sql)),
         _ => Ok(None),
     }
 }
@@ -5603,6 +5853,11 @@ fn inspect_postgres_scoped_command(
             report.schemas = inventory.schemas;
             report.tables = inventory.tables;
             report.columns = inventory.columns;
+            report.extensions = inventory.extensions;
+            report.enums = inventory.enums;
+            report.sequences = inventory.sequences;
+            report.indexes = inventory.indexes;
+            report.views = inventory.views;
             if let Err(error) = apply_inspection_scope(&mut report, schema, table) {
                 report.success = false;
                 report.errors.push(error);
@@ -5612,6 +5867,11 @@ fn inspect_postgres_scoped_command(
                 schemas: report.schemas.len(),
                 tables: report.tables.len(),
                 columns: report.columns.len(),
+                extensions: report.extensions.len(),
+                enums: report.enums.len(),
+                sequences: report.sequences.len(),
+                indexes: report.indexes.len(),
+                views: report.views.len(),
             };
             report.success = true;
         }
@@ -5640,6 +5900,10 @@ fn apply_inspection_scope(
         report.schemas.retain(|item| item.name == schema);
         report.tables.retain(|item| item.schema_name == schema);
         report.columns.retain(|item| item.schema_name == schema);
+        report.enums.retain(|item| item.schema_name == schema);
+        report.sequences.retain(|item| item.schema_name == schema);
+        report.indexes.retain(|item| item.schema_name == schema);
+        report.views.retain(|item| item.schema_name == schema);
         report.inspection_scope = vec![format!("schema:{schema}")];
         return Ok(());
     }
@@ -5671,6 +5935,12 @@ fn apply_inspection_scope(
         report
             .columns
             .retain(|item| item.schema_name == schema && item.table_name == table_name);
+        report.enums.clear();
+        report.sequences.clear();
+        report.views.clear();
+        report
+            .indexes
+            .retain(|item| item.schema_name == schema && item.table_name == table_name);
         report.inspection_scope = vec![format!("table:{schema}.{table_name}")];
     }
 
@@ -5697,6 +5967,11 @@ pub struct PostgresInventory {
     pub schemas: Vec<SchemaInfo>,
     pub tables: Vec<TableInfo>,
     pub columns: Vec<ColumnInfo>,
+    pub extensions: Vec<ExtensionInfo>,
+    pub enums: Vec<EnumInfo>,
+    pub sequences: Vec<SequenceInfo>,
+    pub indexes: Vec<IndexInfo>,
+    pub views: Vec<ViewInfo>,
 }
 
 pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, String> {
@@ -5766,6 +6041,95 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         )
         .map_err(|_| "PostgreSQL schema inspection failed while reading columns.".to_string())?;
 
+    let extension_rows = client
+        .query(
+            "SELECT e.extname::text, n.nspname::text, e.extversion::text
+             FROM pg_catalog.pg_extension e
+             LEFT JOIN pg_catalog.pg_namespace n ON n.oid = e.extnamespace
+             WHERE e.extname <> 'plpgsql'
+             ORDER BY e.extname",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading extensions.".to_string())?;
+
+    let enum_rows = client
+        .query(
+            "SELECT n.nspname::text, t.typname::text, e.enumlabel::text
+             FROM pg_catalog.pg_type t
+             JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+             JOIN pg_catalog.pg_enum e ON e.enumtypid = t.oid
+             WHERE n.nspname <> 'pg_catalog'
+               AND n.nspname <> 'information_schema'
+               AND n.nspname NOT LIKE 'pg_toast%'
+               AND n.nspname NOT LIKE 'pg_%'
+             ORDER BY n.nspname, t.typname, e.enumsortorder",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading enums.".to_string())?;
+
+    let sequence_rows = client
+        .query(
+            "SELECT schemaname::text,
+                    sequencename::text,
+                    data_type::text,
+                    start_value,
+                    min_value,
+                    max_value,
+                    increment_by,
+                    cycle,
+                    cache_size
+             FROM pg_catalog.pg_sequences
+             WHERE schemaname <> 'pg_catalog'
+               AND schemaname <> 'information_schema'
+               AND schemaname NOT LIKE 'pg_toast%'
+               AND schemaname NOT LIKE 'pg_%'
+             ORDER BY schemaname, sequencename",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading sequences.".to_string())?;
+
+    let index_rows = client
+        .query(
+            "SELECT ns.nspname::text,
+                    tbl.relname::text,
+                    idx.relname::text,
+                    i.indisunique,
+                    pg_catalog.pg_get_indexdef(idx.oid)
+             FROM pg_catalog.pg_index i
+             JOIN pg_catalog.pg_class idx ON idx.oid = i.indexrelid
+             JOIN pg_catalog.pg_class tbl ON tbl.oid = i.indrelid
+             JOIN pg_catalog.pg_namespace ns ON ns.oid = tbl.relnamespace
+             WHERE tbl.relkind IN ('r', 'p')
+               AND ns.nspname <> 'pg_catalog'
+               AND ns.nspname <> 'information_schema'
+               AND ns.nspname NOT LIKE 'pg_toast%'
+               AND ns.nspname NOT LIKE 'pg_%'
+               AND NOT EXISTS (
+                   SELECT 1 FROM pg_catalog.pg_constraint c
+                   WHERE c.conindid = idx.oid
+               )
+             ORDER BY ns.nspname, tbl.relname, idx.relname",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading indexes.".to_string())?;
+
+    let view_rows = client
+        .query(
+            "SELECT n.nspname::text,
+                    c.relname::text,
+                    pg_catalog.pg_get_viewdef(c.oid, true)::text
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             WHERE c.relkind = 'v'
+               AND n.nspname <> 'pg_catalog'
+               AND n.nspname <> 'information_schema'
+               AND n.nspname NOT LIKE 'pg_toast%'
+               AND n.nspname NOT LIKE 'pg_%'
+             ORDER BY n.nspname, c.relname",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading views.".to_string())?;
+
     let schemas = schema_rows
         .into_iter()
         .map(|row| SchemaInfo { name: row.get(0) })
@@ -5794,10 +6158,114 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         })
         .collect();
 
+    let mut extensions = Vec::new();
+    for row in extension_rows {
+        extensions.push(ExtensionInfo {
+            extension_name: try_get_catalog_string(&row, 0, "extension name")?,
+            schema_name: try_get_catalog_optional_string(&row, 1, "extension schema")?,
+            version: try_get_catalog_optional_string(&row, 2, "extension version")?,
+        });
+    }
+
+    let mut enum_map: BTreeMap<(String, String), Vec<String>> = BTreeMap::new();
+    for row in enum_rows {
+        enum_map
+            .entry((
+                try_get_catalog_string(&row, 0, "enum schema")?,
+                try_get_catalog_string(&row, 1, "enum name")?,
+            ))
+            .or_default()
+            .push(try_get_catalog_string(&row, 2, "enum label")?);
+    }
+    let enums = enum_map
+        .into_iter()
+        .map(|((schema_name, enum_name), labels)| EnumInfo {
+            schema_name,
+            enum_name,
+            labels,
+        })
+        .collect();
+
+    let mut sequences = Vec::new();
+    for row in sequence_rows {
+        sequences.push(SequenceInfo {
+            schema_name: try_get_catalog_string(&row, 0, "sequence schema")?,
+            sequence_name: try_get_catalog_string(&row, 1, "sequence name")?,
+            data_type: try_get_catalog_optional_string(&row, 2, "sequence data type")?,
+            start_value: try_get_catalog_optional_i64(&row, 3, "sequence start value")?,
+            min_value: try_get_catalog_optional_i64(&row, 4, "sequence min value")?,
+            max_value: try_get_catalog_optional_i64(&row, 5, "sequence max value")?,
+            increment_by: try_get_catalog_optional_i64(&row, 6, "sequence increment")?,
+            cycle: try_get_catalog_bool(&row, 7, "sequence cycle")?,
+            cache_size: try_get_catalog_optional_i64(&row, 8, "sequence cache size")?,
+        });
+    }
+
+    let mut indexes = Vec::new();
+    for row in index_rows {
+        indexes.push(IndexInfo {
+            schema_name: try_get_catalog_string(&row, 0, "index schema")?,
+            table_name: try_get_catalog_string(&row, 1, "index table")?,
+            index_name: try_get_catalog_string(&row, 2, "index name")?,
+            is_unique: try_get_catalog_bool(&row, 3, "index uniqueness")?,
+            definition: try_get_catalog_string(&row, 4, "index definition")?,
+        });
+    }
+
+    let mut views = Vec::new();
+    for row in view_rows {
+        views.push(ViewInfo {
+            schema_name: try_get_catalog_string(&row, 0, "view schema")?,
+            view_name: try_get_catalog_string(&row, 1, "view name")?,
+            definition: try_get_catalog_string(&row, 2, "view definition")?,
+        });
+    }
+
     Ok(PostgresInventory {
         schemas,
         tables,
         columns,
+        extensions,
+        enums,
+        sequences,
+        indexes,
+        views,
+    })
+}
+
+fn try_get_catalog_string(
+    row: &postgres::Row,
+    index: usize,
+    field: &str,
+) -> Result<String, String> {
+    row.try_get(index).map_err(|error| {
+        format!("PostgreSQL schema inspection failed while decoding {field}: {error}")
+    })
+}
+
+fn try_get_catalog_optional_string(
+    row: &postgres::Row,
+    index: usize,
+    field: &str,
+) -> Result<Option<String>, String> {
+    row.try_get(index).map_err(|error| {
+        format!("PostgreSQL schema inspection failed while decoding {field}: {error}")
+    })
+}
+
+fn try_get_catalog_optional_i64(
+    row: &postgres::Row,
+    index: usize,
+    field: &str,
+) -> Result<Option<i64>, String> {
+    row.try_get(index).map_err(|error| {
+        format!("PostgreSQL schema inspection failed while decoding {field}: {error}")
+    })
+}
+
+fn try_get_catalog_bool(row: &postgres::Row, index: usize, field: &str) -> Result<bool, String> {
+    row.try_get(index).map_err(|error| {
+        format!("PostgreSQL schema inspection failed while decoding {field}: {error}")
     })
 }
 
@@ -6024,21 +6492,9 @@ fn plan_export(
     inventory: &PostgresInventory,
     selection: &ExportSelection,
 ) -> Result<ExportPlan, String> {
-    let mut schema_names = Vec::new();
-    let mut table_names = Vec::new();
     let mut warnings = Vec::new();
-
     match selection {
-        ExportSelection::All => {
-            schema_names.extend(inventory.schemas.iter().map(|schema| schema.name.clone()));
-            table_names.extend(
-                inventory
-                    .tables
-                    .iter()
-                    .filter(|table| table.table_type == "BASE TABLE")
-                    .map(|table| (table.schema_name.clone(), table.table_name.clone())),
-            );
-        }
+        ExportSelection::All => {}
         ExportSelection::Schema(schema) => {
             if !inventory
                 .schemas
@@ -6049,16 +6505,6 @@ fn plan_export(
                     "Selected schema '{schema}' was not found in the PostgreSQL inventory."
                 ));
             }
-            schema_names.push(schema.clone());
-            table_names.extend(
-                inventory
-                    .tables
-                    .iter()
-                    .filter(|table| {
-                        table.schema_name == *schema && table.table_type == "BASE TABLE"
-                    })
-                    .map(|table| (table.schema_name.clone(), table.table_name.clone())),
-            );
         }
         ExportSelection::Table { schema, table } => {
             let Some(selected_table) = inventory.tables.iter().find(|candidate| {
@@ -6073,7 +6519,6 @@ fn plan_export(
                     "Selected table '{schema}.{table}' is not an ordinary/base table and is deferred for Slice 3."
                 ));
             }
-            table_names.push((schema.clone(), table.clone()));
             let schema_path = schema_file_path(schema)?;
             if !root.join(&schema_path).is_file() {
                 warnings.push(format!(
@@ -6083,43 +6528,19 @@ fn plan_export(
         }
     }
 
-    schema_names.sort();
-    schema_names.dedup();
-    table_names.sort();
-    table_names.dedup();
-
     let mut planned_files = Vec::new();
     let mut skipped_files = Vec::new();
-
-    for schema in schema_names {
-        let relative_path = schema_file_path(&schema)?;
-        ensure_database_object_path(&relative_path)?;
-        if root.join(&relative_path).exists() {
-            skipped_files.push(relative_path);
-        } else {
-            planned_files.push(PlannedFile {
-                relative_path,
-                content: render_schema_sql(&schema),
-            });
-        }
-    }
-
-    for (schema, table) in table_names {
-        let relative_path = table_file_path(&schema, &table)?;
+    let database_objects = render_database_objects_for_selection(root, inventory, selection)?;
+    for object in database_objects.values() {
+        let relative_path = object.relative_path.clone();
         ensure_database_object_path(&relative_path)?;
         if root.join(&relative_path).exists() {
             skipped_files.push(relative_path);
             continue;
         }
-        let columns: Vec<ColumnInfo> = inventory
-            .columns
-            .iter()
-            .filter(|column| column.schema_name == schema && column.table_name == table)
-            .cloned()
-            .collect();
         planned_files.push(PlannedFile {
             relative_path,
-            content: render_table_sql(&schema, &table, &columns),
+            content: object.content.clone(),
         });
     }
 
@@ -6142,6 +6563,46 @@ fn table_file_path(schema: &str, table: &str) -> Result<String, String> {
         "database/objects/tables/{}.{}.sql",
         safe_file_component(schema)?,
         safe_file_component(table)?
+    ))
+}
+
+fn extension_file_path(extension: &str) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/extensions/{}.sql",
+        safe_file_component(extension)?
+    ))
+}
+
+fn enum_file_path(schema: &str, enum_name: &str) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/enums/{}.{}.sql",
+        safe_file_component(schema)?,
+        safe_file_component(enum_name)?
+    ))
+}
+
+fn sequence_file_path(schema: &str, sequence: &str) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/sequences/{}.{}.sql",
+        safe_file_component(schema)?,
+        safe_file_component(sequence)?
+    ))
+}
+
+fn index_file_path(schema: &str, table: &str, index: &str) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/indexes/{}.{}.{}.sql",
+        safe_file_component(schema)?,
+        safe_file_component(table)?,
+        safe_file_component(index)?
+    ))
+}
+
+fn view_file_path(schema: &str, view: &str) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/views/{}.{}.sql",
+        safe_file_component(schema)?,
+        safe_file_component(view)?
     ))
 }
 
@@ -6223,6 +6684,141 @@ pub fn render_table_sql(schema: &str, table: &str, columns: &[ColumnInfo]) -> St
         writeln!(sql, "{comma}").ok();
     }
     writeln!(sql, ");").ok();
+    sql
+}
+
+pub fn render_extension_sql(extension: &ExtensionInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: extension").ok();
+    writeln!(sql, "-- Object name: {}", extension.extension_name).ok();
+    if let Some(schema) = &extension.schema_name {
+        writeln!(sql, "-- Extension schema: {schema}").ok();
+    }
+    if let Some(version) = &extension.version {
+        writeln!(sql, "-- Extension version observed: {version}").ok();
+    }
+    writeln!(sql).ok();
+    writeln!(
+        sql,
+        "CREATE EXTENSION IF NOT EXISTS {};",
+        quote_postgres_identifier(&extension.extension_name)
+    )
+    .ok();
+    sql
+}
+
+pub fn render_enum_sql(enum_info: &EnumInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: enum").ok();
+    writeln!(
+        sql,
+        "-- Object name: {}.{}",
+        enum_info.schema_name, enum_info.enum_name
+    )
+    .ok();
+    writeln!(sql).ok();
+    writeln!(
+        sql,
+        "CREATE TYPE {}.{} AS ENUM (",
+        quote_postgres_identifier(&enum_info.schema_name),
+        quote_postgres_identifier(&enum_info.enum_name)
+    )
+    .ok();
+    for (index, label) in enum_info.labels.iter().enumerate() {
+        let comma = if index + 1 == enum_info.labels.len() {
+            ""
+        } else {
+            ","
+        };
+        writeln!(sql, "    '{}'{comma}", label.replace('\'', "''")).ok();
+    }
+    writeln!(sql, ");").ok();
+    sql
+}
+
+pub fn render_sequence_sql(sequence: &SequenceInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: sequence").ok();
+    writeln!(
+        sql,
+        "-- Object name: {}.{}",
+        sequence.schema_name, sequence.sequence_name
+    )
+    .ok();
+    writeln!(sql, "-- Owned-by relationship not captured in Slice 16.").ok();
+    writeln!(sql).ok();
+    writeln!(
+        sql,
+        "CREATE SEQUENCE {}.{}",
+        quote_postgres_identifier(&sequence.schema_name),
+        quote_postgres_identifier(&sequence.sequence_name)
+    )
+    .ok();
+    if let Some(data_type) = &sequence.data_type {
+        writeln!(sql, "    AS {data_type}").ok();
+    }
+    if let Some(value) = sequence.start_value {
+        writeln!(sql, "    START WITH {value}").ok();
+    }
+    if let Some(value) = sequence.increment_by {
+        writeln!(sql, "    INCREMENT BY {value}").ok();
+    }
+    if let Some(value) = sequence.min_value {
+        writeln!(sql, "    MINVALUE {value}").ok();
+    }
+    if let Some(value) = sequence.max_value {
+        writeln!(sql, "    MAXVALUE {value}").ok();
+    }
+    if let Some(value) = sequence.cache_size {
+        writeln!(sql, "    CACHE {value}").ok();
+    }
+    if sequence.cycle {
+        writeln!(sql, "    CYCLE").ok();
+    } else {
+        writeln!(sql, "    NO CYCLE").ok();
+    }
+    sql.push_str(";\n");
+    sql
+}
+
+pub fn render_index_sql(index: &IndexInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: index").ok();
+    writeln!(
+        sql,
+        "-- Object name: {}.{}.{}",
+        index.schema_name, index.table_name, index.index_name
+    )
+    .ok();
+    writeln!(sql).ok();
+    let definition = index.definition.trim().trim_end_matches(';');
+    writeln!(sql, "{definition};").ok();
+    sql
+}
+
+pub fn render_view_sql(view: &ViewInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: view").ok();
+    writeln!(
+        sql,
+        "-- Object name: {}.{}",
+        view.schema_name, view.view_name
+    )
+    .ok();
+    writeln!(sql).ok();
+    writeln!(
+        sql,
+        "CREATE VIEW {}.{} AS",
+        quote_postgres_identifier(&view.schema_name),
+        quote_postgres_identifier(&view.view_name)
+    )
+    .ok();
+    writeln!(sql, "{};", view.definition.trim().trim_end_matches(';')).ok();
     sql
 }
 
@@ -6384,22 +6980,11 @@ fn plan_sync(
     inventory: &PostgresInventory,
     selection: &ExportSelection,
 ) -> Result<SyncPlan, String> {
-    let mut schema_names = Vec::new();
-    let mut table_names = Vec::new();
     let mut warnings = Vec::new();
     let mut skipped_files = Vec::new();
 
     match selection {
-        ExportSelection::All => {
-            schema_names.extend(inventory.schemas.iter().map(|schema| schema.name.clone()));
-            for table in &inventory.tables {
-                if table.table_type == "BASE TABLE" {
-                    table_names.push((table.schema_name.clone(), table.table_name.clone()));
-                } else {
-                    skipped_files.push(table_file_path(&table.schema_name, &table.table_name)?);
-                }
-            }
-        }
+        ExportSelection::All => {}
         ExportSelection::Schema(schema) => {
             if !inventory
                 .schemas
@@ -6410,15 +6995,12 @@ fn plan_sync(
                     "Selected schema '{schema}' was not found in the PostgreSQL inventory."
                 ));
             }
-            schema_names.push(schema.clone());
             for table in inventory
                 .tables
                 .iter()
                 .filter(|table| table.schema_name == *schema)
             {
-                if table.table_type == "BASE TABLE" {
-                    table_names.push((table.schema_name.clone(), table.table_name.clone()));
-                } else {
+                if table.table_type != "BASE TABLE" {
                     skipped_files.push(table_file_path(&table.schema_name, &table.table_name)?);
                 }
             }
@@ -6436,7 +7018,6 @@ fn plan_sync(
                     "Selected table '{schema}.{table}' is not an ordinary/base table and is deferred for Slice 4."
                 ));
             }
-            table_names.push((schema.clone(), table.clone()));
             let schema_path = schema_file_path(schema)?;
             if !root.join(&schema_path).is_file() {
                 warnings.push(format!(
@@ -6446,10 +7027,6 @@ fn plan_sync(
         }
     }
 
-    schema_names.sort();
-    schema_names.dedup();
-    table_names.sort();
-    table_names.dedup();
     skipped_files.sort();
     skipped_files.dedup();
 
@@ -6464,27 +7041,11 @@ fn plan_sync(
         writes: Vec::new(),
     };
 
-    for schema in schema_names {
-        let relative_path = schema_file_path(&schema)?;
+    let database_objects = render_database_objects_for_selection(root, inventory, selection)?;
+    for object in database_objects.values() {
+        let relative_path = object.relative_path.clone();
         ensure_database_object_path(&relative_path)?;
-        classify_sync_file(root, &relative_path, render_schema_sql(&schema), &mut plan)?;
-    }
-
-    for (schema, table) in table_names {
-        let relative_path = table_file_path(&schema, &table)?;
-        ensure_database_object_path(&relative_path)?;
-        let columns: Vec<ColumnInfo> = inventory
-            .columns
-            .iter()
-            .filter(|column| column.schema_name == schema && column.table_name == table)
-            .cloned()
-            .collect();
-        classify_sync_file(
-            root,
-            &relative_path,
-            render_table_sql(&schema, &table, &columns),
-            &mut plan,
-        )?;
+        classify_sync_file(root, &relative_path, object.content.clone(), &mut plan)?;
     }
 
     Ok(plan)
@@ -7091,7 +7652,7 @@ fn render_release_sql(
                 writeln!(sql, "-- TODO: Object differs from desired state.").ok();
                 writeln!(
                     sql,
-                    "-- DbState v0.1 Slice 7 does not generate ALTER TABLE statements yet."
+                    "-- REVIEW REQUIRED: object differs; automatic ALTER is not generated in Slice 16."
                 )
                 .ok();
                 writeln!(sql, "-- Object: {}", item.object_ref).ok();
@@ -7131,6 +7692,15 @@ fn render_create_later_sql(root: &Path, item: &PlanItem) -> Result<String, Strin
             let content = fs::read_to_string(root.join(&item.relative_path))
                 .map_err(|error| format!("Could not read {}: {error}", item.relative_path))?;
             Ok(content.replacen("CREATE TABLE ", "CREATE TABLE IF NOT EXISTS ", 1))
+        }
+        ObjectRef::Extension(_)
+        | ObjectRef::Enum { .. }
+        | ObjectRef::Sequence { .. }
+        | ObjectRef::Index { .. }
+        | ObjectRef::View { .. } => {
+            ensure_database_object_path(&item.relative_path)?;
+            fs::read_to_string(root.join(&item.relative_path))
+                .map_err(|error| format!("Could not read {}: {error}", item.relative_path))
         }
     }
 }
@@ -7213,7 +7783,7 @@ fn render_release_summary(report: &ReleaseReport, artifacts: &ReleaseArtifactPat
     .ok();
     writeln!(
         summary,
-        "- Constraints, indexes, views, functions, triggers, grants, reference-data rows, and destructive SQL are deferred."
+        "- Constraints, functions, triggers, grants, reference-data rows, destructive SQL, and unsupported object changes are deferred."
     )
     .ok();
     summary
@@ -8034,14 +8604,35 @@ fn optional_bool(mapping: &Mapping, key: &str, context: &str) -> Result<Option<b
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 enum ObjectRef {
     Schema(String),
-    Table { schema: String, table: String },
+    Table {
+        schema: String,
+        table: String,
+    },
+    Extension(String),
+    Enum {
+        schema: String,
+        enum_name: String,
+    },
+    Sequence {
+        schema: String,
+        sequence: String,
+    },
+    Index {
+        schema: String,
+        table: String,
+        index: String,
+    },
+    View {
+        schema: String,
+        view: String,
+    },
 }
 
 impl ObjectRef {
     fn parse(value: &str) -> Result<Self, String> {
         let Some((object_type, identity)) = value.split_once(':') else {
             return Err(format!(
-                "Invalid object reference '{value}'. Use schema:<schema> or table:<schema>.<table>."
+                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, or view:<schema>.<name>."
             ));
         };
         match object_type {
@@ -8070,8 +8661,43 @@ impl ObjectRef {
                     table: table.to_string(),
                 })
             }
+            "extension" => {
+                if identity.trim().is_empty() {
+                    return Err("Extension object reference cannot be empty.".to_string());
+                }
+                safe_file_component(identity)?;
+                Ok(Self::Extension(identity.to_string()))
+            }
+            "enum" => {
+                let (schema, enum_name) = parse_two_part_object_ref(value, identity, "enum")?;
+                Ok(Self::Enum { schema, enum_name })
+            }
+            "sequence" => {
+                let (schema, sequence) = parse_two_part_object_ref(value, identity, "sequence")?;
+                Ok(Self::Sequence { schema, sequence })
+            }
+            "index" => {
+                let parts: Vec<&str> = identity.split('.').collect();
+                if parts.len() != 3 || parts.iter().any(|part| part.trim().is_empty()) {
+                    return Err(format!(
+                        "Invalid index object reference '{value}'. Use index:<schema>.<table>.<index>."
+                    ));
+                }
+                safe_file_component(parts[0])?;
+                safe_file_component(parts[1])?;
+                safe_file_component(parts[2])?;
+                Ok(Self::Index {
+                    schema: parts[0].to_string(),
+                    table: parts[1].to_string(),
+                    index: parts[2].to_string(),
+                })
+            }
+            "view" => {
+                let (schema, view) = parse_two_part_object_ref(value, identity, "view")?;
+                Ok(Self::View { schema, view })
+            }
             _ => Err(format!(
-                "Invalid object reference '{value}'. Use schema:<schema> or table:<schema>.<table>."
+                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, or view:<schema>.<name>."
             )),
         }
     }
@@ -8080,6 +8706,15 @@ impl ObjectRef {
         match self {
             Self::Schema(schema) => format!("schema:{schema}"),
             Self::Table { schema, table } => format!("table:{schema}.{table}"),
+            Self::Extension(extension) => format!("extension:{extension}"),
+            Self::Enum { schema, enum_name } => format!("enum:{schema}.{enum_name}"),
+            Self::Sequence { schema, sequence } => format!("sequence:{schema}.{sequence}"),
+            Self::Index {
+                schema,
+                table,
+                index,
+            } => format!("index:{schema}.{table}.{index}"),
+            Self::View { schema, view } => format!("view:{schema}.{view}"),
         }
     }
 
@@ -8087,15 +8722,44 @@ impl ObjectRef {
         match self {
             Self::Schema(_) => "schema",
             Self::Table { .. } => "table",
+            Self::Extension(_) => "extension",
+            Self::Enum { .. } => "enum",
+            Self::Sequence { .. } => "sequence",
+            Self::Index { .. } => "index",
+            Self::View { .. } => "view",
         }
     }
 
     fn required_schema_ref(&self) -> Option<Self> {
         match self {
-            Self::Schema(_) => None,
+            Self::Schema(_) | Self::Extension(_) => None,
             Self::Table { schema, .. } => Some(Self::Schema(schema.clone())),
+            Self::Enum { schema, .. }
+            | Self::Sequence { schema, .. }
+            | Self::View { schema, .. } => Some(Self::Schema(schema.clone())),
+            Self::Index { schema, .. } => Some(Self::Schema(schema.clone())),
         }
     }
+}
+
+fn parse_two_part_object_ref(
+    value: &str,
+    identity: &str,
+    object_type: &str,
+) -> Result<(String, String), String> {
+    let Some((schema, name)) = identity.split_once('.') else {
+        return Err(format!(
+            "Invalid {object_type} object reference '{value}'. Use {object_type}:<schema>.<name>."
+        ));
+    };
+    if schema.trim().is_empty() || name.trim().is_empty() {
+        return Err(format!(
+            "Invalid {object_type} object reference '{value}'. Use {object_type}:<schema>.<name>."
+        ));
+    }
+    safe_file_component(schema)?;
+    safe_file_component(name)?;
+    Ok((schema.to_string(), name.to_string()))
 }
 
 #[derive(Debug, Clone)]
@@ -8270,7 +8934,12 @@ pub fn plan_postgres_with_inventory(
         if let Some(required_schema) = object_ref.required_schema_ref() {
             let required_schema_path = match &required_schema {
                 ObjectRef::Schema(schema) => schema_file_path(schema).unwrap_or_default(),
-                ObjectRef::Table { .. } => String::new(),
+                ObjectRef::Table { .. }
+                | ObjectRef::Extension(_)
+                | ObjectRef::Enum { .. }
+                | ObjectRef::Sequence { .. }
+                | ObjectRef::Index { .. }
+                | ObjectRef::View { .. } => String::new(),
             };
             if !required_schema_path.is_empty() && !root.join(&required_schema_path).is_file() {
                 let warning = DependencyWarning {
@@ -8387,6 +9056,50 @@ fn object_ref_from_relative_path(relative_path: &str) -> Result<ObjectRef, Strin
         };
         return Ok(ObjectRef::Table { schema, table });
     }
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/extensions/") {
+        let Some(extension) = schema_name_from_file(file_name) else {
+            return Err(format!(
+                "Invalid extension desired-state file path: {relative_path}"
+            ));
+        };
+        return Ok(ObjectRef::Extension(extension));
+    }
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/enums/") {
+        let Some((schema, enum_name)) = table_name_from_file(file_name) else {
+            return Err(format!(
+                "Invalid enum desired-state file path: {relative_path}"
+            ));
+        };
+        return Ok(ObjectRef::Enum { schema, enum_name });
+    }
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/sequences/") {
+        let Some((schema, sequence)) = table_name_from_file(file_name) else {
+            return Err(format!(
+                "Invalid sequence desired-state file path: {relative_path}"
+            ));
+        };
+        return Ok(ObjectRef::Sequence { schema, sequence });
+    }
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/indexes/") {
+        let Some((schema, table, index)) = three_part_name_from_file(file_name) else {
+            return Err(format!(
+                "Invalid index desired-state file path: {relative_path}"
+            ));
+        };
+        return Ok(ObjectRef::Index {
+            schema,
+            table,
+            index,
+        });
+    }
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/views/") {
+        let Some((schema, view)) = table_name_from_file(file_name) else {
+            return Err(format!(
+                "Invalid view desired-state file path: {relative_path}"
+            ));
+        };
+        return Ok(ObjectRef::View { schema, view });
+    }
     Err(format!(
         "Unsupported desired-state file path: {relative_path}"
     ))
@@ -8396,6 +9109,11 @@ fn object_ref_from_relative_path(relative_path: &str) -> Result<ObjectRef, Strin
 enum RepositoryObjectType {
     Schema,
     Table,
+    Extension,
+    Enum,
+    Sequence,
+    Index,
+    View,
 }
 
 #[derive(Debug, Clone)]
@@ -8403,6 +9121,8 @@ struct DesiredStateObject {
     object_type: RepositoryObjectType,
     schema_name: String,
     table_name: Option<String>,
+    object_name: String,
+    parent_name: Option<String>,
     relative_path: String,
     content: String,
 }
@@ -8425,6 +9145,11 @@ fn discover_repository_objects(root: &Path) -> Result<RepositoryImport, String> 
 
     discover_schema_files(root, &mut import)?;
     discover_table_files(root, &mut import)?;
+    discover_extension_files(root, &mut import)?;
+    discover_enum_files(root, &mut import)?;
+    discover_sequence_files(root, &mut import)?;
+    discover_index_files(root, &mut import)?;
+    discover_view_files(root, &mut import)?;
     import.skipped.sort();
     import.skipped.dedup();
     Ok(import)
@@ -8456,8 +9181,10 @@ fn discover_schema_files(root: &Path, import: &mut RepositoryImport) -> Result<(
             schema_key(&schema),
             DesiredStateObject {
                 object_type: RepositoryObjectType::Schema,
-                schema_name: schema,
+                schema_name: schema.clone(),
                 table_name: None,
+                object_name: schema,
+                parent_name: None,
                 relative_path,
                 content,
             },
@@ -8493,7 +9220,176 @@ fn discover_table_files(root: &Path, import: &mut RepositoryImport) -> Result<()
             DesiredStateObject {
                 object_type: RepositoryObjectType::Table,
                 schema_name: schema,
-                table_name: Some(table),
+                table_name: Some(table.clone()),
+                object_name: table,
+                parent_name: None,
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn discover_extension_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    discover_one_part_object_files(
+        root,
+        import,
+        "database/objects/extensions",
+        RepositoryObjectType::Extension,
+        extension_key,
+    )
+}
+
+fn discover_enum_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    discover_two_part_object_files(
+        root,
+        import,
+        "database/objects/enums",
+        RepositoryObjectType::Enum,
+        enum_key,
+    )
+}
+
+fn discover_sequence_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    discover_two_part_object_files(
+        root,
+        import,
+        "database/objects/sequences",
+        RepositoryObjectType::Sequence,
+        sequence_key,
+    )
+}
+
+fn discover_view_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    discover_two_part_object_files(
+        root,
+        import,
+        "database/objects/views",
+        RepositoryObjectType::View,
+        view_key,
+    )
+}
+
+fn discover_index_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    let dir = root.join("database/objects/indexes");
+    for entry in fs::read_dir(&dir)
+        .map_err(|error| format!("Could not read database/objects/indexes: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("Could not read index file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("database/objects/indexes/{file_name}");
+        let Some((schema, table, index)) = three_part_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&schema).is_err()
+            || safe_file_component(&table).is_err()
+            || safe_file_component(&index).is_err()
+        {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        import.objects.insert(
+            index_key(&schema, &table, &index),
+            DesiredStateObject {
+                object_type: RepositoryObjectType::Index,
+                schema_name: schema,
+                table_name: Some(table.clone()),
+                object_name: index,
+                parent_name: Some(table),
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn discover_one_part_object_files(
+    root: &Path,
+    import: &mut RepositoryImport,
+    folder: &str,
+    object_type: RepositoryObjectType,
+    key_fn: fn(&str) -> String,
+) -> Result<(), String> {
+    let dir = root.join(folder);
+    for entry in fs::read_dir(&dir).map_err(|error| format!("Could not read {folder}: {error}"))? {
+        let entry =
+            entry.map_err(|error| format!("Could not read desired-state file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("{folder}/{file_name}");
+        let Some(name) = schema_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&name).is_err() {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        import.objects.insert(
+            key_fn(&name),
+            DesiredStateObject {
+                object_type: object_type.clone(),
+                schema_name: String::new(),
+                table_name: None,
+                object_name: name,
+                parent_name: None,
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn discover_two_part_object_files(
+    root: &Path,
+    import: &mut RepositoryImport,
+    folder: &str,
+    object_type: RepositoryObjectType,
+    key_fn: fn(&str, &str) -> String,
+) -> Result<(), String> {
+    let dir = root.join(folder);
+    for entry in fs::read_dir(&dir).map_err(|error| format!("Could not read {folder}: {error}"))? {
+        let entry =
+            entry.map_err(|error| format!("Could not read desired-state file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("{folder}/{file_name}");
+        let Some((schema, name)) = table_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&schema).is_err() || safe_file_component(&name).is_err() {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        import.objects.insert(
+            key_fn(&schema, &name),
+            DesiredStateObject {
+                object_type: object_type.clone(),
+                schema_name: schema,
+                table_name: None,
+                object_name: name,
+                parent_name: None,
                 relative_path,
                 content,
             },
@@ -8518,6 +9414,19 @@ fn table_name_from_file(file_name: &str) -> Option<(String, String)> {
     Some((parts[0].to_string(), parts[1].to_string()))
 }
 
+fn three_part_name_from_file(file_name: &str) -> Option<(String, String, String)> {
+    let stem = file_name.strip_suffix(".sql")?;
+    let parts: Vec<&str> = stem.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    Some((
+        parts[0].to_string(),
+        parts[1].to_string(),
+        parts[2].to_string(),
+    ))
+}
+
 fn render_database_objects_for_selection(
     _root: &Path,
     inventory: &PostgresInventory,
@@ -8527,8 +9436,14 @@ fn render_database_objects_for_selection(
 
     let mut schema_names = Vec::new();
     let mut table_names = Vec::new();
+    let mut include_extensions = false;
+    let mut enum_names = Vec::new();
+    let mut sequence_names = Vec::new();
+    let mut index_names = Vec::new();
+    let mut view_names = Vec::new();
     match selection {
         ExportSelection::All => {
+            include_extensions = true;
             schema_names.extend(inventory.schemas.iter().map(|schema| schema.name.clone()));
             table_names.extend(
                 inventory
@@ -8536,6 +9451,31 @@ fn render_database_objects_for_selection(
                     .iter()
                     .filter(|table| table.table_type == "BASE TABLE")
                     .map(|table| (table.schema_name.clone(), table.table_name.clone())),
+            );
+            enum_names.extend(
+                inventory
+                    .enums
+                    .iter()
+                    .map(|item| (item.schema_name.clone(), item.enum_name.clone())),
+            );
+            sequence_names.extend(
+                inventory
+                    .sequences
+                    .iter()
+                    .map(|item| (item.schema_name.clone(), item.sequence_name.clone())),
+            );
+            index_names.extend(inventory.indexes.iter().map(|item| {
+                (
+                    item.schema_name.clone(),
+                    item.table_name.clone(),
+                    item.index_name.clone(),
+                )
+            }));
+            view_names.extend(
+                inventory
+                    .views
+                    .iter()
+                    .map(|item| (item.schema_name.clone(), item.view_name.clone())),
             );
         }
         ExportSelection::Schema(schema) => {
@@ -8555,6 +9495,40 @@ fn render_database_objects_for_selection(
                     })
                     .map(|table| (table.schema_name.clone(), table.table_name.clone())),
             );
+            enum_names.extend(
+                inventory
+                    .enums
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| (item.schema_name.clone(), item.enum_name.clone())),
+            );
+            sequence_names.extend(
+                inventory
+                    .sequences
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| (item.schema_name.clone(), item.sequence_name.clone())),
+            );
+            index_names.extend(
+                inventory
+                    .indexes
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.table_name.clone(),
+                            item.index_name.clone(),
+                        )
+                    }),
+            );
+            view_names.extend(
+                inventory
+                    .views
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| (item.schema_name.clone(), item.view_name.clone())),
+            );
         }
         ExportSelection::Table { schema, table } => {
             if inventory.tables.iter().any(|candidate| {
@@ -8564,6 +9538,19 @@ fn render_database_objects_for_selection(
             }) {
                 table_names.push((schema.clone(), table.clone()));
             }
+            index_names.extend(
+                inventory
+                    .indexes
+                    .iter()
+                    .filter(|item| item.schema_name == *schema && item.table_name == *table)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.table_name.clone(),
+                            item.index_name.clone(),
+                        )
+                    }),
+            );
         }
     }
 
@@ -8571,6 +9558,14 @@ fn render_database_objects_for_selection(
     schema_names.dedup();
     table_names.sort();
     table_names.dedup();
+    enum_names.sort();
+    enum_names.dedup();
+    sequence_names.sort();
+    sequence_names.dedup();
+    index_names.sort();
+    index_names.dedup();
+    view_names.sort();
+    view_names.dedup();
 
     for schema in schema_names {
         let relative_path = schema_file_path(&schema)?;
@@ -8578,6 +9573,8 @@ fn render_database_objects_for_selection(
             object_type: RepositoryObjectType::Schema,
             schema_name: schema.clone(),
             table_name: None,
+            object_name: schema.clone(),
+            parent_name: None,
             relative_path,
             content: render_schema_sql(&schema),
         };
@@ -8596,8 +9593,103 @@ fn render_database_objects_for_selection(
             object_type: RepositoryObjectType::Table,
             schema_name: schema.clone(),
             table_name: Some(table.clone()),
+            object_name: table.clone(),
+            parent_name: None,
             relative_path,
             content: render_table_sql(&schema, &table, &columns),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    if include_extensions {
+        for extension in &inventory.extensions {
+            let relative_path = extension_file_path(&extension.extension_name)?;
+            let object = DesiredStateObject {
+                object_type: RepositoryObjectType::Extension,
+                schema_name: String::new(),
+                table_name: None,
+                object_name: extension.extension_name.clone(),
+                parent_name: None,
+                relative_path,
+                content: render_extension_sql(extension),
+            };
+            objects.insert(object_key(&object), object);
+        }
+    }
+    for (schema, enum_name) in enum_names {
+        let Some(enum_info) = inventory
+            .enums
+            .iter()
+            .find(|item| item.schema_name == schema && item.enum_name == enum_name)
+        else {
+            continue;
+        };
+        let relative_path = enum_file_path(&schema, &enum_name)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Enum,
+            schema_name: schema.clone(),
+            table_name: None,
+            object_name: enum_name.clone(),
+            parent_name: None,
+            relative_path,
+            content: render_enum_sql(enum_info),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    for (schema, sequence_name) in sequence_names {
+        let Some(sequence) = inventory
+            .sequences
+            .iter()
+            .find(|item| item.schema_name == schema && item.sequence_name == sequence_name)
+        else {
+            continue;
+        };
+        let relative_path = sequence_file_path(&schema, &sequence_name)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Sequence,
+            schema_name: schema.clone(),
+            table_name: None,
+            object_name: sequence_name.clone(),
+            parent_name: None,
+            relative_path,
+            content: render_sequence_sql(sequence),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    for (schema, table, index_name) in index_names {
+        let Some(index) = inventory.indexes.iter().find(|item| {
+            item.schema_name == schema && item.table_name == table && item.index_name == index_name
+        }) else {
+            continue;
+        };
+        let relative_path = index_file_path(&schema, &table, &index_name)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Index,
+            schema_name: schema.clone(),
+            table_name: Some(table.clone()),
+            object_name: index_name.clone(),
+            parent_name: Some(table),
+            relative_path,
+            content: render_index_sql(index),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    for (schema, view_name) in view_names {
+        let Some(view) = inventory
+            .views
+            .iter()
+            .find(|item| item.schema_name == schema && item.view_name == view_name)
+        else {
+            continue;
+        };
+        let relative_path = view_file_path(&schema, &view_name)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::View,
+            schema_name: schema.clone(),
+            table_name: None,
+            object_name: view_name.clone(),
+            parent_name: None,
+            relative_path,
+            content: render_view_sql(view),
         };
         objects.insert(object_key(&object), object);
     }
@@ -8614,9 +9706,11 @@ fn select_repository_objects(
             ExportSelection::All => true,
             ExportSelection::Schema(schema) => object.schema_name == *schema,
             ExportSelection::Table { schema, table } => {
-                object.object_type == RepositoryObjectType::Table
-                    && object.schema_name == *schema
-                    && object.table_name.as_deref() == Some(table.as_str())
+                object.schema_name == *schema
+                    && (object.object_type == RepositoryObjectType::Table
+                        && object.table_name.as_deref() == Some(table.as_str())
+                        || object.object_type == RepositoryObjectType::Index
+                            && object.parent_name.as_deref() == Some(table.as_str()))
             }
         };
         if include {
@@ -8633,6 +9727,15 @@ fn object_key(object: &DesiredStateObject) -> String {
             &object.schema_name,
             object.table_name.as_deref().unwrap_or(""),
         ),
+        RepositoryObjectType::Extension => extension_key(&object.object_name),
+        RepositoryObjectType::Enum => enum_key(&object.schema_name, &object.object_name),
+        RepositoryObjectType::Sequence => sequence_key(&object.schema_name, &object.object_name),
+        RepositoryObjectType::Index => index_key(
+            &object.schema_name,
+            object.parent_name.as_deref().unwrap_or(""),
+            &object.object_name,
+        ),
+        RepositoryObjectType::View => view_key(&object.schema_name, &object.object_name),
     }
 }
 
@@ -8642,6 +9745,26 @@ fn schema_key(schema: &str) -> String {
 
 fn table_key(schema: &str, table: &str) -> String {
     format!("table:{schema}.{table}")
+}
+
+fn extension_key(extension: &str) -> String {
+    format!("extension:{extension}")
+}
+
+fn enum_key(schema: &str, enum_name: &str) -> String {
+    format!("enum:{schema}.{enum_name}")
+}
+
+fn sequence_key(schema: &str, sequence: &str) -> String {
+    format!("sequence:{schema}.{sequence}")
+}
+
+fn index_key(schema: &str, table: &str, index: &str) -> String {
+    format!("index:{schema}.{table}.{index}")
+}
+
+fn view_key(schema: &str, view: &str) -> String {
+    format!("view:{schema}.{view}")
 }
 
 pub fn normalize_desired_state_text(value: &str) -> String {
@@ -8669,14 +9792,29 @@ fn empty_inspection_report(command: CommandKind) -> InspectionReport {
             "schemas".to_string(),
             "tables".to_string(),
             "columns".to_string(),
+            "extensions".to_string(),
+            "enums".to_string(),
+            "sequences".to_string(),
+            "indexes".to_string(),
+            "views".to_string(),
         ],
         schemas: Vec::new(),
         tables: Vec::new(),
         columns: Vec::new(),
+        extensions: Vec::new(),
+        enums: Vec::new(),
+        sequences: Vec::new(),
+        indexes: Vec::new(),
+        views: Vec::new(),
         counts: InspectionCounts {
             schemas: 0,
             tables: 0,
             columns: 0,
+            extensions: 0,
+            enums: 0,
+            sequences: 0,
+            indexes: 0,
+            views: 0,
         },
         warnings: Vec::new(),
         errors: Vec::new(),
@@ -9108,6 +10246,11 @@ impl InspectionReport {
         writeln!(text, "Schema count: {}", self.counts.schemas).ok();
         writeln!(text, "Table count: {}", self.counts.tables).ok();
         writeln!(text, "Column count: {}", self.counts.columns).ok();
+        writeln!(text, "Extension count: {}", self.counts.extensions).ok();
+        writeln!(text, "Enum count: {}", self.counts.enums).ok();
+        writeln!(text, "Sequence count: {}", self.counts.sequences).ok();
+        writeln!(text, "Index count: {}", self.counts.indexes).ok();
+        writeln!(text, "View count: {}", self.counts.views).ok();
         writeln!(text, "Schemas:").ok();
         for schema in &self.schemas {
             writeln!(text, "  - {}", schema.name).ok();
@@ -9120,6 +10263,41 @@ impl InspectionReport {
                 table.schema_name, table.table_name, table.table_type
             )
             .ok();
+        }
+        writeln!(text, "Extensions:").ok();
+        for extension in &self.extensions {
+            writeln!(text, "  - {}", extension.extension_name).ok();
+        }
+        writeln!(text, "Enums:").ok();
+        for enum_info in &self.enums {
+            writeln!(
+                text,
+                "  - {}.{}",
+                enum_info.schema_name, enum_info.enum_name
+            )
+            .ok();
+        }
+        writeln!(text, "Sequences:").ok();
+        for sequence in &self.sequences {
+            writeln!(
+                text,
+                "  - {}.{}",
+                sequence.schema_name, sequence.sequence_name
+            )
+            .ok();
+        }
+        writeln!(text, "Indexes:").ok();
+        for index in &self.indexes {
+            writeln!(
+                text,
+                "  - {}.{}.{}",
+                index.schema_name, index.table_name, index.index_name
+            )
+            .ok();
+        }
+        writeln!(text, "Views:").ok();
+        for view in &self.views {
+            writeln!(text, "  - {}.{}", view.schema_name, view.view_name).ok();
         }
         for warning in &self.warnings {
             writeln!(text, "Warning: {warning}").ok();
@@ -9140,6 +10318,11 @@ impl InspectionReport {
         write_schema_array_field(&mut json, "schemas", &self.schemas);
         write_table_array_field(&mut json, "tables", &self.tables);
         write_column_array_field(&mut json, "columns", &self.columns);
+        write_extension_array_field(&mut json, "extensions", &self.extensions);
+        write_enum_array_field(&mut json, "enums", &self.enums);
+        write_sequence_array_field(&mut json, "sequences", &self.sequences);
+        write_index_array_field(&mut json, "indexes", &self.indexes);
+        write_view_array_field(&mut json, "views", &self.views);
         write_counts_field(&mut json, "counts", &self.counts);
         write_json_array_field(&mut json, "warnings", &self.warnings);
         write_json_array_field(&mut json, "errors", &self.errors);
@@ -9659,6 +10842,13 @@ fn write_json_i32_field(json: &mut String, name: &str, value: i32, first: bool) 
     write!(json, "\"{}\":{}", escape_json(name), value).ok();
 }
 
+fn write_json_i64_field(json: &mut String, name: &str, value: i64, first: bool) {
+    if !first {
+        json.push(',');
+    }
+    write!(json, "\"{}\":{}", escape_json(name), value).ok();
+}
+
 fn write_json_array_field(json: &mut String, name: &str, values: &[String]) {
     json.push(',');
     write!(json, "\"{}\":[", escape_json(name)).ok();
@@ -9721,15 +10911,122 @@ fn write_column_array_field(json: &mut String, name: &str, values: &[ColumnInfo]
     json.push(']');
 }
 
+fn write_extension_array_field(json: &mut String, name: &str, values: &[ExtensionInfo]) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "extensionName", &value.extension_name, true);
+        if let Some(schema) = &value.schema_name {
+            write_json_string_field(json, "schemaName", schema, false);
+        }
+        if let Some(version) = &value.version {
+            write_json_string_field(json, "version", version, false);
+        }
+        json.push('}');
+    }
+    json.push(']');
+}
+
+fn write_enum_array_field(json: &mut String, name: &str, values: &[EnumInfo]) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schemaName", &value.schema_name, true);
+        write_json_string_field(json, "enumName", &value.enum_name, false);
+        write_json_array_field(json, "labels", &value.labels);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+fn write_sequence_array_field(json: &mut String, name: &str, values: &[SequenceInfo]) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schemaName", &value.schema_name, true);
+        write_json_string_field(json, "sequenceName", &value.sequence_name, false);
+        if let Some(data_type) = &value.data_type {
+            write_json_string_field(json, "dataType", data_type, false);
+        }
+        if let Some(start_value) = value.start_value {
+            write_json_i64_field(json, "startValue", start_value, false);
+        }
+        if let Some(min_value) = value.min_value {
+            write_json_i64_field(json, "minValue", min_value, false);
+        }
+        if let Some(max_value) = value.max_value {
+            write_json_i64_field(json, "maxValue", max_value, false);
+        }
+        if let Some(increment_by) = value.increment_by {
+            write_json_i64_field(json, "incrementBy", increment_by, false);
+        }
+        if let Some(cache_size) = value.cache_size {
+            write_json_i64_field(json, "cacheSize", cache_size, false);
+        }
+        write_json_bool_field(json, "cycle", value.cycle);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+fn write_index_array_field(json: &mut String, name: &str, values: &[IndexInfo]) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schemaName", &value.schema_name, true);
+        write_json_string_field(json, "tableName", &value.table_name, false);
+        write_json_string_field(json, "indexName", &value.index_name, false);
+        write_json_bool_field(json, "isUnique", value.is_unique);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+fn write_view_array_field(json: &mut String, name: &str, values: &[ViewInfo]) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schemaName", &value.schema_name, true);
+        write_json_string_field(json, "viewName", &value.view_name, false);
+        json.push('}');
+    }
+    json.push(']');
+}
+
 fn write_counts_field(json: &mut String, name: &str, counts: &InspectionCounts) {
     json.push(',');
     write!(
         json,
-        "\"{}\":{{\"schemas\":{},\"tables\":{},\"columns\":{}}}",
+        "\"{}\":{{\"schemas\":{},\"tables\":{},\"columns\":{},\"extensions\":{},\"enums\":{},\"sequences\":{},\"indexes\":{},\"views\":{}}}",
         escape_json(name),
         counts.schemas,
         counts.tables,
-        counts.columns
+        counts.columns,
+        counts.extensions,
+        counts.enums,
+        counts.sequences,
+        counts.indexes,
+        counts.views
     )
     .ok();
 }
@@ -10012,6 +11309,43 @@ mod tests {
                     default_expression: Some("now()".to_string()),
                 },
             ],
+            extensions: vec![ExtensionInfo {
+                extension_name: "pgcrypto".to_string(),
+                schema_name: Some("public".to_string()),
+                version: Some("1.3".to_string()),
+            }],
+            enums: vec![EnumInfo {
+                schema_name: "dbstate_slice2".to_string(),
+                enum_name: "account_status".to_string(),
+                labels: vec!["active".to_string(), "closed".to_string()],
+            }],
+            sequences: vec![SequenceInfo {
+                schema_name: "dbstate_slice2".to_string(),
+                sequence_name: "account_number_seq".to_string(),
+                data_type: Some("bigint".to_string()),
+                start_value: Some(1),
+                min_value: Some(1),
+                max_value: Some(9_223_372_036_854_775_807),
+                increment_by: Some(1),
+                cycle: false,
+                cache_size: Some(1),
+            }],
+            indexes: vec![IndexInfo {
+                schema_name: "dbstate_slice2".to_string(),
+                table_name: "sample_accounts".to_string(),
+                index_name: "sample_accounts_account_code_idx".to_string(),
+                is_unique: true,
+                definition:
+                    "CREATE UNIQUE INDEX sample_accounts_account_code_idx ON dbstate_slice2.sample_accounts USING btree (account_code)"
+                        .to_string(),
+            }],
+            views: vec![ViewInfo {
+                schema_name: "dbstate_slice2".to_string(),
+                view_name: "active_accounts".to_string(),
+                definition:
+                    " SELECT sample_accounts.account_id,\n    sample_accounts.account_code\n   FROM dbstate_slice2.sample_accounts"
+                        .to_string(),
+            }],
         }
     }
 
@@ -10321,6 +11655,11 @@ rows:
             "\"schemas\"",
             "\"tables\"",
             "\"columns\"",
+            "\"extensions\"",
+            "\"enums\"",
+            "\"sequences\"",
+            "\"indexes\"",
+            "\"views\"",
             "\"counts\"",
             "\"warnings\"",
             "\"errors\"",
@@ -10377,23 +11716,67 @@ rows:
                 has_default: true,
                 default_expression: Some("nextval('orders_id_seq'::regclass)".to_string()),
             }],
+            extensions: vec![ExtensionInfo {
+                extension_name: "pgcrypto".to_string(),
+                schema_name: Some("public".to_string()),
+                version: Some("1.3".to_string()),
+            }],
+            enums: vec![EnumInfo {
+                schema_name: "app".to_string(),
+                enum_name: "order_status".to_string(),
+                labels: vec!["new".to_string(), "paid".to_string()],
+            }],
+            sequences: vec![SequenceInfo {
+                schema_name: "app".to_string(),
+                sequence_name: "orders_id_seq".to_string(),
+                data_type: Some("integer".to_string()),
+                start_value: Some(1),
+                min_value: Some(1),
+                max_value: Some(2_147_483_647),
+                increment_by: Some(1),
+                cycle: false,
+                cache_size: Some(1),
+            }],
+            indexes: vec![IndexInfo {
+                schema_name: "app".to_string(),
+                table_name: "orders".to_string(),
+                index_name: "orders_created_at_idx".to_string(),
+                is_unique: false,
+                definition: "CREATE INDEX orders_created_at_idx ON app.orders USING btree (id)"
+                    .to_string(),
+            }],
+            views: vec![ViewInfo {
+                schema_name: "app".to_string(),
+                view_name: "open_orders".to_string(),
+                definition: " SELECT orders.id FROM app.orders".to_string(),
+            }],
         };
 
         assert_eq!(inventory.schemas[0].name, "app");
         assert_eq!(inventory.tables[0].table_name, "orders");
         assert_eq!(inventory.columns[0].column_name, "id");
+        assert_eq!(inventory.extensions[0].extension_name, "pgcrypto");
+        assert_eq!(inventory.enums[0].labels, vec!["new", "paid"]);
+        assert_eq!(inventory.sequences[0].sequence_name, "orders_id_seq");
+        assert_eq!(inventory.indexes[0].index_name, "orders_created_at_idx");
+        assert_eq!(inventory.views[0].view_name, "open_orders");
     }
 
     #[test]
     fn deferred_object_types_are_explicit() {
         let report = empty_inspection_report(CommandKind::InspectPostgres);
 
-        assert!(report
+        assert!(!report
             .deferred_object_types
             .contains(&"extensions".to_string()));
-        assert!(report
+        assert!(!report.deferred_object_types.contains(&"enums".to_string()));
+        assert!(!report
+            .deferred_object_types
+            .contains(&"sequences".to_string()));
+        assert!(!report
             .deferred_object_types
             .contains(&"indexes".to_string()));
+        assert!(!report.deferred_object_types.contains(&"views".to_string()));
         assert!(report
             .deferred_object_types
             .contains(&"functions".to_string()));
@@ -10415,6 +11798,26 @@ rows:
         assert_eq!(
             table_file_path("core", "payment_attempts").expect("table path"),
             "database/objects/tables/core.payment_attempts.sql"
+        );
+        assert_eq!(
+            extension_file_path("pgcrypto").expect("extension path"),
+            "database/objects/extensions/pgcrypto.sql"
+        );
+        assert_eq!(
+            enum_file_path("core", "payment_status").expect("enum path"),
+            "database/objects/enums/core.payment_status.sql"
+        );
+        assert_eq!(
+            sequence_file_path("core", "payment_id_seq").expect("sequence path"),
+            "database/objects/sequences/core.payment_id_seq.sql"
+        );
+        assert_eq!(
+            index_file_path("core", "payments", "payments_code_idx").expect("index path"),
+            "database/objects/indexes/core.payments.payments_code_idx.sql"
+        );
+        assert_eq!(
+            view_file_path("core", "active_payments").expect("view path"),
+            "database/objects/views/core.active_payments.sql"
         );
         assert!(schema_file_path("../evil").is_err());
         assert!(table_file_path("core", "bad/name").is_err());
@@ -10446,6 +11849,23 @@ rows:
             ),
             expected
         );
+    }
+
+    #[test]
+    fn generated_slice16_object_sql_is_deterministic() {
+        let inventory = sample_inventory();
+
+        assert!(render_extension_sql(&inventory.extensions[0])
+            .contains("CREATE EXTENSION IF NOT EXISTS \"pgcrypto\";"));
+        assert!(render_enum_sql(&inventory.enums[0])
+            .contains("CREATE TYPE \"dbstate_slice2\".\"account_status\" AS ENUM"));
+        assert!(render_enum_sql(&inventory.enums[0]).contains("'active',"));
+        assert!(render_sequence_sql(&inventory.sequences[0])
+            .contains("CREATE SEQUENCE \"dbstate_slice2\".\"account_number_seq\""));
+        assert!(render_index_sql(&inventory.indexes[0])
+            .contains("CREATE UNIQUE INDEX sample_accounts_account_code_idx"));
+        assert!(render_view_sql(&inventory.views[0])
+            .contains("CREATE VIEW \"dbstate_slice2\".\"active_accounts\" AS"));
     }
 
     #[test]
@@ -11709,7 +13129,7 @@ rows:
         assert!(report.success, "{:?}", report.errors);
         let sql =
             fs::read_to_string(dir.join("database/releases/0001_slice7.sql")).expect("read sql");
-        assert!(sql.contains("does not generate ALTER TABLE statements yet"));
+        assert!(sql.contains("REVIEW REQUIRED: object differs"));
         assert!(!sql.contains("\nALTER TABLE "));
     }
 
@@ -12492,14 +13912,29 @@ rows:
             "identityFromPath",
             "database/objects/schemas/",
             "database/objects/tables/",
+            "database/objects/extensions/",
+            "database/objects/enums/",
+            "database/objects/sequences/",
+            "database/objects/indexes/",
+            "database/objects/views/",
             "objectType: \"schema\"",
             "objectType: \"table\"",
+            "objectType: \"extension\"",
+            "objectType: \"enum\"",
+            "objectType: \"sequence\"",
+            "objectType: \"index\"",
+            "objectType: \"view\"",
             "referenceDataRow",
             "rowMatchesFilter",
             "object-type-filter",
             "data.schemas",
             "data.tables",
             "data.columns",
+            "data.extensions",
+            "data.enums",
+            "data.sequences",
+            "data.indexes",
+            "data.views",
             "updateCompareOptionLists",
             "updateTableOptions",
             "updateReferenceDataOptions",

@@ -4,6 +4,8 @@ Slice 13B refines the browser UI Results grid from the Slice 13A schema compare 
 
 This is a UI-only usability slice. It does not add backend database capability, connection profiles, SQL execution, direct database apply, database mutation, or new PostgreSQL object coverage. Slice 15 later adds a tightly gated repository-file write workflow for Database to Repository capture.
 
+Slice 16 later expands PostgreSQL object coverage. With Slice 16, the same Results grid pattern also maps extensions, enums, sequences, indexes, and views.
+
 ## Results Grid Changes
 
 The Results step now shows source and target context above the table:
@@ -30,6 +32,11 @@ The UI maps known response items into concrete object types:
 
 - `schema`
 - `table`
+- `extension`
+- `enum`
+- `sequence`
+- `index`
+- `view`
 - `referenceDataTable`
 - `referenceDataRow`
 - `unknown` only as a fallback
@@ -48,6 +55,11 @@ Successful inspect responses now produce result rows where available:
 
 - Schema rows map to `schema`.
 - Table rows map to `table`.
+- Extension rows map to `extension`.
+- Enum rows map to `enum`.
+- Sequence rows map to `sequence`.
+- Index rows map to `index`.
+- View rows map to `view`.
 
 Inspect rows use status `inspected` and no planned operation.
 
@@ -62,6 +74,11 @@ Values:
 - All.
 - Schema.
 - Table.
+- Extension, when extension rows are present.
+- Enum, when enum rows are present.
+- Sequence, when sequence rows are present.
+- Index, when index rows are present.
+- View, when view rows are present.
 - Reference data, only when the workflow mode or latest response is Reference-data compare.
 - Unknown or Skipped, only when the latest rows include unknown or skipped items.
 
