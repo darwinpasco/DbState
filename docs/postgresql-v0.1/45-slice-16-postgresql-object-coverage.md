@@ -171,6 +171,8 @@ The browser UI Results grid can show:
 
 Object Diff requests source and target DDL for supported object types. If DDL is unavailable, the UI shows a clean unavailable state instead of inventing SQL.
 
+Slice 16A expands the Object Diff review surface. Full Context DDL is the default view and can compose table DDL with related index DDL where available. Object Only DDL remains available and reflects the normalized durable object file. Related Objects and Raw Details remain separate views. This does not add durable constraint or comment coverage and does not change repository storage.
+
 ## Optional Integration Fixture
 
 `tests/fixtures/postgresql/slice16-object-coverage.sql` contains a disposable PostgreSQL fixture with an extension, enum, sequence, table, index, and view.

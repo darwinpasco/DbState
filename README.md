@@ -202,7 +202,9 @@ cargo run -- serve
 http://127.0.0.1:4587/
 ```
 
-The Slice 15 UI is a static schema compare workflow shell over the service API. It uses a left workflow navigation for workspace, source and target, compare options, results, object diff, warnings, release plan, reports, and safety information. The Results grid includes object-type filtering, status badges, a status legend, and source/target context above the table. Inspect populates schema and table dropdowns, while column details stay in Object Diff for selected tables.
+The browser UI is a static schema compare workflow shell over the service API. It uses a left workflow navigation for workspace, source and target, compare options, results, object diff, warnings, release plan, reports, and safety information. The Results grid includes object-type filtering, status badges, a status legend, and source/target context above the table. Inspect populates schema and table dropdowns, while column details stay in Object Diff for selected tables.
+
+Object Diff defaults to Full Context DDL for review. For selected tables, it can show the table plus related indexes where available. Object Only DDL remains available and reflects the durable normalized object file. Related Objects and Raw Details are separate tabs. Repository storage remains one durable object per file.
 
 The UI includes Database to Repository preview and an explicit Write Repository Files action. That action requires typed confirmation, a clean working tree, and writes only supported desired-state object files under `database/objects/` in the selected repository. It does not mutate PostgreSQL, execute SQL, write release artifacts, stage Git changes, commit, push, pull, or fetch.
 

@@ -115,7 +115,7 @@ The Object Diff step shows the selected row:
 - Target detail when available.
 - Selected JSON item.
 
-Detailed DDL diffing is not implemented in this slice. Unavailable details are labeled as not available yet.
+Slice 16A later expands Object Diff with Full Context DDL, Object Only DDL, Related Objects, and Raw Details tabs. The repository storage model remains normalized per object file.
 
 ## Warnings
 

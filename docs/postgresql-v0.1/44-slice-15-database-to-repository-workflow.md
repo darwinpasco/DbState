@@ -171,6 +171,15 @@ The old labels "Repository Side" and "Database Side" are not used.
 
 Object Diff shows Source DDL and Target DDL panels for supported objects where detail is available. Slice 16 supports DDL detail for schemas, ordinary tables, extensions, enums, sequences, non-constraint-backed indexes, and views.
 
+Slice 16A adds Object Diff modes:
+
+- Full Context DDL
+- Object Only DDL
+- Related Objects
+- Raw Details
+
+Database to Repository still shows database DDL as Source and repository DDL as Target. Full Context DDL is for review only and does not change normalized repository storage.
+
 Repository DDL is read only from known DbState object files under:
 
 ```text
