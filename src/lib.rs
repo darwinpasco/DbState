@@ -1792,11 +1792,23 @@ button:hover {
 }
 
 .diff-line-row {
+  display: flex;
   min-height: 16px;
 }
 
+.diff-marker {
+  flex: 0 0 2ch;
+  width: 2ch;
+  user-select: none;
+}
+
+.diff-line-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .diff-line-same {
-  color: #dbe7f3;
+  color: #ffffff;
 }
 
 .diff-line-different {
@@ -3438,6 +3450,21 @@ const UI_JS: &str = r#"(function () {
     return "Different line";
   }
 
+
+  function appendVisualDiffLine(target, marker, lineText) {
+    const markerElement = document.createElement("span");
+    markerElement.className = "diff-marker";
+    markerElement.setAttribute("aria-hidden", "true");
+    markerElement.title = marker ? "Display-only diff marker" : "";
+    markerElement.textContent = marker;
+
+    const textElement = document.createElement("span");
+    textElement.className = "diff-line-text";
+    textElement.textContent = lineText;
+
+    target.appendChild(markerElement);
+    target.appendChild(textElement);
+  }
   function renderDdlLineDiff(sourceTarget, targetTarget, sourceDdl, targetDdl) {
     sourceTarget.innerHTML = "";
     targetTarget.innerHTML = "";
@@ -3459,8 +3486,8 @@ const UI_JS: &str = r#"(function () {
       targetLine.title = diffTitle(row.type, "target");
       sourceLine.setAttribute("aria-label", sourceLine.title);
       targetLine.setAttribute("aria-label", targetLine.title);
-      sourceLine.textContent = row.type === "sourceOnly" && row.source ? "+ " + row.source : row.source || " ";
-      targetLine.textContent = row.type === "targetOnly" && row.target ? "- " + row.target : row.target || " ";
+      appendVisualDiffLine(sourceLine, row.type === "sourceOnly" && row.source ? "+" : "", row.source || " ");
+      appendVisualDiffLine(targetLine, row.type === "targetOnly" && row.target ? "-" : "", row.target || " ");
       sourceTarget.appendChild(sourceLine);
       targetTarget.appendChild(targetLine);
     });
@@ -15679,6 +15706,47 @@ rows:
             assert!(
                 !js.contains(forbidden),
                 "UI JavaScript contains forbidden pattern {forbidden}"
+            );
+        }
+    }
+
+    #[test]
+    fn slice22_object_diff_markers_are_visual_only_and_beta_colored() {
+        let css = ui_css();
+        let js = ui_js();
+
+        assert!(css.contains(".diff-marker"));
+        assert!(css.contains("user-select: none"));
+        assert!(css.contains(".diff-line-text"));
+        assert!(css.contains(".diff-line-same {\n  color: #ffffff;"));
+        assert!(css.contains(".diff-line-source-only {\n  color: #7ee2a8;"));
+        assert!(css.contains(".diff-line-target-only {\n  color: #ff8f85;"));
+        assert!(!css.contains("text-decoration: line-through"));
+
+        assert!(js.contains("appendVisualDiffLine(sourceLine"));
+        assert!(js.contains("appendVisualDiffLine(targetLine"));
+        assert!(js.contains("markerElement.className = \"diff-marker\""));
+        assert!(js.contains("textElement.className = \"diff-line-text\""));
+        assert!(js.contains("markerElement.setAttribute(\"aria-hidden\", \"true\")"));
+        assert!(!js.contains("\"+ \" + row.source"));
+        assert!(!js.contains("\"- \" + row.target"));
+        assert!(!js.contains("line-through"));
+    }
+
+    #[test]
+    fn slice22_current_private_beta_text_avoids_older_slice_labels() {
+        let combined = format!("{}\n{}\n{}", ui_html(), ui_css(), ui_js());
+
+        for forbidden in [
+            "Slice 16A",
+            "Slice 16.A",
+            "Slice 17",
+            "automatic ALTER is not generated in Slice",
+            "Full dependency ordering is not implemented in Slice",
+        ] {
+            assert!(
+                !combined.contains(forbidden),
+                "current UI assets expose old implementation label {forbidden}"
             );
         }
     }

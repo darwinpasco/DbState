@@ -67,14 +67,16 @@ Full Context DDL and Object Only DDL now render aligned line-by-line Source and 
 
 Line display rules:
 
-- matched lines are green
+- matched lines are white
 - different lines are red
-- source-only lines are green with a plus marker and a blank target counterpart
-- target-only lines are red with a minus marker and a blank source counterpart
+- source-only lines are green with a display-only plus marker and a blank target counterpart
+- target-only lines are red with a display-only minus marker and a blank source counterpart
 
 Target-only lines in Repository to Database Compare are review-required. They do not mean DbState will automatically delete database objects or database lines. DbState does not generate destructive database changes in this beta.
 
 Target-only lines in Database to Repository Compare can indicate repository-file content that may be removed if the user writes repository changes.
+
+The plus and minus markers are visual indicators only. They are rendered as separate UI marker elements and must not be included in Source DDL, Target DDL, repository object files, release artifact SQL, generated review artifacts, or future repository/database write logic.
 
 ## Safety boundary
 
