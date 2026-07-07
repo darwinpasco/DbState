@@ -759,7 +759,7 @@ const UI_HTML: &str = r#"<!doctype html>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>DbState PostgreSQL v0.1</title>
-  <link rel="stylesheet" href="/ui/app.css?v=slice16a-full-context-ddl">
+  <link rel="stylesheet" href="/ui/app.css?v=slice22-beta-ui">
 </head>
 <body>
   <header class="app-header">
@@ -775,7 +775,7 @@ const UI_HTML: &str = r#"<!doctype html>
 
   <section class="safety-strip">
     <strong>Safety boundary:</strong>
-    No SQL execution. No direct database apply. Reviewable artifacts only. This UI exposes no write workflows.
+    No SQL execution. No direct database apply. Controlled local repository/release file writes only after explicit typed confirmation.
   </section>
 
   <section class="context-strip" aria-label="Workspace summary">
@@ -858,10 +858,10 @@ const UI_HTML: &str = r#"<!doctype html>
         <div class="subsection">
           <h3>Workflow Mode</h3>
           <select id="workflow-mode">
+            <option value="inspect">PostgreSQL Inspect Only</option>
             <option value="compare">Repository to Database Compare</option>
-            <option value="inspect">PostgreSQL inspect only</option>
-            <option value="data">Reference-data compare</option>
-            <option value="databaseToRepository">Database to Repository</option>
+            <option value="databaseToRepository">Database to Repository Compare</option>
+            <option value="data">Reference-Data Compare</option>
           </select>
         </div>
         <div class="split-pane">
@@ -980,25 +980,25 @@ const UI_HTML: &str = r#"<!doctype html>
             </select>
           </label>
           <label for="plan-include">Include refs
-            <input id="plan-include" type="text" autocomplete="off">
+            <input id="plan-include" type="text" autocomplete="off" disabled>
           </label>
           <label for="plan-exclude">Exclude refs
-            <input id="plan-exclude" type="text" autocomplete="off">
+            <input id="plan-exclude" type="text" autocomplete="off" disabled>
           </label>
           <label for="data-scope">Reference-data scope
-            <select id="data-scope">
+            <select id="data-scope" disabled>
               <option value="all">All configured tables</option>
               <option value="table">Table</option>
             </select>
           </label>
           <label for="data-table">Reference-data table
-            <select id="data-table">
+            <select id="data-table" disabled>
               <option value="">All</option>
             </select>
           </label>
         </div>
-        <p class="note">Run Inspect first to populate schema and table lists. Include/exclude refs are advanced optional filters. Format examples: schema:core, table:core.payment_attempts.</p>
-        <p class="note">Run Reference Data Compare to load configured reference-data tables.</p>
+        <p class="note">Run Inspect first to populate schema and table lists.</p>
+        <p class="note beta-disabled-note">Disabled in current beta. Include/exclude filters and reference-data compare are out-of-scope for this beta version.</p>
         <div class="object-filter-row" aria-label="Object type filters">
           <label><input type="checkbox" checked disabled> schemas</label>
           <label><input type="checkbox" checked disabled> tables</label>
@@ -1012,18 +1012,18 @@ const UI_HTML: &str = r#"<!doctype html>
           <button type="button" data-action="inspect" data-standard-operation-action>Inspect</button>
           <button type="button" data-action="compare" data-standard-operation-action>Run Compare</button>
           <button type="button" data-action="plan" data-standard-operation-action>Run Plan</button>
-          <button type="button" data-action="data-compare" data-standard-operation-action>Run Reference Data Compare</button>
+          <button type="button" data-action="data-compare" data-standard-operation-action disabled>Run Reference Data Compare</button>
         </div>
         <div id="repository-sync-controls" class="subsection" hidden>
-          <h3>Database to Repository</h3>
-          <p class="note">Preview reads PostgreSQL and the selected repository without writing files. Write Repository Files writes only under the selected repository's database/objects/ paths, requires a clean working tree, and never changes PostgreSQL.</p>
+          <h3>Database to Repository Compare</h3>
+          <p class="note">Preview reads PostgreSQL and the selected repository without writing files. Write repository changes writes only under the selected repository's database/objects/ paths, requires a clean working tree, and never changes PostgreSQL.</p>
           <label for="repository-write-confirmation">Typed confirmation
             <input id="repository-write-confirmation" type="text" autocomplete="off">
           </label>
           <p class="note">Type WRITE REPOSITORY FILES to enable the repository file write action.</p>
           <div class="button-row">
             <button type="button" data-action="repository-sync-preview">Preview Repository Sync</button>
-            <button type="button" data-action="repository-sync-write" disabled>Write Repository Files</button>
+            <button type="button" data-action="repository-sync-write" disabled>Write Repository Changes</button>
           </div>
         </div>
       </section>
@@ -1045,6 +1045,21 @@ const UI_HTML: &str = r#"<!doctype html>
               <option value="all">All</option>
               <option value="schema">Schema</option>
               <option value="table">Table</option>
+            </select>
+          </label>
+          <label for="status-filter">Status
+            <select id="status-filter">
+              <option value="all">All</option>
+              <option value="repoDifferent">repoDifferent</option>
+              <option value="inSync">inSync</option>
+              <option value="repoOnly">repoOnly</option>
+              <option value="databaseOnly">databaseOnly</option>
+              <option value="plannedCreate">plannedCreate</option>
+              <option value="plannedUpdate">plannedUpdate</option>
+              <option value="blocked">blocked</option>
+              <option value="error">error</option>
+              <option value="skipped">skipped</option>
+              <option value="inspected">inspected</option>
             </select>
           </label>
           <span id="results-count">0 result rows</span>
@@ -1137,31 +1152,70 @@ const UI_HTML: &str = r#"<!doctype html>
       <section class="workflow-panel" id="step-release-plan">
         <div class="panel-heading">
           <h2>Release Plan</h2>
-          <p>Review-only planning area. This UI does not write release artifacts.</p>
+          <p>Generate reviewable release artifacts for Repository to Database Compare only.</p>
         </div>
-        <div class="form-grid">
-          <label for="release-name">Release name
-            <input id="release-name" type="text" autocomplete="off" spellcheck="false">
-          </label>
+        <div id="release-plan-not-applicable" class="issue-item" hidden></div>
+        <div id="release-plan-content">
+          <div class="form-grid">
+            <label for="release-name">Release name
+              <input id="release-name" type="text" autocomplete="off" spellcheck="false">
+            </label>
+            <label for="release-confirmation">Type GENERATE RELEASE ARTIFACTS
+              <input id="release-confirmation" type="text" autocomplete="off" spellcheck="false">
+            </label>
+          </div>
+          <div class="button-row">
+            <button type="button" data-action="release-preview">Dry-run Release Artifact</button>
+            <button type="button" data-action="release-write" disabled>Generate Release Artifact</button>
+          </div>
+          <div class="release-card">
+            <h3>Release Context</h3>
+            <dl class="summary-list compact" id="release-context"></dl>
+          </div>
+          <div class="release-card">
+            <h3>Risk Summary</h3>
+            <div id="release-risk-summary">Risk level: Not generated in UI. Use Dry-run Release Artifact to generate risk JSON.</div>
+          </div>
+          <div class="release-card">
+            <h3>Object Summary</h3>
+            <dl class="summary-list compact" id="release-object-summary"></dl>
+          </div>
+          <div class="release-card">
+            <h3>CLI command guidance</h3>
+            <p class="note">The browser UI can dry-run and generate review artifacts through the local DbState Service. CLI commands are shown for fallback/manual use.</p>
+            <pre id="release-dryrun-command">dbstate release postgres --all --name &lt;release-name&gt; --dry-run --format json</pre>
+            <pre id="release-write-command">dbstate release postgres --all --name &lt;release-name&gt;</pre>
+          </div>
+          <div class="release-card">
+            <h3>Release Candidates</h3>
+            <div class="table-wrap">
+              <table class="results-grid" aria-label="Release candidates">
+                <thead>
+                  <tr><th>Object type</th><th>Schema</th><th>Object name</th><th>Status</th><th>Planned operation</th><th>Warnings</th></tr>
+                </thead>
+                <tbody id="release-candidates-body">
+                  <tr><td colspan="6">No selected result rows yet.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div class="release-card">
+            <h3>Dry-run / Generated Artifacts</h3>
+            <div id="release-artifact-result">No release artifact dry-run has been run yet.</div>
+          </div>
+          <div class="subsection">
+            <h3>Reviewer Checklist</h3>
+            <ol>
+              <li>Review all REVIEW REQUIRED comments.</li>
+              <li>Review blocked and skipped items.</li>
+              <li>Review deferred object type warnings.</li>
+              <li>Confirm no destructive SQL is present.</li>
+              <li>Confirm object ordering is acceptable.</li>
+              <li>Have a DBA or responsible engineer review before any manual execution outside DbState.</li>
+            </ol>
+          </div>
+          <p class="note">Release artifacts are reviewable files under database/releases/. DbState does not execute SQL, apply database changes, mutate PostgreSQL, or stage, commit, push, pull, fetch, or tag Git changes.</p>
         </div>
-        <p class="note">Use the CLI to dry-run or generate release artifacts. The browser UI remains review-only for release artifacts in Slice 17.</p>
-        <pre>dbstate release postgres --all --name &lt;release-name&gt; --dry-run --format json</pre>
-        <div class="release-summary" id="release-selected">No included result rows yet.</div>
-        <div class="release-summary" id="release-risk-summary">
-          Risk level: run a CLI dry-run release to generate risk JSON.
-        </div>
-        <div class="subsection">
-          <h3>Reviewer Checklist</h3>
-          <ol>
-            <li>Review all REVIEW REQUIRED comments.</li>
-            <li>Review blocked and skipped items.</li>
-            <li>Review deferred object type warnings.</li>
-            <li>Confirm no destructive SQL is present.</li>
-            <li>Confirm object ordering is acceptable.</li>
-            <li>Have a DBA or responsible engineer review before any manual execution outside DbState.</li>
-          </ol>
-        </div>
-        <p class="note">Release artifacts are reviewable files under database/releases/. DbState does not execute SQL, apply database changes, mutate PostgreSQL, or stage, commit, push, pull, fetch, or tag Git changes.</p>
       </section>
 
       <section class="workflow-panel" id="step-reports">
@@ -1185,10 +1239,10 @@ const UI_HTML: &str = r#"<!doctype html>
         <ul class="safety-list">
           <li>The browser UI is a thin workflow shell over the local service.</li>
           <li>PostgreSQL compare and inspect operations are read-only.</li>
-          <li>Generated artifacts are reviewable files under <code>database/releases/</code> when created by explicit non-UI commands.</li>
+          <li>Release artifacts are reviewable files under <code>database/releases/</code> and require explicit typed confirmation in the UI or CLI.</li>
           <li>No direct database apply exists.</li>
           <li>No generated SQL execution exists.</li>
-          <li>No write workflows are exposed in this UI shell.</li>
+          <li>Only controlled local file writes are exposed: repository object files and release artifact files. The UI never mutates PostgreSQL or Git history.</li>
           <li>Unsupported object types are deferred for later slices.</li>
           <li>Do not expose the local service publicly.</li>
         </ul>
@@ -1203,7 +1257,7 @@ const UI_HTML: &str = r#"<!doctype html>
     <span>Errors: <strong id="last-errors">0</strong></span>
   </footer>
 
-  <script src="/ui/app.js?v=slice16a-full-context-ddl"></script>
+  <script src="/ui/app.js?v=slice22-beta-ui"></script>
 </body>
 </html>
 "#;
@@ -1678,6 +1732,85 @@ button:hover {
   color: #59636e;
 }
 
+.beta-disabled-note {
+  border-left: 4px solid #e2c15f;
+  background: #fff8df;
+  padding: 10px 12px;
+  border-radius: 6px;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(14, 24, 33, 0.55);
+  display: grid;
+  place-items: center;
+  z-index: 1000;
+}
+
+.modal-backdrop[hidden] {
+  display: none;
+}
+
+.modal-dialog {
+  width: min(560px, calc(100vw - 32px));
+  background: #ffffff;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(14, 24, 33, 0.25);
+  padding: 22px;
+}
+
+.modal-dialog h2 {
+  margin-top: 0;
+}
+
+.release-card {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #ffffff;
+  padding: 12px;
+  margin: 12px 0;
+}
+
+.release-card h3 {
+  margin-top: 0;
+}
+
+.diff-line-grid {
+  display: grid;
+  gap: 0;
+  font-family: Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  white-space: pre;
+  overflow: auto;
+  max-height: 520px;
+  background: #111c28;
+  color: #dbe7f3;
+  border-radius: 6px;
+  padding: 10px;
+}
+
+.diff-line-row {
+  min-height: 16px;
+}
+
+.diff-line-same {
+  color: #dbe7f3;
+}
+
+.diff-line-different {
+  color: #ff8f85;
+}
+
+.diff-line-source-only {
+  color: #7ee2a8;
+}
+
+.diff-line-target-only {
+  color: #ff8f85;
+}
+
 .object-diff-tabs {
   display: flex;
   flex-wrap: wrap;
@@ -1836,6 +1969,8 @@ const UI_JS: &str = r#"(function () {
     objectDdl: "/api/v1/postgres/object-ddl",
     repositorySyncPreview: "/api/v1/postgres/repository-sync/preview",
     repositorySyncWrite: "/api/v1/postgres/repository-sync/write",
+    releasePreview: "/api/v1/postgres/release/preview",
+    releaseWrite: "/api/v1/postgres/release/write",
     workspaceRoots: "/api/v1/workspace/roots",
     workspaceListDirectories: "/api/v1/workspace/list-directories",
     workspaceValidate: "/api/v1/workspace/validate",
@@ -1864,6 +1999,8 @@ const UI_JS: &str = r#"(function () {
     selectedIndex: -1,
     selectedObjectDdl: null,
     objectDiffMode: "fullContext",
+    previousWorkflowMode: "inspect",
+    releaseResponse: null,
     lastOperation: "none"
   };
 
@@ -1873,6 +2010,67 @@ const UI_JS: &str = r#"(function () {
 
   function byId(id) {
     return document.getElementById(id);
+  }
+
+  function showModal(title, message) {
+    const modal = byId("app-modal");
+    if (!modal) {
+      responseSummary.textContent = title + ": " + message;
+      return;
+    }
+    byId("app-modal-title").textContent = title;
+    const body = byId("app-modal-body");
+    body.innerHTML = "";
+    textOrEmpty(message).split("\n").forEach(function (line) {
+      const p = document.createElement("p");
+      p.textContent = line || " ";
+      body.appendChild(p);
+    });
+    modal.hidden = false;
+    const closeButton = document.querySelector("[data-action='modal-close']");
+    if (closeButton) {
+      closeButton.focus();
+    }
+  }
+
+  function closeModal() {
+    const modal = byId("app-modal");
+    if (modal) {
+      modal.hidden = true;
+    }
+  }
+
+  function isKnownNonGitWorkspace() {
+    return state.workspace.dbstateProjectStatus === "notGitRepository" || state.workspace.isGitRepository === false && !!state.workspace.dbstateProjectStatus;
+  }
+
+  function showNotGitRepositoryModal() {
+    showModal(
+      "Not a Git Repository",
+      "The selected directory is not a Git repository.\n\nDbState requires a local Git repository because Git is the source of truth for desired database state.\n\nInitialize Git in this folder first, or choose another folder."
+    );
+  }
+
+  async function guardGitWorkspaceBefore(action) {
+    if (isKnownNonGitWorkspace()) {
+      showNotGitRepositoryModal();
+      return false;
+    }
+    if (action === "workspace-status") {
+      return true;
+    }
+    if (!state.workspace.dbstateProjectStatus) {
+      const data = await requestJson(approvedEndpoints.workspaceValidate, attachWorkspacePath({}));
+      state.lastResponse = data;
+      jsonViewer.textContent = redactedJson(data);
+      updateWorkspaceContext(data);
+      updateSummary("workspace-summary", data);
+      if (data && data.dbstateProjectStatus === "notGitRepository") {
+        showNotGitRepositoryModal();
+        return false;
+      }
+    }
+    return true;
   }
 
   function value(id) {
@@ -2205,12 +2403,24 @@ const UI_JS: &str = r#"(function () {
   }
 
   function updateWorkflowModePanels() {
-    const mode = value("workflow-mode") || "compare";
+    const select = byId("workflow-mode");
+    const selectedMode = value("workflow-mode") || "inspect";
+    if (selectedMode === "data") {
+      showModal(
+        "Reference-Data Compare Is Out of Scope",
+        "Reference-data compare is out-of-scope of the current beta version.\n\nThis beta focuses on PostgreSQL schema/object workflows: inspect, database-to-repository capture, repository-to-database compare, Object Diff, and release artifact review."
+      );
+      select.value = state.previousWorkflowMode || "inspect";
+    }
+    const mode = value("workflow-mode") || "inspect";
+    state.previousWorkflowMode = mode;
     const layout = workflowLayout(mode);
     byId("repository-sync-controls").hidden = !isDatabaseToRepositoryMode(mode);
     document.querySelectorAll("[data-standard-operation-action]").forEach(function (button) {
-      button.hidden = isDatabaseToRepositoryMode(mode);
-      button.disabled = isDatabaseToRepositoryMode(mode);
+      const disabledForDbToRepo = isDatabaseToRepositoryMode(mode);
+      const isDataCompare = button.dataset.action === "data-compare";
+      button.hidden = disabledForDbToRepo;
+      button.disabled = disabledForDbToRepo || isDataCompare;
     });
     byId("source-target-description").textContent = layout.description;
     byId("source-kind").textContent = layout.sourceKind;
@@ -2219,6 +2429,8 @@ const UI_JS: &str = r#"(function () {
     byId("target-type").textContent = layout.targetType;
     placeSourceTargetContext(layout.sourceContext, layout.targetContext);
     updateRepositoryWriteButton();
+    updateReleaseWriteButton();
+    renderReleasePlan();
   }
 
   function workflowLayout(mode) {
@@ -2465,6 +2677,41 @@ const UI_JS: &str = r#"(function () {
     if (Array.from(select.options).some(function (option) {
       return option.value === selected;
     })) {
+      select.value = selected;
+    }
+  }
+
+  function updateStatusFilterOptions(rows) {
+    const select = byId("status-filter");
+    if (!select) {
+      return;
+    }
+    const selected = select.value || "all";
+    const preferred = [
+      "repoDifferent",
+      "inSync",
+      "repoOnly",
+      "databaseOnly",
+      "plannedCreate",
+      "plannedUpdate",
+      "blocked",
+      "error",
+      "skipped",
+      "inspected"
+    ];
+    resetSelect(select, "All");
+    select.options[0].value = "all";
+    preferred.forEach(function (status) {
+      if (rows.some(function (row) { return row.status === status; })) {
+        appendOption(select, status, status);
+      }
+    });
+    rows.map(function (row) { return row.status; }).filter(Boolean).sort().forEach(function (status) {
+      if (!Array.from(select.options).some(function (option) { return option.value === status; })) {
+        appendOption(select, status, status);
+      }
+    });
+    if (Array.from(select.options).some(function (option) { return option.value === selected; })) {
       select.value = selected;
     }
   }
@@ -2891,7 +3138,7 @@ const UI_JS: &str = r#"(function () {
     return "compare";
   }
 
-  function rowMatchesFilter(row) {
+  function rowMatchesObjectTypeFilter(row) {
     const filter = value("object-type-filter");
     if (filter === "all") {
       return true;
@@ -2905,6 +3152,39 @@ const UI_JS: &str = r#"(function () {
     return row.objectType === filter;
   }
 
+  function rowMatchesStatusFilter(row) {
+    const filter = value("status-filter");
+    return !filter || filter === "all" || row.status === filter;
+  }
+
+  function rowMatchesFilter(row) {
+    return rowMatchesObjectTypeFilter(row) && rowMatchesStatusFilter(row);
+  }
+
+  function statusSortRank(status) {
+    const ranks = {
+      repoDifferent: 0,
+      plannedUpdate: 1,
+      plannedCreate: 2,
+      repoOnly: 3,
+      databaseOnly: 4,
+      blocked: 5,
+      error: 6,
+      skipped: 7,
+      inspected: 8,
+      inSync: 9
+    };
+    return Object.prototype.hasOwnProperty.call(ranks, status) ? ranks[status] : 20;
+  }
+
+  function compareResultRows(left, right) {
+    const statusCompare = statusSortRank(left.status) - statusSortRank(right.status);
+    if (statusCompare !== 0) {
+      return statusCompare;
+    }
+    return [left.objectType, left.schema, left.name].join(".").localeCompare([right.objectType, right.schema, right.name].join("."));
+  }
+
   function renderResults(rows, keepUnderlying) {
     const body = byId("results-body");
     body.innerHTML = "";
@@ -2913,7 +3193,7 @@ const UI_JS: &str = r#"(function () {
     }
     const visibleRows = state.rows.filter(function (row) {
       return rowMatchesFilter(row) && rowMatchesCurrentWorkflow(row);
-    });
+    }).slice().sort(compareResultRows);
     state.visibleRows = visibleRows;
     if (state.selectedIndex < 0 || state.selectedIndex >= visibleRows.length) {
       state.selectedIndex = visibleRows.length ? 0 : -1;
@@ -3002,6 +3282,8 @@ const UI_JS: &str = r#"(function () {
 
   function clearObjectDiffDetails(message) {
     state.selectedObjectDdl = null;
+    byId("source-detail").className = "";
+    byId("target-detail").className = "";
     byId("source-detail").textContent = message || "DDL not available yet for this object.";
     byId("target-detail").textContent = message || "DDL not available yet for this object.";
     byId("source-related-objects").textContent = "No related object details loaded.";
@@ -3055,12 +3337,12 @@ const UI_JS: &str = r#"(function () {
   function groupRelatedObjects(items) {
     const groups = {};
     if (!items.length) {
-      groups["Details"] = ["Not available in Slice 16A"];
+      groups["Details"] = ["Not available in Private Beta"];
       return groups;
     }
     items.forEach(function (item) {
       const group = item.group || "Details";
-      const value = [item.name, item.detail].filter(Boolean).join(" - ") || "Not available in Slice 16A";
+      const value = item.name === "Not available in Private Beta" ? item.name : ([item.name, item.detail].filter(Boolean).join(" - ") || "Not available in Private Beta");
       if (!groups[group]) {
         groups[group] = [];
       }
@@ -3087,6 +3369,100 @@ const UI_JS: &str = r#"(function () {
       });
       wrapper.appendChild(list);
       target.appendChild(wrapper);
+    });
+  }
+
+  function ddlLines(value) {
+    const text = value == null ? "" : String(value).replace(/\r\n/g, "\n").replace(/\r/g, "\n");
+    if (!text) {
+      return [];
+    }
+    return text.split("\n").map(function (line) {
+      return line.replace(/\s+$/g, "");
+    });
+  }
+
+  function alignedLineDiff(sourceText, targetText) {
+    const source = ddlLines(sourceText);
+    const target = ddlLines(targetText);
+    const rows = [];
+    const dp = Array(source.length + 1).fill(null).map(function () {
+      return Array(target.length + 1).fill(0);
+    });
+    for (let i = source.length - 1; i >= 0; i -= 1) {
+      for (let j = target.length - 1; j >= 0; j -= 1) {
+        dp[i][j] = source[i] === target[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+      }
+    }
+    let i = 0;
+    let j = 0;
+    while (i < source.length || j < target.length) {
+      if (i < source.length && j < target.length && source[i] === target[j]) {
+        rows.push({ source: source[i], target: target[j], type: "same" });
+        i += 1;
+        j += 1;
+      } else if (j < target.length && (i >= source.length || dp[i][j + 1] >= dp[i + 1][j])) {
+        rows.push({ source: "", target: target[j], type: "targetOnly" });
+        j += 1;
+      } else if (i < source.length) {
+        rows.push({ source: source[i], target: "", type: "sourceOnly" });
+        i += 1;
+      }
+    }
+    return rows;
+  }
+
+  function diffClass(type) {
+    if (type === "same") {
+      return "diff-line-same";
+    }
+    if (type === "targetOnly") {
+      return "diff-line-target-only";
+    }
+    if (type === "sourceOnly") {
+      return "diff-line-source-only";
+    }
+    return "diff-line-different";
+  }
+
+  function diffTitle(type, side) {
+    if (type === "same") {
+      return "Matched line";
+    }
+    if (type === "targetOnly") {
+      return side === "target" ? "Target-only line. Missing from source." : "Blank counterpart for target-only line.";
+    }
+    if (type === "sourceOnly") {
+      return side === "source" ? "Source-only line. Missing from target." : "Blank counterpart for source-only line.";
+    }
+    return "Different line";
+  }
+
+  function renderDdlLineDiff(sourceTarget, targetTarget, sourceDdl, targetDdl) {
+    sourceTarget.innerHTML = "";
+    targetTarget.innerHTML = "";
+    sourceTarget.className = "diff-line-grid";
+    targetTarget.className = "diff-line-grid";
+    const rows = alignedLineDiff(sourceDdl, targetDdl);
+    if (!rows.length) {
+      sourceTarget.textContent = "DDL not available yet for this object.";
+      targetTarget.textContent = "DDL not available yet for this object.";
+      return;
+    }
+    rows.forEach(function (row) {
+      const sourceLine = document.createElement("div");
+      const targetLine = document.createElement("div");
+      const className = "diff-line-row " + diffClass(row.type);
+      sourceLine.className = className;
+      targetLine.className = className;
+      sourceLine.title = diffTitle(row.type, "source");
+      targetLine.title = diffTitle(row.type, "target");
+      sourceLine.setAttribute("aria-label", sourceLine.title);
+      targetLine.setAttribute("aria-label", targetLine.title);
+      sourceLine.textContent = row.type === "sourceOnly" && row.source ? "+ " + row.source : row.source || " ";
+      targetLine.textContent = row.type === "targetOnly" && row.target ? "- " + row.target : row.target || " ";
+      sourceTarget.appendChild(sourceLine);
+      targetTarget.appendChild(targetLine);
     });
   }
 
@@ -3133,8 +3509,14 @@ const UI_JS: &str = r#"(function () {
     const section = objectDdlSection(state.selectedObjectDdl, mode);
     const ddl = ddlByDirection(section, direction);
     const unavailable = "DDL not available yet for this object.";
-    byId("source-detail").textContent = ddl.sourceDdl || unavailable;
-    byId("target-detail").textContent = ddl.targetDdl || unavailable;
+    if (!ddl.sourceDdl && !ddl.targetDdl) {
+      byId("source-detail").className = "";
+      byId("target-detail").className = "";
+      byId("source-detail").textContent = unavailable;
+      byId("target-detail").textContent = unavailable;
+    } else {
+      renderDdlLineDiff(byId("source-detail"), byId("target-detail"), ddl.sourceDdl || "", ddl.targetDdl || "");
+    }
     updateDdlComparisonStatus(ddl.sourceDdl, ddl.targetDdl);
     byId("selected-json").textContent = redactedJson({
       selected: objectDiffDisplayPayload(row, direction),
@@ -3215,14 +3597,14 @@ const UI_JS: &str = r#"(function () {
   }
 
   function currentWorkflowMode() {
-    return value("workflow-mode") || "compare";
+    return value("workflow-mode") || "inspect";
   }
 
   function workflowModesMatch(rowMode, selectedMode) {
     if (isDatabaseToRepositoryMode(rowMode) && isDatabaseToRepositoryMode(selectedMode)) {
       return true;
     }
-    return textOrEmpty(rowMode || "compare") === textOrEmpty(selectedMode || "compare");
+    return textOrEmpty(rowMode || "inspect") === textOrEmpty(selectedMode || "inspect");
   }
 
   function rowMatchesCurrentWorkflow(row) {
@@ -3590,17 +3972,199 @@ const UI_JS: &str = r#"(function () {
     target.textContent = "";
   }
 
+  function releaseName() {
+    return value("release-name");
+  }
+
+  function releaseConfirmed() {
+    return value("release-confirmation") === "GENERATE RELEASE ARTIFACTS";
+  }
+
+  function updateReleaseWriteButton() {
+    const button = document.querySelector("[data-action='release-write']");
+    if (button) {
+      button.disabled = currentWorkflowMode() !== "compare" || !releaseName() || !releaseConfirmed();
+    }
+  }
+
+  function releaseBody(write) {
+    const body = attachWorkspacePath(attachConnection(buildScope()));
+    body.releaseName = releaseName();
+    body.include = [];
+    body.exclude = [];
+    if (write) {
+      body.confirmReleaseArtifacts = true;
+      body.confirmationText = value("release-confirmation");
+    }
+    return body;
+  }
+
+  function renderReleaseArtifactResult(data) {
+    const target = byId("release-artifact-result");
+    if (!target) {
+      return;
+    }
+    target.innerHTML = "";
+    const summary = document.createElement("dl");
+    summary.className = "summary-list compact";
+    const artifacts = Array.isArray(data.createdArtifacts) && data.createdArtifacts.length
+      ? data.createdArtifacts
+      : Array.isArray(data.plannedArtifacts) ? data.plannedArtifacts : [];
+    updateSummaryElement(summary, {
+      success: data.success,
+      releaseName: data.releaseName || releaseName(),
+      dryRun: data.dryRun,
+      riskLevel: data.riskLevel || "unknown",
+      artifacts: artifacts.length
+    });
+    target.appendChild(summary);
+
+    if (data.repositoryContext && data.repositoryContext.isDirty || data.isDirty) {
+      appendReleaseMessageList(
+        target,
+        "Working tree must be clean before generating release artifacts",
+        ["Release artifacts cannot be generated while the working tree is dirty. Commit or stash repository changes first, then run Generate Release Artifact."],
+        "warning"
+      );
+    }
+    appendReleaseMessageList(target, "Errors", data.errors, "error");
+    appendReleaseMessageList(target, "Warnings", data.warnings, "warning");
+    if (Array.isArray(data.riskReasons) && data.riskReasons.length) {
+      appendReleaseMessageList(target, "Risk reasons", data.riskReasons, "warning");
+    }
+
+    const riskSummary = byId("release-risk-summary");
+    if (riskSummary) {
+      riskSummary.textContent = "Risk level: " + textOrEmpty(data.riskLevel || "unknown");
+      if (data.repositoryContext && data.repositoryContext.isDirty || data.isDirty) {
+        riskSummary.textContent += ". Working tree is dirty; commit or stash changes before generating release artifacts.";
+      }
+    }
+
+    if (artifacts.length) {
+      const list = document.createElement("ul");
+      artifacts.forEach(function (artifact) {
+        const item = document.createElement("li");
+        item.textContent = textOrEmpty(artifact);
+        list.appendChild(item);
+      });
+      target.appendChild(list);
+    }
+  }
+
+  function appendReleaseMessageList(target, title, values, kind) {
+    if (!Array.isArray(values) || !values.length) {
+      return;
+    }
+    const box = document.createElement("div");
+    box.className = "issue-item" + (kind === "error" ? " error" : "");
+    const heading = document.createElement("strong");
+    heading.textContent = title;
+    box.appendChild(heading);
+    const list = document.createElement("ul");
+    values.forEach(function (value) {
+      const item = document.createElement("li");
+      item.textContent = textOrEmpty(value);
+      list.appendChild(item);
+    });
+    box.appendChild(list);
+    target.appendChild(box);
+  }
+
+  function updateSummaryElement(target, values) {
+    target.innerHTML = "";
+    Object.keys(values).forEach(function (key) {
+      const dt = document.createElement("dt");
+      const dd = document.createElement("dd");
+      dt.textContent = key;
+      dd.textContent = textOrEmpty(values[key]);
+      target.appendChild(dt);
+      target.appendChild(dd);
+    });
+  }
+
   function renderReleasePlan() {
+    const mode = currentWorkflowMode();
+    const notApplicable = byId("release-plan-not-applicable");
+    const content = byId("release-plan-content");
+    if (mode !== "compare") {
+      content.hidden = true;
+      notApplicable.hidden = false;
+      notApplicable.textContent = isDatabaseToRepositoryMode(mode)
+        ? "Release Plan is not used for Database to Repository Compare. This workflow writes selected PostgreSQL object definitions into repository files under database/objects/. Use Results → Write Selected Repository Changes."
+        : "Release artifacts are generated from Repository to Database Compare. Run Repository to Database Compare first.";
+      return;
+    }
+    content.hidden = false;
+    notApplicable.hidden = true;
     const includedRows = state.rows.filter(function (row, index) {
       return state.included.has(rowRef(row, index));
     });
+    updateSummary("release-context", {
+      workflowMode: "Repository to Database Compare",
+      source: "Repository desired state",
+      target: "PostgreSQL database",
+      latestResult: state.lastOperation || "none",
+      releaseName: releaseName() || "<required>"
+    });
+
+    const statusCounts = {};
+    const typeCounts = {};
+    includedRows.forEach(function (row) {
+      const status = textOrEmpty(row.status || "unknown");
+      const type = textOrEmpty(row.objectType || "unknown");
+      statusCounts[status] = (statusCounts[status] || 0) + 1;
+      typeCounts[type] = (typeCounts[type] || 0) + 1;
+    });
+    const summary = { selectedRows: includedRows.length };
+    Object.keys(statusCounts).sort().forEach(function (status) {
+      summary["status " + status] = statusCounts[status];
+    });
+    Object.keys(typeCounts).sort().forEach(function (type) {
+      summary["type " + type] = typeCounts[type];
+    });
+    updateSummary("release-object-summary", summary);
+
+    const name = releaseName() || "<release-name>";
+    byId("release-dryrun-command").textContent = "dbstate release postgres --all --name " + name + " --dry-run --format json";
+    byId("release-write-command").textContent = "dbstate release postgres --all --name " + name;
+
+    const body = byId("release-candidates-body");
+    body.innerHTML = "";
     if (!includedRows.length) {
-      byId("release-selected").textContent = "No included result rows yet.";
-      return;
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 6;
+      td.textContent = "No selected result rows yet. Run Repository to Database Compare or Plan, then check rows in Results.";
+      tr.appendChild(td);
+      body.appendChild(tr);
+    } else {
+      includedRows.slice(0, 200).forEach(function (row) {
+        const tr = document.createElement("tr");
+        [
+          row.objectType,
+          row.schema,
+          row.name,
+          row.status,
+          row.operation || row.planIntent || "review",
+          Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings)
+        ].forEach(function (value) {
+          const td = document.createElement("td");
+          td.textContent = textOrEmpty(value);
+          tr.appendChild(td);
+        });
+        body.appendChild(tr);
+      });
+      if (includedRows.length > 200) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 6;
+        td.textContent = "Additional in-sync rows summarized only: " + (includedRows.length - 200);
+        tr.appendChild(td);
+        body.appendChild(tr);
+      }
     }
-    byId("release-selected").textContent = includedRows.map(function (row) {
-      return row.objectType + " " + row.schema + "." + row.name + " [" + (row.operation || row.status) + "]";
-    }).join("\n");
+    updateReleaseWriteButton();
   }
 
   async function requestJson(endpoint, body, method) {
@@ -3662,6 +4226,10 @@ const UI_JS: &str = r#"(function () {
       updateResultsContext(label, data);
       renderErrorSummary(data);
       renderWarnings(data);
+      if (config.releaseResult) {
+        state.releaseResponse = data;
+        renderReleaseArtifactResult(data);
+      }
       if (config.profiles || Array.isArray(data.profiles)) {
         updateProfileList(data);
       }
@@ -3675,6 +4243,7 @@ const UI_JS: &str = r#"(function () {
       }
       const rows = rowsFromResponse(data, label);
       updateObjectTypeFilterOptions(rows, label);
+      updateStatusFilterOptions(rows);
       renderResults(rows);
       if (config.summaryId) {
         updateSummary(config.summaryId, {
@@ -3706,6 +4275,7 @@ const UI_JS: &str = r#"(function () {
       renderWarnings(data);
       const rows = rowsFromResponse(data, label);
       updateObjectTypeFilterOptions(rows, label);
+      updateStatusFilterOptions(rows);
       renderResults(rows);
       if (label === "Health") {
         servicePill.textContent = "Service not reachable";
@@ -3720,6 +4290,11 @@ const UI_JS: &str = r#"(function () {
   });
 
   document.getElementById("object-type-filter").addEventListener("change", function () {
+    state.selectedIndex = -1;
+    renderResults(state.rows, true);
+  });
+
+  document.getElementById("status-filter").addEventListener("change", function () {
     state.selectedIndex = -1;
     renderResults(state.rows, true);
   });
@@ -3809,21 +4384,38 @@ const UI_JS: &str = r#"(function () {
     run("Health", approvedEndpoints.health, null, { summaryId: "workspace-summary", step: "workspace" });
   });
 
-  document.querySelector("[data-action='workspace-status']").addEventListener("click", function () {
-    run("Workspace validate", approvedEndpoints.workspaceValidate, attachWorkspacePath({}), { summaryId: "workspace-summary", step: "workspace" });
+  document.querySelector("[data-action='workspace-status']").addEventListener("click", async function () {
+    const data = await requestJson(approvedEndpoints.workspaceValidate, attachWorkspacePath({}));
+    state.lastResponse = data;
+    jsonViewer.textContent = redactedJson(data);
+    updateStatus("Workspace validate", data);
+    updateWorkspaceContext(data);
+    updateSummary("workspace-summary", data);
+    if (data && data.dbstateProjectStatus === "notGitRepository") {
+      showNotGitRepositoryModal();
+    }
   });
 
-  document.querySelector("[data-action='repo-status']").addEventListener("click", function () {
+  document.querySelector("[data-action='repo-status']").addEventListener("click", async function () {
+    if (!(await guardGitWorkspaceBefore("repo-status"))) {
+      return;
+    }
     run("Repository status", approvedEndpoints.repoStatus, attachWorkspacePath({}), { summaryId: "workspace-summary", step: "workspace" });
   });
 
-  document.querySelector("[data-action='init-plan']").addEventListener("click", function () {
+  document.querySelector("[data-action='init-plan']").addEventListener("click", async function () {
+    if (!(await guardGitWorkspaceBefore("init-plan"))) {
+      return;
+    }
     run("Init plan", approvedEndpoints.initPlan, attachWorkspacePath({ dryRun: true }), { summaryId: "workspace-summary", step: "workspace" });
   });
 
   byId("init-confirmation").addEventListener("input", updateInitWriteButton);
 
-  document.querySelector("[data-action='init-write']").addEventListener("click", function () {
+  document.querySelector("[data-action='init-write']").addEventListener("click", async function () {
+    if (!(await guardGitWorkspaceBefore("init-write"))) {
+      return;
+    }
     const body = attachWorkspacePath({
       confirmInitializeProject: true,
       confirmationText: value("init-confirmation")
@@ -3860,8 +4452,8 @@ const UI_JS: &str = r#"(function () {
         return;
       }
       const body = attachWorkspacePath(attachConnection(buildScope()));
-      body.include = commaList(value("plan-include"));
-      body.exclude = commaList(value("plan-exclude"));
+      body.include = [];
+      body.exclude = [];
       run("Plan", approvedEndpoints.plan, body, { step: "results" });
     } catch (error) {
       responseSummary.textContent = "Plan: " + error.message;
@@ -3869,14 +4461,10 @@ const UI_JS: &str = r#"(function () {
   });
 
   document.querySelector("[data-action='data-compare']").addEventListener("click", function () {
-    try {
-      if (!standardOperationAllowed("Reference-data compare")) {
-        return;
-      }
-      run("Reference-data compare", approvedEndpoints.dataCompare, attachWorkspacePath(attachConnection(dataScope())), { step: "results" });
-    } catch (error) {
-      responseSummary.textContent = "Reference-data compare: " + error.message;
-    }
+    showModal(
+      "Reference-Data Compare Is Out of Scope",
+      "Reference-data compare is out-of-scope of the current beta version.\n\nThis beta focuses on PostgreSQL schema/object workflows: inspect, database-to-repository capture, repository-to-database compare, Object Diff, and release artifact review."
+    );
   });
 
   document.querySelector("[data-action='repository-sync-preview']").addEventListener("click", function () {
@@ -3898,7 +4486,56 @@ const UI_JS: &str = r#"(function () {
     }
   });
 
+
+
+  byId("release-name").addEventListener("input", function () {
+    renderReleasePlan();
+    updateReleaseWriteButton();
+  });
+
+  byId("release-confirmation").addEventListener("input", updateReleaseWriteButton);
+
+  document.querySelector("[data-action='release-preview']").addEventListener("click", function () {
+    try {
+      if (currentWorkflowMode() !== "compare") {
+        renderReleasePlan();
+        return;
+      }
+      if (!releaseName()) {
+        throw new Error("Release name is required before dry-run.");
+      }
+      run("Release artifact dry-run", approvedEndpoints.releasePreview, releaseBody(false), { step: "release-plan", releaseResult: true });
+    } catch (error) {
+      responseSummary.textContent = "Release artifact dry-run: " + error.message;
+    }
+  });
+
+  document.querySelector("[data-action='release-write']").addEventListener("click", function () {
+    try {
+      if (currentWorkflowMode() !== "compare") {
+        renderReleasePlan();
+        return;
+      }
+      if (!releaseName()) {
+        throw new Error("Release name is required before generating release artifacts.");
+      }
+      if (!releaseConfirmed()) {
+        throw new Error("Type GENERATE RELEASE ARTIFACTS before generating release artifacts.");
+      }
+      run("Generate Release Artifact", approvedEndpoints.releaseWrite, releaseBody(true), { step: "release-plan", releaseResult: true });
+    } catch (error) {
+      responseSummary.textContent = "Generate Release Artifact: " + error.message;
+    }
+  });
+
   document.querySelector("[data-action='copy-json']").addEventListener("click", copyRedactedJson);
+
+  document.querySelector("[data-action='modal-close']").addEventListener("click", closeModal);
+  document.addEventListener("keydown", function (event) {
+    if (event.key === "Escape") {
+      closeModal();
+    }
+  });
 
   updateConnectionModePanels();
   updateWorkflowModePanels();
@@ -4180,10 +4817,16 @@ pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> Ser
         ("POST", "/api/v1/postgres/object-ddl") => service_object_ddl_endpoint(body, cwd),
         ("POST", "/api/v1/postgres/repository-sync/preview") => {
             service_repository_sync_endpoint("repository-sync preview", body, cwd, true)
-        }
+        },
         ("POST", "/api/v1/postgres/repository-sync/write") => {
             service_repository_sync_endpoint("repository-sync write", body, cwd, false)
-        }
+        },
+        ("POST", "/api/v1/postgres/release/preview") => {
+            service_release_endpoint("release preview", body, cwd, true)
+        },
+        ("POST", "/api/v1/postgres/release/write") => {
+            service_release_endpoint("release write", body, cwd, false)
+        },
         _ if method == "PUT" && path.starts_with("/api/v1/connections/profiles/") => {
             service_connection_profile_update(path, body)
         }
@@ -4233,6 +4876,8 @@ pub fn service_route_definitions() -> Vec<(&'static str, &'static str)> {
         ("POST", "/api/v1/postgres/object-ddl"),
         ("POST", "/api/v1/postgres/repository-sync/preview"),
         ("POST", "/api/v1/postgres/repository-sync/write"),
+        ("POST", "/api/v1/postgres/release/preview"),
+        ("POST", "/api/v1/postgres/release/write"),
     ]
 }
 
@@ -5121,7 +5766,7 @@ fn repository_full_context_ddl(
         related.push(RelatedObjectSummary::new(
             "Indexes",
             "No related repository index files found.",
-            "Not available in Slice 16A",
+            "Not available in Private Beta",
         ));
         if !ddl_parts.is_empty() {
             ddl_parts.push(
@@ -5144,12 +5789,12 @@ fn repository_full_context_ddl(
     }
     related.push(RelatedObjectSummary::new(
         "Constraints",
-        "Not available in Slice 16A",
+        "Not available in Private Beta",
         "Durable constraint object coverage is deferred.",
     ));
     related.push(RelatedObjectSummary::new(
         "Comments",
-        "Not available in Slice 16A",
+        "Not available in Private Beta",
         "Durable comment object coverage is deferred.",
     ));
 
@@ -5236,7 +5881,7 @@ fn database_full_context_ddl(
         related.push(RelatedObjectSummary::new(
             "Indexes",
             "No related database indexes found.",
-            "Not available in Slice 16A",
+            "Not available in Private Beta",
         ));
     } else {
         for index in indexes {
@@ -5250,12 +5895,12 @@ fn database_full_context_ddl(
     }
     related.push(RelatedObjectSummary::new(
         "Constraints",
-        "Not available in Slice 16A",
+        "Not available in Private Beta",
         "Constraint rendering in full context is deferred.",
     ));
     related.push(RelatedObjectSummary::new(
         "Comments",
-        "Not available in Slice 16A",
+        "Not available in Private Beta",
         "Comment rendering in full context is deferred.",
     ));
 
@@ -5449,7 +6094,7 @@ impl ObjectDdlResponse {
                 repository: Vec::new(),
                 database: Vec::new(),
             },
-            warnings: vec!["DDL is available only for supported Slice 16 objects.".to_string()],
+            warnings: vec!["DDL is available only for supported Private Beta objects.".to_string()],
             errors: Vec::new(),
         }
     }
@@ -5542,6 +6187,84 @@ fn write_json_optional_string_member(
         Some(value) => write!(json, "\"{}\":\"{}\"", escape_json(name), escape_json(value)).ok(),
         None => write!(json, "\"{}\":null", escape_json(name)).ok(),
     };
+}
+
+fn service_release_endpoint(
+    command: &str,
+    body: &str,
+    cwd: &Path,
+    dry_run: bool,
+) -> ServiceHttpResponse {
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, command, &error);
+    }
+    if !dry_run {
+        let confirmed = matches!(request_bool(&request, "confirmReleaseArtifacts"), Some(true))
+            && matches!(
+                request_string(&request, "confirmationText").as_deref(),
+                Some("GENERATE RELEASE ARTIFACTS")
+            );
+        if !confirmed {
+            return service_error_response(
+                400,
+                command,
+                "Release artifact generation requires confirmReleaseArtifacts true and confirmationText GENERATE RELEASE ARTIFACTS.",
+            );
+        }
+    }
+    let workspace = match resolve_service_workspace(&request, cwd) {
+        Ok(workspace) => workspace,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    let release_name = match request_string(&request, "releaseName") {
+        Some(value) if !value.trim().is_empty() => value,
+        _ => {
+            return service_error_response(
+                400,
+                command,
+                "Release name is required. Provide releaseName.",
+            )
+        }
+    };
+
+    let mut args = vec!["release".to_string(), "postgres".to_string()];
+    match resolve_service_postgres_connection(&request) {
+        Ok(Some(connection)) => {
+            if connection.source != "environment" {
+                args.push("--url".to_string());
+                args.push(connection.url);
+            }
+        }
+        Ok(None) => {}
+        Err(error) => return service_error_response(400, command, &error),
+    }
+    match service_scope_args(
+        &request,
+        ScopeRequirement::Required,
+        EndpointScopeKind::SchemaTable,
+    ) {
+        Ok(scope_args) => args.extend(scope_args),
+        Err(error) => return service_error_response(400, command, &error),
+    }
+    args.push("--name".to_string());
+    args.push(release_name);
+    for include in request_string_array(&request, "include") {
+        args.push("--include".to_string());
+        args.push(include);
+    }
+    for exclude in request_string_array(&request, "exclude") {
+        args.push("--exclude".to_string());
+        args.push(exclude);
+    }
+    if dry_run {
+        args.push("--dry-run".to_string());
+    }
+    args.extend(["--format".to_string(), "json".to_string()]);
+    service_run_cli(command, &workspace, args)
 }
 
 fn service_repository_sync_endpoint(
@@ -7435,7 +8158,7 @@ pub fn render_sequence_sql(sequence: &SequenceInfo) -> String {
         sequence.schema_name, sequence.sequence_name
     )
     .ok();
-    writeln!(sql, "-- Owned-by relationship not captured in Slice 16.").ok();
+    writeln!(sql, "-- Owned-by relationship not captured in Private Beta.").ok();
     writeln!(sql).ok();
     writeln!(
         sql,
@@ -8118,6 +8841,12 @@ pub fn release_postgres_with_inventory(
     report.blocked_items = plan.blocked_items.clone();
     report.dependency_warnings = plan.dependency_warnings.clone();
     report.warnings = plan.warnings.clone();
+    if report.is_dirty && dry_run {
+        report.warnings.push(
+            "Release artifact generation will be blocked because the working tree has changes. Commit or stash changes before generating release artifacts."
+                .to_string(),
+        );
+    }
     report.errors = plan.errors.clone();
     report.deferred_object_types = plan.deferred_object_types.clone();
     report.repository_path = plan.repository_path.clone();
@@ -8155,7 +8884,10 @@ pub fn release_postgres_with_inventory(
         return report;
     }
 
-    let sql = match render_release_sql(&root, &report, &artifacts) {
+    let mut artifact_report = report.clone();
+    artifact_report.success = true;
+
+    let sql = match render_release_sql(&root, &artifact_report, &artifacts) {
         Ok(sql) => sql,
         Err(error) => {
             report.errors.push(error);
@@ -8163,10 +8895,10 @@ pub fn release_postgres_with_inventory(
             return report;
         }
     };
-    let summary = render_release_summary(&report, &artifacts);
-    let risk = render_release_risk_json(&report, &artifacts);
+    let summary = render_release_summary(&artifact_report, &artifacts);
+    let risk = render_release_risk_json(&artifact_report, &artifacts);
     let manifest = render_release_manifest_json(
-        &report,
+        &artifact_report,
         &artifacts,
         &[
             (&artifacts.sql, &sql),
@@ -8461,7 +9193,7 @@ fn render_release_sql(
     writeln!(sql, "-- BEGIN REVIEW SECTION: Creates").ok();
     writeln!(
         sql,
-        "-- WARNING: Full dependency ordering is not implemented in Slice 17."
+        "-- WARNING: Full dependency ordering is not implemented in Private Beta."
     )
     .ok();
     let mut creates: Vec<&PlanItem> = report
@@ -8497,7 +9229,7 @@ fn render_release_sql(
             "updateDatabaseLater" => {
                 writeln!(
                     sql,
-                    "-- REVIEW REQUIRED: object differs; automatic ALTER is not generated in Slice 17."
+                    "-- REVIEW REQUIRED: object differs; automatic ALTER is not generated in Private Beta."
                 )
                 .ok();
             }
@@ -8740,7 +9472,7 @@ fn render_release_summary(report: &ReleaseReport, artifacts: &ReleaseArtifactPat
     writeln!(summary, "## Current Limitations").ok();
     writeln!(
         summary,
-        "- Full dependency ordering is not implemented in Slice 17."
+        "- Full dependency ordering is not implemented in Private Beta."
     )
     .ok();
     writeln!(
@@ -14796,6 +15528,8 @@ rows:
             ("POST", "/api/v1/postgres/object-ddl"),
             ("POST", "/api/v1/postgres/repository-sync/preview"),
             ("POST", "/api/v1/postgres/repository-sync/write"),
+            ("POST", "/api/v1/postgres/release/preview"),
+            ("POST", "/api/v1/postgres/release/write"),
         ] {
             assert!(routes.contains(&expected), "missing route {expected:?}");
         }
@@ -14803,7 +15537,6 @@ rows:
         for (_, path) in routes {
             assert!(!path.contains("export"));
             assert!(!path.contains("/api/v1/postgres/sync"));
-            assert!(!path.contains("release/write"));
             assert!(!path.contains("apply"));
         }
     }
@@ -14836,7 +15569,7 @@ rows:
         assert!(js.body.contains("/api/v1/health"));
 
         let versioned_js =
-            service_response("GET", "/ui/app.js?v=slice16a-full-context-ddl", "", &dir);
+            service_response("GET", "/ui/app.js?v=slice22-beta-ui", "", &dir);
         assert_eq!(versioned_js.status_code, 200);
         assert!(versioned_js.body.contains("directionForWorkflowMode"));
     }
@@ -14848,7 +15581,7 @@ rows:
         assert!(html.contains("Local only"));
         assert!(html.contains("No SQL execution"));
         assert!(html.contains("direct database apply"));
-        assert!(html.contains("no write workflows"));
+        assert!(html.contains("Controlled local repository/release file writes"));
         assert!(html.contains("Schema compare workflow shell"));
         assert!(html.contains("Init Plan"));
         assert!(html.contains("Initialize DbState Project"));
@@ -14873,6 +15606,7 @@ rows:
         assert!(html.contains("selected-json"));
         assert!(html.contains("warnings-list"));
         assert!(html.contains("object-type-filter"));
+        assert!(html.contains("status-filter"));
         assert!(html.contains("status-legend"));
         assert!(html.contains("results-source"));
         assert!(html.contains("results-target"));
@@ -14882,8 +15616,8 @@ rows:
         assert!(html.contains("Reviewer Checklist"));
         assert!(html.contains("dbstate release postgres --all --name"));
         assert!(html.contains("Raw JSON"));
-        assert!(html.contains("/ui/app.css?v=slice16a-full-context-ddl"));
-        assert!(html.contains("/ui/app.js?v=slice16a-full-context-ddl"));
+        assert!(html.contains("/ui/app.css?v=slice22-beta-ui"));
+        assert!(html.contains("/ui/app.js?v=slice22-beta-ui"));
         assert!(!html.contains("http://"));
         assert!(!html.contains("https://"));
         assert!(!html.contains("cdn"));
@@ -14908,6 +15642,8 @@ rows:
             "/api/v1/postgres/object-ddl",
             "/api/v1/postgres/repository-sync/preview",
             "/api/v1/postgres/repository-sync/write",
+            "/api/v1/postgres/release/preview",
+            "/api/v1/postgres/release/write",
             "/api/v1/workspace/roots",
             "/api/v1/workspace/list-directories",
             "/api/v1/workspace/validate",
@@ -14922,10 +15658,8 @@ rows:
 
         for forbidden in [
             "/api/v1/postgres/export",
-            "/api/v1/postgres/release",
             "/api/v1/release",
             "/api/v1/postgres/apply",
-            "release/write",
             "localStorage",
             "sessionStorage",
             "showDirectoryPicker",
@@ -15015,9 +15749,7 @@ rows:
         assert!(html.contains("<select id=\"compare-table\">"));
         assert!(html.contains("<select id=\"data-table\">"));
         assert!(html.contains("Run Inspect first to populate schema and table lists."));
-        assert!(
-            html.contains("Run Reference Data Compare to load configured reference-data tables.")
-        );
+        assert!(html.contains("Reference-data compare are out-of-scope"));
         assert!(!html.contains("placeholder=\"dbstate_slice2\""));
         assert!(!html.contains("placeholder=\"schema.table\""));
         assert!(!html.contains("table:dbstate_slice2.sample_accounts"));
@@ -15063,6 +15795,9 @@ rows:
             "objectType: \"view\"",
             "referenceDataRow",
             "rowMatchesFilter",
+            "rowMatchesStatusFilter",
+            "compareResultRows",
+            "status-filter",
             "object-type-filter",
             "data.schemas",
             "data.tables",
@@ -15101,6 +15836,8 @@ rows:
         assert!(routes.contains(&("POST", "/api/v1/postgres/object-ddl")));
         assert!(routes.contains(&("POST", "/api/v1/postgres/repository-sync/preview")));
         assert!(routes.contains(&("POST", "/api/v1/postgres/repository-sync/write")));
+        assert!(routes.contains(&("POST", "/api/v1/postgres/release/preview")));
+        assert!(routes.contains(&("POST", "/api/v1/postgres/release/write")));
         assert!(routes.contains(&("GET", "/api/v1/workspace/roots")));
         assert!(routes.contains(&("POST", "/api/v1/workspace/list-directories")));
         assert!(routes.contains(&("POST", "/api/v1/workspace/validate")));
