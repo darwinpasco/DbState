@@ -1,0 +1,11 @@
+node_modules/
+playwright-report/
+output/playwright-results/
+output/*.mp4
+output/*.mp3
+subtitles/*.srt
+dbstate-demo-flow.resolved.json
+
+!audio/.gitkeep
+!subtitles/.gitkeep
+!output/.gitkeep
