@@ -786,14 +786,14 @@ const UI_HTML: &str = r#"<!doctype html>
 
   <div class="app-layout">
     <nav class="workflow-nav" aria-label="Schema compare workflow">
-      <button type="button" class="workflow-step active" data-step="workspace">1. Workspace</button>
-      <button type="button" class="workflow-step" data-step="source-target">2. Source &amp; Target</button>
-      <button type="button" class="workflow-step" data-step="compare-options">3. Compare Options</button>
-      <button type="button" class="workflow-step" data-step="results">4. Results</button>
-      <button type="button" class="workflow-step" data-step="object-diff">5. Object Diff</button>
-      <button type="button" class="workflow-step" data-step="warnings">6. Warnings</button>
-      <button type="button" class="workflow-step" data-step="release-plan">7. Release Plan</button>
-      <button type="button" class="workflow-step" data-step="reports">8. Reports / Raw JSON</button>
+      <button type="button" class="workflow-step active" data-step="workspace" data-testid="tab-workspace">1. Workspace</button>
+      <button type="button" class="workflow-step" data-step="source-target" data-testid="tab-source-target">2. Source &amp; Target</button>
+      <button type="button" class="workflow-step" data-step="compare-options" data-testid="tab-compare-options">3. Compare Options</button>
+      <button type="button" class="workflow-step" data-step="results" data-testid="tab-results">4. Results</button>
+      <button type="button" class="workflow-step" data-step="object-diff" data-testid="tab-object-diff">5. Object Diff</button>
+      <button type="button" class="workflow-step" data-step="warnings" data-testid="tab-warnings">6. Warnings</button>
+      <button type="button" class="workflow-step" data-step="release-plan" data-testid="tab-release-plan">7. Release Plan</button>
+      <button type="button" class="workflow-step" data-step="reports" data-testid="tab-reports-raw-json">8. Reports / Raw JSON</button>
       <button type="button" class="workflow-step" data-step="about">9. About / Safety</button>
     </nav>
 
@@ -810,11 +810,11 @@ const UI_HTML: &str = r#"<!doctype html>
         </div>
         <p class="note">Session-only. The path is not persisted. DbState does not clone or fetch repositories. The service must already have filesystem access.</p>
         <div class="button-row">
-          <button type="button" data-action="workspace-browse">Browse</button>
-          <button type="button" data-action="health">Health</button>
-          <button type="button" data-action="workspace-status">Check Workspace</button>
-          <button type="button" data-action="repo-status">Repo Status</button>
-          <button type="button" data-action="init-plan">Init Plan</button>
+          <button type="button" data-action="workspace-browse" data-testid="workspace-browse">Browse</button>
+          <button type="button" data-action="health" data-testid="workspace-health">Health</button>
+          <button type="button" data-action="workspace-status" data-testid="workspace-check">Check Workspace</button>
+          <button type="button" data-action="repo-status" data-testid="workspace-repo-status">Repo Status</button>
+          <button type="button" data-action="init-plan" data-testid="workspace-init-plan">Init Plan</button>
         </div>
         <div class="subsection">
           <h3>Initialize DbState Project</h3>
@@ -823,7 +823,7 @@ const UI_HTML: &str = r#"<!doctype html>
             <input id="init-confirmation" type="text" autocomplete="off" spellcheck="false">
           </label>
           <div class="button-row">
-            <button type="button" data-action="init-write" disabled>Initialize DbState Project</button>
+            <button type="button" data-action="init-write" data-testid="workspace-initialize-project" disabled>Initialize DbState Project</button>
           </div>
         </div>
         <div class="directory-picker" id="directory-picker" hidden>
@@ -857,7 +857,7 @@ const UI_HTML: &str = r#"<!doctype html>
         </div>
         <div class="subsection">
           <h3>Workflow Mode</h3>
-          <select id="workflow-mode">
+          <select id="workflow-mode" data-testid="workflow-mode">
             <option value="inspect">PostgreSQL Inspect Only</option>
             <option value="compare">Repository to Database Compare</option>
             <option value="databaseToRepository">Database to Repository Compare</option>
@@ -887,15 +887,15 @@ const UI_HTML: &str = r#"<!doctype html>
             <div id="target-content">
               <div id="postgres-connection-context">
                 <label for="connection-mode">Connection mode
-                  <select id="connection-mode">
+                  <select id="connection-mode" data-testid="connection-mode">
                     <option value="sessionUrl">Use session URL</option>
                     <option value="profile">Use saved profile</option>
                     <option value="environment">Use service environment variable</option>
                   </select>
                 </label>
-                <div id="session-url-panel">
+                <div id="session-url-panel" data-testid="target-connection-input">
                   <label for="postgres-url">PostgreSQL session-only URL
-                    <input id="postgres-url" type="password" autocomplete="off" spellcheck="false" placeholder="Prefer DBSTATE_POSTGRES_URL in the service environment">
+                    <input id="postgres-url" data-testid="source-connection-input" type="password" autocomplete="off" spellcheck="false" placeholder="Prefer DBSTATE_POSTGRES_URL in the service environment">
                   </label>
                   <p class="note">The URL is sent only with the operation you click. It is not persisted, logged by the UI, or displayed in response panels.</p>
                 </div>
@@ -947,7 +947,7 @@ const UI_HTML: &str = r#"<!doctype html>
                     <button type="button" data-action="profiles-refresh">Refresh Profiles</button>
                     <button type="button" data-action="profile-save">Save Profile</button>
                     <button type="button" data-action="profile-delete">Delete Profile</button>
-                    <button type="button" data-action="connection-test">Test Connection</button>
+                    <button type="button" data-action="connection-test" data-testid="source-target-run">Test Connection</button>
                   </div>
                   <p class="note">Profiles store host, port, database, username, SSL mode, and description only. Passwords, tokens, and full URLs are never saved.</p>
                 </div>
@@ -1022,8 +1022,8 @@ const UI_HTML: &str = r#"<!doctype html>
           </label>
           <p class="note">Type WRITE REPOSITORY FILES to enable the repository file write action.</p>
           <div class="button-row">
-            <button type="button" data-action="repository-sync-preview">Preview Repository Sync</button>
-            <button type="button" data-action="repository-sync-write" disabled>Write Repository Changes</button>
+            <button type="button" data-action="repository-sync-preview" data-testid="preview-repository-sync">Preview Repository Sync</button>
+            <button type="button" data-action="repository-sync-write" data-testid="write-repository-changes" disabled>Write Repository Changes</button>
           </div>
         </div>
       </section>
@@ -1041,14 +1041,14 @@ const UI_HTML: &str = r#"<!doctype html>
         <div id="results-error-summary" class="results-error-summary" hidden></div>
         <div class="results-toolbar">
           <label for="object-type-filter">Object type
-            <select id="object-type-filter">
+            <select id="object-type-filter" data-testid="results-object-type-filter">
               <option value="all">All</option>
               <option value="schema">Schema</option>
               <option value="table">Table</option>
             </select>
           </label>
           <label for="status-filter">Status
-            <select id="status-filter">
+            <select id="status-filter" data-testid="results-status-filter">
               <option value="all">All</option>
               <option value="repoDifferent">repoDifferent</option>
               <option value="inSync">inSync</option>
@@ -1062,10 +1062,10 @@ const UI_HTML: &str = r#"<!doctype html>
               <option value="inspected">inspected</option>
             </select>
           </label>
-          <span id="results-count">0 result rows</span>
-          <span id="included-count">0 included</span>
+          <span id="results-count" data-testid="results-visible-row-count">0 result rows</span>
+          <span id="included-count" data-testid="results-included-count">0 included</span>
         </div>
-        <div class="status-legend" aria-label="Status legend">
+        <div class="status-legend" aria-label="Status legend" data-testid="results-status-legend">
           <span><span class="status-badge status-insync">inSync</span> repository and database match</span>
           <span><span class="status-badge status-repodifferent">repoDifferent</span> exists in both but differs</span>
           <span><span class="status-badge status-repoonly">repoOnly</span> repository only</span>
@@ -1076,7 +1076,7 @@ const UI_HTML: &str = r#"<!doctype html>
           <span><span class="status-badge status-inspected">inspected</span> read from PostgreSQL inspect output</span>
         </div>
         <div class="table-wrap">
-          <table class="results-grid" aria-label="Comparison results grid">
+          <table class="results-grid" aria-label="Comparison results grid" data-testid="results-table">
             <thead>
               <tr>
                 <th>Include</th>
@@ -1113,15 +1113,15 @@ const UI_HTML: &str = r#"<!doctype html>
         <div id="ddl-comparison-status" class="ddl-comparison-status ddl-unavailable">DDL unavailable</div>
         <div id="ddl-diff-view">
           <div class="diff-grid" aria-label="Object detail viewer">
-            <section>
+            <section data-testid="object-diff-left">
               <h3 id="source-ddl-heading">Source DDL - Full Context DDL</h3>
               <p class="note">Source type: <strong id="source-type-label">Repository</strong></p>
-              <pre id="source-detail">Diff detail not available yet. DDL not available yet for this object.</pre>
+              <pre id="source-detail" data-testid="object-diff-repository">Diff detail not available yet. DDL not available yet for this object.</pre>
             </section>
-            <section>
+            <section data-testid="object-diff-right">
               <h3 id="target-ddl-heading">Target DDL - Full Context DDL</h3>
               <p class="note">Target type: <strong id="target-type-label">Database</strong></p>
-              <pre id="target-detail">Diff detail not available yet. DDL not available yet for this object.</pre>
+              <pre id="target-detail" data-testid="object-diff-database">Diff detail not available yet. DDL not available yet for this object.</pre>
             </section>
           </div>
         </div>
@@ -1137,16 +1137,16 @@ const UI_HTML: &str = r#"<!doctype html>
         </div>
         <section class="subsection">
           <h3>Selected JSON Item</h3>
-          <pre id="selected-json">{}</pre>
+          <pre id="selected-json" data-testid="selected-json-item">{}</pre>
         </section>
       </section>
 
-      <section class="workflow-panel" id="step-warnings">
+      <section class="workflow-panel" id="step-warnings" data-testid="warnings-panel">
         <div class="panel-heading">
           <h2>Warnings</h2>
           <p>Dependency warnings, blocked items, deferred object types, and service errors appear here.</p>
         </div>
-        <div id="warnings-list" class="issue-list">No warnings yet.</div>
+        <div id="warnings-list" class="issue-list" data-testid="warnings-list">No warnings yet.</div>
       </section>
 
       <section class="workflow-panel" id="step-release-plan">
@@ -1165,20 +1165,20 @@ const UI_HTML: &str = r#"<!doctype html>
             </label>
           </div>
           <div class="button-row">
-            <button type="button" data-action="release-preview">Dry-run Release Artifact</button>
-            <button type="button" data-action="release-write" disabled>Generate Release Artifact</button>
+            <button type="button" data-action="release-preview" data-testid="release-plan-dry-run">Dry-run Release Artifact</button>
+            <button type="button" data-action="release-write" data-testid="generate-release-artifact" disabled>Generate Release Artifact</button>
           </div>
           <div class="release-card">
             <h3>Release Context</h3>
-            <dl class="summary-list compact" id="release-context"></dl>
+            <dl class="summary-list compact" id="release-context" data-testid="release-context"></dl>
           </div>
           <div class="release-card">
             <h3>Risk Summary</h3>
-            <div id="release-risk-summary">Risk level: Not generated in UI. Use Dry-run Release Artifact to generate risk JSON.</div>
+            <div id="release-risk-summary" data-testid="risk-summary">Risk level: Not generated in UI. Use Dry-run Release Artifact to generate risk JSON.</div>
           </div>
           <div class="release-card">
             <h3>Object Summary</h3>
-            <dl class="summary-list compact" id="release-object-summary"></dl>
+            <dl class="summary-list compact" id="release-object-summary" data-testid="object-summary"></dl>
           </div>
           <div class="release-card">
             <h3>CLI command guidance</h3>
@@ -1189,7 +1189,7 @@ const UI_HTML: &str = r#"<!doctype html>
           <div class="release-card">
             <h3>Release Candidates</h3>
             <div class="table-wrap">
-              <table class="results-grid" aria-label="Release candidates">
+              <table class="results-grid" aria-label="Release candidates" data-testid="release-candidates">
                 <thead>
                   <tr><th>Object type</th><th>Schema</th><th>Object name</th><th>Status</th><th>Planned operation</th><th>Warnings</th></tr>
                 </thead>
@@ -1201,7 +1201,7 @@ const UI_HTML: &str = r#"<!doctype html>
           </div>
           <div class="release-card">
             <h3>Dry-run / Generated Artifacts</h3>
-            <div id="release-artifact-result">No release artifact dry-run has been run yet.</div>
+            <div id="release-artifact-result" data-testid="generated-artifacts">No release artifact dry-run has been run yet.</div>
           </div>
           <div class="subsection">
             <h3>Reviewer Checklist</h3>
@@ -1218,17 +1218,17 @@ const UI_HTML: &str = r#"<!doctype html>
         </div>
       </section>
 
-      <section class="workflow-panel" id="step-reports">
+      <section class="workflow-panel" id="step-reports" data-testid="reports-panel">
         <div class="panel-heading">
           <h2>Reports / Raw JSON</h2>
           <p>Transparent redacted service output for review and troubleshooting.</p>
         </div>
         <div id="response-summary" class="response-summary">Run a workflow to see results.</div>
         <div class="button-row">
-          <button type="button" data-action="copy-json">Copy JSON</button>
+          <button type="button" data-action="copy-json" data-testid="raw-json-copy">Copy JSON</button>
           <span id="copy-json-status" class="note"></span>
         </div>
-        <pre id="json-viewer">{}</pre>
+        <pre id="json-viewer" data-testid="raw-json-panel">{}</pre>
       </section>
 
       <section class="workflow-panel" id="step-about">
@@ -3218,9 +3218,13 @@ const UI_JS: &str = r#"(function () {
       }
       const tr = document.createElement("tr");
       tr.dataset.index = String(visibleIndex);
+      if (textOrEmpty(row.name).toLowerCase() === "actor") {
+        tr.setAttribute("data-testid", "results-row-actor");
+      }
       tr.classList.toggle("selected", visibleIndex === state.selectedIndex);
       const include = document.createElement("input");
       include.type = "checkbox";
+      include.setAttribute("data-testid", "results-include-checkbox");
       include.checked = state.included.has(ref);
       include.addEventListener("change", function (event) {
         event.stopPropagation();
@@ -3241,8 +3245,11 @@ const UI_JS: &str = r#"(function () {
         statusBadge(row.status),
         row.operation || "",
         Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings),
-      ].forEach(function (value) {
+      ].forEach(function (value, cellIndex) {
         const td = document.createElement("td");
+        if (visibleIndex === 0 && cellIndex === 0) {
+          td.setAttribute("data-testid", "results-row-first-selectable");
+        }
         if (value instanceof HTMLElement) {
           td.appendChild(value);
         } else {
@@ -3554,6 +3561,7 @@ const UI_JS: &str = r#"(function () {
   function renderSelectedObject() {
     const row = state.visibleRows[state.selectedIndex];
     const direction = directionForResultRow(row);
+    setObjectDiffDdlTestIds(direction);
     byId("source-type-label").textContent = direction.sourceType;
     byId("target-type-label").textContent = direction.targetType;
     if (!row) {
@@ -3602,6 +3610,13 @@ const UI_JS: &str = r#"(function () {
     payload.target = direction.targetLabel;
     payload.targetType = direction.targetType;
     return payload;
+  }
+
+  function setObjectDiffDdlTestIds(direction) {
+    const sourceDetail = byId("source-detail");
+    const targetDetail = byId("target-detail");
+    sourceDetail.setAttribute("data-testid", direction.sourceDdlSide === "database" ? "object-diff-database" : "object-diff-repository");
+    targetDetail.setAttribute("data-testid", direction.targetDdlSide === "repository" ? "object-diff-repository" : "object-diff-database");
   }
 
   function directionForResultRow(row) {
@@ -4844,16 +4859,16 @@ pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> Ser
         ("POST", "/api/v1/postgres/object-ddl") => service_object_ddl_endpoint(body, cwd),
         ("POST", "/api/v1/postgres/repository-sync/preview") => {
             service_repository_sync_endpoint("repository-sync preview", body, cwd, true)
-        },
+        }
         ("POST", "/api/v1/postgres/repository-sync/write") => {
             service_repository_sync_endpoint("repository-sync write", body, cwd, false)
-        },
+        }
         ("POST", "/api/v1/postgres/release/preview") => {
             service_release_endpoint("release preview", body, cwd, true)
-        },
+        }
         ("POST", "/api/v1/postgres/release/write") => {
             service_release_endpoint("release write", body, cwd, false)
-        },
+        }
         _ if method == "PUT" && path.starts_with("/api/v1/connections/profiles/") => {
             service_connection_profile_update(path, body)
         }
@@ -6230,11 +6245,13 @@ fn service_release_endpoint(
         return service_error_response(400, command, &error);
     }
     if !dry_run {
-        let confirmed = matches!(request_bool(&request, "confirmReleaseArtifacts"), Some(true))
-            && matches!(
-                request_string(&request, "confirmationText").as_deref(),
-                Some("GENERATE RELEASE ARTIFACTS")
-            );
+        let confirmed = matches!(
+            request_bool(&request, "confirmReleaseArtifacts"),
+            Some(true)
+        ) && matches!(
+            request_string(&request, "confirmationText").as_deref(),
+            Some("GENERATE RELEASE ARTIFACTS")
+        );
         if !confirmed {
             return service_error_response(
                 400,
@@ -8185,7 +8202,11 @@ pub fn render_sequence_sql(sequence: &SequenceInfo) -> String {
         sequence.schema_name, sequence.sequence_name
     )
     .ok();
-    writeln!(sql, "-- Owned-by relationship not captured in Private Beta.").ok();
+    writeln!(
+        sql,
+        "-- Owned-by relationship not captured in Private Beta."
+    )
+    .ok();
     writeln!(sql).ok();
     writeln!(
         sql,
@@ -15595,8 +15616,7 @@ rows:
         assert!(js.content_type.contains("application/javascript"));
         assert!(js.body.contains("/api/v1/health"));
 
-        let versioned_js =
-            service_response("GET", "/ui/app.js?v=slice22-beta-ui", "", &dir);
+        let versioned_js = service_response("GET", "/ui/app.js?v=slice22-beta-ui", "", &dir);
         assert_eq!(versioned_js.status_code, 200);
         assert!(versioned_js.body.contains("directionForWorkflowMode"));
     }
@@ -15711,6 +15731,87 @@ rows:
     }
 
     #[test]
+    fn ui_contains_stable_playwright_demo_selectors() {
+        let html = ui_html();
+        let js = ui_js();
+        let expected_html_selectors = [
+            "data-testid=\"tab-workspace\"",
+            "data-testid=\"workspace-browse\"",
+            "data-testid=\"workspace-health\"",
+            "data-testid=\"workspace-check\"",
+            "data-testid=\"workspace-repo-status\"",
+            "data-testid=\"workspace-init-plan\"",
+            "data-testid=\"workspace-initialize-project\"",
+            "data-testid=\"tab-source-target\"",
+            "data-testid=\"workflow-mode\"",
+            "data-testid=\"connection-mode\"",
+            "data-testid=\"source-connection-input\"",
+            "data-testid=\"target-connection-input\"",
+            "data-testid=\"source-target-run\"",
+            "data-testid=\"tab-compare-options\"",
+            "data-testid=\"preview-repository-sync\"",
+            "data-testid=\"write-repository-changes\"",
+            "data-testid=\"tab-results\"",
+            "data-testid=\"results-object-type-filter\"",
+            "data-testid=\"results-status-filter\"",
+            "data-testid=\"results-table\"",
+            "data-testid=\"results-visible-row-count\"",
+            "data-testid=\"results-included-count\"",
+            "data-testid=\"results-status-legend\"",
+            "data-testid=\"tab-object-diff\"",
+            "data-testid=\"object-diff-left\"",
+            "data-testid=\"object-diff-right\"",
+            "data-testid=\"object-diff-repository\"",
+            "data-testid=\"object-diff-database\"",
+            "data-testid=\"selected-json-item\"",
+            "data-testid=\"tab-warnings\"",
+            "data-testid=\"warnings-panel\"",
+            "data-testid=\"warnings-list\"",
+            "data-testid=\"tab-release-plan\"",
+            "data-testid=\"release-plan-dry-run\"",
+            "data-testid=\"release-context\"",
+            "data-testid=\"risk-summary\"",
+            "data-testid=\"object-summary\"",
+            "data-testid=\"release-candidates\"",
+            "data-testid=\"generated-artifacts\"",
+            "data-testid=\"generate-release-artifact\"",
+            "data-testid=\"tab-reports-raw-json\"",
+            "data-testid=\"reports-panel\"",
+            "data-testid=\"raw-json-panel\"",
+            "data-testid=\"raw-json-copy\"",
+        ];
+
+        for selector in expected_html_selectors {
+            assert!(
+                html.contains(selector),
+                "missing stable demo selector {selector}"
+            );
+        }
+
+        for expected in [
+            "tr.setAttribute(\"data-testid\", \"results-row-actor\")",
+            "include.setAttribute(\"data-testid\", \"results-include-checkbox\")",
+            "td.setAttribute(\"data-testid\", \"results-row-first-selectable\")",
+            "function setObjectDiffDdlTestIds(direction)",
+            "sourceDetail.setAttribute(\"data-testid\", direction.sourceDdlSide === \"database\" ? \"object-diff-database\" : \"object-diff-repository\")",
+            "targetDetail.setAttribute(\"data-testid\", direction.targetDdlSide === \"repository\" ? \"object-diff-repository\" : \"object-diff-database\")",
+        ] {
+            assert!(js.contains(expected), "missing JS selector path {expected}");
+        }
+
+        for not_added in [
+            "data-testid=\"selected-json-copy\"",
+            "data-testid=\"warnings-empty-state\"",
+            "data-testid=\"raw-json-download\"",
+        ] {
+            assert!(
+                !html.contains(not_added),
+                "selector should not exist without a corresponding UI element: {not_added}"
+            );
+        }
+    }
+
+    #[test]
     fn slice22_object_diff_markers_are_visual_only_and_beta_colored() {
         let css = ui_css();
         let js = ui_js();
@@ -15773,7 +15874,7 @@ rows:
             "Source type",
             "Target type",
             "Diff detail not available yet",
-            "Review-only",
+            "reviewable files",
         ] {
             assert!(
                 html.contains(expected),
@@ -15815,9 +15916,9 @@ rows:
         assert!(!html.contains("<option value=\"referenceData\">Reference data</option>"));
         assert!(html.contains("<select id=\"compare-schema\">"));
         assert!(html.contains("<select id=\"compare-table\">"));
-        assert!(html.contains("<select id=\"data-table\">"));
+        assert!(html.contains("<select id=\"data-table\" disabled>"));
         assert!(html.contains("Run Inspect first to populate schema and table lists."));
-        assert!(html.contains("Reference-data compare are out-of-scope"));
+        assert!(html.contains("reference-data compare are out-of-scope"));
         assert!(!html.contains("placeholder=\"dbstate_slice2\""));
         assert!(!html.contains("placeholder=\"schema.table\""));
         assert!(!html.contains("table:dbstate_slice2.sample_accounts"));
@@ -16121,7 +16222,7 @@ rows:
         for expected in [
             "Database to Repository",
             "Preview Repository Sync",
-            "Write Repository Files",
+            "WRITE REPOSITORY FILES",
             "WRITE REPOSITORY FILES",
             "Copy JSON",
             "Source type",
