@@ -1,4 +1,7 @@
 use crate::postgres::{invalid_postgres_url_message, is_postgres_connection_url};
+use crate::repository::{
+    enum_file_path, extension_file_path, index_file_path, sequence_file_path, view_file_path,
+};
 use crate::ui;
 use crate::workspace::{
     resolve_service_workspace, validate_browse_directory_value, workspace_directory_listing,
