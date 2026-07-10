@@ -1,6 +1,6 @@
-# Private Beta Installer Distribution
+# DbState PostgreSQL v0.1.0 Private Beta 2 Installer Distribution
 
-This document describes how to build and distribute the DbState PostgreSQL Windows private beta installer.
+This document describes how to build and distribute the DbState PostgreSQL v0.1.0 Private Beta 2 Windows installer.
 
 ## Build From Clean dev
 
@@ -28,13 +28,37 @@ cargo build --release
 .\packaging\windows\Build-WindowsInstaller.ps1
 ```
 
-Expected Slice 19 installer name:
+If `cargo test` is blocked on a Windows validation machine by Smart App Control or another Application Control policy for generated Rust test binaries, record that as an environment policy block, not a Rust compilation failure. The observed Windows policy error is:
 
 ```text
-DbState-PostgreSQL-v0.1.0-alpha.3-setup.exe
+An Application Control policy has blocked this file. (os error 4551)
 ```
 
-After the private beta tag is created, future packages may use a private-beta versioned name.
+Do not weaken DbState validation because of this. Run the remaining checks, validate on an environment that can execute Rust test binaries when available, and record the exact policy block in the release notes or validation notes.
+
+Expected Private Beta 2 distributed installer name:
+
+```text
+DbState-PostgreSQL-v0.1.0-private-beta.2-setup.exe
+```
+
+Private Beta 2 tag:
+
+```text
+v0.1.0-private-beta.2
+```
+
+Private Beta 2 package folder:
+
+```text
+dist/private-beta/v0.1.0-private-beta.2
+```
+
+Private Beta 2 SHA256:
+
+```text
+05BEC187D0D08CF3B9B54B3EB68C91E4DF09F7A29E866CC039D3CCD36CBE5CC3
+```
 
 Generated installer location:
 
@@ -54,6 +78,18 @@ Get-FileHash packaging\windows\out\DbState-PostgreSQL-v0.1.0-alpha.3-setup.exe -
 
 Send the hash with the installer so testers can verify the file they received.
 
+For the released Private Beta 2 package, the distributed installer is:
+
+```text
+DbState-PostgreSQL-v0.1.0-private-beta.2-setup.exe
+```
+
+Expected SHA256:
+
+```text
+05BEC187D0D08CF3B9B54B3EB68C91E4DF09F7A29E866CC039D3CCD36CBE5CC3
+```
+
 ## What To Send To Testers
 
 Send:
@@ -67,11 +103,11 @@ Send:
 - feedback channel:
   - `<feedback-channel-to-be-filled-by-Darwin>`
 
-The Slice 21 distribution assembly script creates a versioned folder with the installer, SHA256 file, private beta readme, and approved tester-facing docs:
+The distribution assembly script creates a versioned folder with the installer, SHA256 file, private beta readme, and approved tester-facing docs:
 
 ```powershell
 .\packaging\windows\Build-PrivateBetaPackage.ps1 `
-  -Version v0.1.0-private-beta.1 `
+  -Version v0.1.0-private-beta.2 `
   -InstallerPath .\packaging\windows\out\DbState-PostgreSQL-v0.1.0-alpha.3-setup.exe
 ```
 
@@ -102,13 +138,17 @@ C:\Program Files\DbState
 http://127.0.0.1:4587/
 ```
 
-5. Follow the ParkingDemo walkthrough with:
+5. Follow the Private Beta 2 walkthrough with a fresh local workspace:
 
 ```text
-C:\DbState\ParkingDemo
+C:\DbState\PrivateBetaDemo
 ```
 
-DbState must be tested only against disposable or explicitly approved read-only PostgreSQL targets.
+DbState must be tested only against the tester's own non-production PostgreSQL database. Do not use production, UAT, staging, shared, regulated, or customer-data databases. If the tester needs a sample database, recommend Pagila:
+
+```text
+https://github.com/devrimgunduz/pagila
+```
 
 ## Uninstall Instructions
 
@@ -150,7 +190,8 @@ The installer must not include:
 - Keep a record of the exact tag or commit used.
 - Do not post the installer publicly.
 - Ask testers to confirm the installed binary version and OS.
-- Ask testers not to use production, UAT, staging, or shared databases.
+- Ask testers not to use production, UAT, staging, shared, regulated, or customer-data databases.
+- Recommend Pagila if testers need a safe sample database.
 
 ## Support Instructions
 

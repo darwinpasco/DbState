@@ -1,0 +1,179 @@
+[
+  {
+    "section": "Intro",
+    "duration": 8,
+    "subtitle": "DbState is a developer and database release tool for understanding database state."
+  },
+  {
+    "section": "Workspace",
+    "action": "click",
+    "target": "tab-workspace",
+    "duration": 8,
+    "subtitle": "The Workspace section tells DbState where the local project repository is."
+  },
+  {
+    "section": "Workspace Health",
+    "action": "click",
+    "target": "workspace-health",
+    "duration": 6,
+    "subtitle": "Health checks whether the DbState service and local environment are available."
+  },
+  {
+    "section": "Check Workspace",
+    "action": "click",
+    "target": "workspace-check",
+    "duration": 7,
+    "subtitle": "Check Workspace validates whether the selected folder is usable as a DbState workspace."
+  },
+  {
+    "section": "Repo Status",
+    "action": "click",
+    "target": "workspace-repo-status",
+    "duration": 7,
+    "subtitle": "Repo Status shows the Git state of the workspace."
+  },
+  {
+    "section": "Init Plan",
+    "action": "click",
+    "target": "workspace-init-plan",
+    "duration": 8,
+    "subtitle": "Init Plan previews the project structure that DbState plans to create."
+  },
+  {
+    "section": "Source and Target",
+    "action": "click",
+    "target": "tab-source-target",
+    "duration": 10,
+    "subtitle": "Source and Target defines what DbState will inspect or compare."
+  },
+  {
+    "section": "Test Connection",
+    "action": "click",
+    "target": "source-target-run",
+    "duration": 8,
+    "subtitle": "The connection is used for inspection and comparison. DbState reads metadata for review."
+  },
+  {
+    "section": "Compare Options",
+    "action": "click",
+    "target": "tab-compare-options",
+    "duration": 8,
+    "subtitle": "Compare Options control what DbState does after inspection or comparison."
+  },
+  {
+    "section": "Preview Repository Sync",
+    "action": "click",
+    "target": "preview-repository-sync",
+    "duration": 8,
+    "subtitle": "Preview Repository Sync shows what repository changes DbState would create without writing files."
+  },
+  {
+    "section": "Results",
+    "action": "click",
+    "target": "tab-results",
+    "duration": 12,
+    "subtitle": "The Results section shows inspected objects, comparison status, planned operations, and warnings."
+  },
+  {
+    "section": "Select Result Row",
+    "action": "click",
+    "target": "results-row-actor",
+    "fallbackTarget": "results-row-first-selectable",
+    "duration": 8,
+    "subtitle": "The Results table is the main navigation point for reviewing database state."
+  },
+  {
+    "section": "Object Diff",
+    "action": "click",
+    "target": "tab-object-diff",
+    "duration": 12,
+    "subtitle": "Object Diff explains exactly what changed for the selected object."
+  },
+  {
+    "section": "Selected JSON Item",
+    "target": "selected-json-item",
+    "duration": 10,
+    "subtitle": "Selected JSON Item shows the structured JSON behind the selected object."
+  },
+  {
+    "section": "Warnings",
+    "action": "click",
+    "target": "tab-warnings",
+    "duration": 10,
+    "subtitle": "Warnings show issues that may affect release safety or review quality."
+  },
+  {
+    "section": "Release Plan",
+    "action": "click",
+    "target": "tab-release-plan",
+    "duration": 12,
+    "subtitle": "Release Plan turns compare results into a release-oriented review."
+  },
+  {
+    "section": "Dry Run",
+    "action": "click",
+    "target": "release-plan-dry-run",
+    "duration": 8,
+    "subtitle": "Dry-run previews the release plan without changing the database."
+  },
+  {
+    "section": "Release Context",
+    "target": "release-context",
+    "duration": 7,
+    "subtitle": "Release Context describes the environment and basis of the release plan."
+  },
+  {
+    "section": "Risk Summary",
+    "target": "risk-summary",
+    "duration": 7,
+    "subtitle": "Risk Summary gives reviewers a quick view of release risk."
+  },
+  {
+    "section": "Object Summary",
+    "target": "object-summary",
+    "duration": 7,
+    "subtitle": "Object Summary groups the plan by object type and status."
+  },
+  {
+    "section": "Release Candidates",
+    "target": "release-candidates",
+    "duration": 8,
+    "subtitle": "Release Candidates are objects or changes identified as possible items for release."
+  },
+  {
+    "section": "Generated Artifacts",
+    "target": "generated-artifacts",
+    "duration": 8,
+    "subtitle": "Generated Artifacts can include summaries, SQL files, manifests, risk reports, and structured JSON."
+  },
+  {
+    "section": "Generate Release Artifact",
+    "action": "click",
+    "target": "generate-release-artifact",
+    "duration": 8,
+    "subtitle": "Generate Release Artifact writes selected release outputs into the repository for review."
+  },
+  {
+    "section": "Reports and Raw JSON",
+    "action": "click",
+    "target": "tab-reports-raw-json",
+    "duration": 10,
+    "subtitle": "Reports and Raw JSON provide the structured output behind the UI."
+  },
+  {
+    "section": "Raw JSON",
+    "target": "raw-json-panel",
+    "duration": 10,
+    "subtitle": "Raw JSON can support reviews, internal documentation, checks, dashboards, and future integrations."
+  },
+  {
+    "section": "Safety",
+    "duration": 10,
+    "subtitle": "DbState does not directly apply changes to PostgreSQL. It prepares reviewable artifacts."
+  },
+  {
+    "section": "End",
+    "duration": 8,
+    "subtitle": "Inspect. Compare. Review. Generate artifacts. Release with control."
+  }
+]

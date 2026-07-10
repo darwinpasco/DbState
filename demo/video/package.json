@@ -1,0 +1,17 @@
+{
+  "name": "dbstate-video-demo",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "demo:install": "playwright install chromium",
+    "demo:record": "playwright test --config=playwright.config.ts",
+    "demo:srt": "node scripts/generate-srt.mjs",
+    "demo:resolve": "node scripts/resolve-audio-durations.mjs",
+    "demo:concat-audio": "node scripts/concat-audio.mjs",
+    "demo:merge": "node scripts/merge-video.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.45.0"
+  }
+}

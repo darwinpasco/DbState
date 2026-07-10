@@ -1,6 +1,14 @@
-# Slice 18 Golden-Path Private Beta Walkthrough
+# DbState PostgreSQL v0.1.0 Private Beta 2 Golden-Path Walkthrough
 
-This walkthrough is the repeatable private beta path for DbState PostgreSQL v0.1. It uses a disposable ParkingDemo PostgreSQL database and a fresh local Git repository at `C:\DbState\ParkingDemo`.
+This walkthrough is the repeatable tester path for DbState PostgreSQL v0.1.0 Private Beta 2.
+
+Use your own non-production PostgreSQL database and a fresh local Git repository for the DbState workspace. If you do not already have a suitable non-production database, Pagila is recommended as a safe sample database for testing:
+
+```text
+https://github.com/devrimgunduz/pagila
+```
+
+Pagila is useful for DbState testing because it contains tables, relationships, indexes, views, functions, and sample data. DbState PostgreSQL v0.1.0 Private Beta 2 intentionally supports only the documented beta object subset, so unsupported objects should appear as deferred or unavailable review context rather than as generated database changes.
 
 DbState remains local-first and safety-first:
 
@@ -10,7 +18,7 @@ DbState remains local-first and safety-first:
 - DbState does not stage, commit, push, pull, fetch, or tag Git changes.
 - Release artifacts are review-only.
 
-Do not use production, UAT, staging, or shared databases for this walkthrough.
+Do not use production, UAT, staging, shared, regulated, or customer-data databases for this walkthrough.
 
 ## 1. Prerequisites
 
@@ -26,20 +34,18 @@ Repository paths used in this walkthrough:
 
 ```text
 C:\SourceCodes\DbState
-C:\DbState\ParkingDemo
+C:\DbState\PrivateBetaDemo
 ```
 
-Disposable PostgreSQL target:
+PostgreSQL target:
 
 ```text
-Container: dbstate-parking-demo-pg
-Database: dbstate_parking_demo
-Port: 55417
-Password: dbstate_test_only
-Connection URL: postgres://postgres:dbstate_test_only@localhost:55417/dbstate_parking_demo
+Database: your own non-production PostgreSQL database
+Recommended sample if needed: pagila
+Connection URL shape: postgres://<user>:<password>@127.0.0.1:<port>/<database>
 ```
 
-The password and URL above are for local disposable testing only.
+Use a local disposable password or a non-production credential only. Do not put real credentials in feedback, screenshots, logs, or repository files.
 
 ## 2. Build DbState
 
@@ -65,65 +71,106 @@ Expected result:
 
 - Docker image `dbstate-postgres:dev` builds successfully.
 
-## 3. Start Disposable PostgreSQL
+## 3. Choose A Non-Production PostgreSQL Database
 
-```powershell
-docker rm -f dbstate-parking-demo-pg 2>$null
+Use a PostgreSQL database that is safe to inspect and compare during a beta test.
 
-docker run --name dbstate-parking-demo-pg `
-  -e POSTGRES_PASSWORD=dbstate_test_only `
-  -e POSTGRES_DB=dbstate_parking_demo `
-  -p 55417:5432 `
-  -d postgres:16
+Allowed examples:
+
+- A local disposable PostgreSQL database.
+- A personal development database.
+- A database created only for this beta walkthrough.
+- Pagila loaded into a local or disposable PostgreSQL instance.
+
+Do not use:
+
+- production
+- UAT
+- staging
+- shared team databases
+- regulated-data databases
+- customer-data databases
+
+DbState inspect, compare, preview, and release dry-run paths are read-only against PostgreSQL. The Database to Repository Compare write path writes repository files only. This beta still must not be pointed at sensitive database environments because screenshots, object names, comments, or review artifacts may expose information.
+
+## 4. Optional Pagila Sample Setup
+
+Skip this section if you already have a suitable non-production PostgreSQL database.
+
+Pagila repository:
+
+```text
+https://github.com/devrimgunduz/pagila
 ```
 
-Wait for readiness:
+### Local psql
+
+Use this path if `psql` is installed on your machine:
 
 ```powershell
-do {
-  Start-Sleep -Seconds 1
-  docker exec dbstate-parking-demo-pg pg_isready -U postgres -d dbstate_parking_demo
-} until ($LASTEXITCODE -eq 0)
+cd C:\SourceCodes
+git clone https://github.com/devrimgunduz/pagila.git
+cd C:\SourceCodes\pagila
+
+psql -h 127.0.0.1 -p <port> -U <user> -d postgres -c "DROP DATABASE IF EXISTS pagila WITH (FORCE);"
+psql -h 127.0.0.1 -p <port> -U <user> -d postgres -c "CREATE DATABASE pagila;"
+psql -h 127.0.0.1 -p <port> -U <user> -d pagila -v ON_ERROR_STOP=1 -f .\pagila-schema.sql
+psql -h 127.0.0.1 -p <port> -U <user> -d pagila -v ON_ERROR_STOP=1 -f .\pagila-data.sql
+```
+
+### Docker psql client
+
+Use this path if Docker is available but local `psql` is not installed. The PostgreSQL server can still be local, remote development, or another disposable instance reachable from Docker.
+
+```powershell
+cd C:\SourceCodes
+git clone https://github.com/devrimgunduz/pagila.git
+cd C:\SourceCodes\pagila
+$env:PGPASSWORD = Read-Host "PostgreSQL password"
+
+docker run --rm `
+  --add-host=host.docker.internal:host-gateway `
+  -v "C:\SourceCodes\pagila:/pagila" `
+  -e PGPASSWORD=$env:PGPASSWORD `
+  postgres:16 `
+  psql -h host.docker.internal -p <port> -U <user> -d postgres -c "DROP DATABASE IF EXISTS pagila WITH (FORCE);"
+
+docker run --rm `
+  --add-host=host.docker.internal:host-gateway `
+  -v "C:\SourceCodes\pagila:/pagila" `
+  -e PGPASSWORD=$env:PGPASSWORD `
+  postgres:16 `
+  psql -h host.docker.internal -p <port> -U <user> -d postgres -c "CREATE DATABASE pagila;"
+
+docker run --rm `
+  --add-host=host.docker.internal:host-gateway `
+  -v "C:\SourceCodes\pagila:/pagila" `
+  -e PGPASSWORD=$env:PGPASSWORD `
+  postgres:16 `
+  psql -h host.docker.internal -p <port> -U <user> -d pagila -v ON_ERROR_STOP=1 -f /pagila/pagila-schema.sql
+
+docker run --rm `
+  --add-host=host.docker.internal:host-gateway `
+  -v "C:\SourceCodes\pagila:/pagila" `
+  -e PGPASSWORD=$env:PGPASSWORD `
+  postgres:16 `
+  psql -h host.docker.internal -p <port> -U <user> -d pagila -v ON_ERROR_STOP=1 -f /pagila/pagila-data.sql
+
+Remove-Item Env:\PGPASSWORD
 ```
 
 Expected result:
 
-- `pg_isready` reports that PostgreSQL accepts connections.
-
-## 4. Load ParkingDemo Sample Schema
-
-The sample schema lives at:
-
-```text
-C:\SourceCodes\DbState\docs\postgresql-v0.1\samples\parking-demo.sql
-```
-
-Load it into the disposable database:
-
-```powershell
-cd C:\SourceCodes\DbState
-Get-Content docs\postgresql-v0.1\samples\parking-demo.sql |
-  docker exec -i dbstate-parking-demo-pg psql -U postgres -d dbstate_parking_demo
-```
-
-The sample includes:
-
-- `pgcrypto` extension.
-- `parking` schema.
-- `parking.parking_session_status` enum.
-- `parking.ticket_number_seq` sequence.
-- `parking.lots`, `parking.vehicles`, and `parking.parking_sessions` tables.
-- Primary key, foreign key, unique, and check constraints that PostgreSQL naturally creates.
-- Non-constraint-backed indexes.
-- `parking.open_parking_sessions` view.
+- A non-production `pagila` database exists.
+- Pagila tables, relationships, indexes, views, functions, and sample data are loaded.
 
 Durable first-class constraint coverage remains deferred in v0.1. Constraint context may appear in Object Diff review where available.
 
-## 5. Create Fresh ParkingDemo Git Repository
+## 5. Create Fresh Private Beta Demo Git Repository
 
 ```powershell
-New-Item -ItemType Directory -Force C:\DbState\ParkingDemo | Out-Null
-cd C:\DbState\ParkingDemo
+New-Item -ItemType Directory -Force C:\DbState\PrivateBetaDemo | Out-Null
+cd C:\DbState\PrivateBetaDemo
 git init
 git branch -M dev
 git status --short --branch --untracked-files=all
@@ -140,7 +187,7 @@ Native service path:
 
 ```powershell
 cd C:\SourceCodes\DbState
-$env:DBSTATE_POSTGRES_URL = "postgres://postgres:dbstate_test_only@localhost:55417/dbstate_parking_demo"
+$env:DBSTATE_POSTGRES_URL = "postgres://<user>:<password>@127.0.0.1:<port>/<database>"
 cargo run -- serve --host 127.0.0.1 --port 4587
 ```
 
@@ -176,7 +223,7 @@ Expected result:
 Workspace page:
 
 1. Click `Browse`.
-2. Navigate to `C:\DbState\ParkingDemo`.
+2. Navigate to `C:\DbState\PrivateBetaDemo`.
 3. Click `Select this folder`.
 4. Click `Check Workspace`.
 
@@ -215,7 +262,7 @@ Expected result:
 DbState does not stage or commit changes. The tester does this manually:
 
 ```powershell
-cd C:\DbState\ParkingDemo
+cd C:\DbState\PrivateBetaDemo
 git status --short --branch --untracked-files=all
 git add database
 git commit -m "chore: initialize DbState project structure"
@@ -231,7 +278,7 @@ Expected result:
 Recommended for this walkthrough: use the service environment variable already set in the service process:
 
 ```powershell
-$env:DBSTATE_POSTGRES_URL = "postgres://postgres:dbstate_test_only@localhost:55417/dbstate_parking_demo"
+$env:DBSTATE_POSTGRES_URL = "postgres://<user>:<password>@127.0.0.1:<port>/<database>"
 ```
 
 UI Source & Target page:
@@ -266,14 +313,14 @@ Expected Results page:
   - Sequence
   - Index
   - View
-- Rows include supported ParkingDemo objects if present.
+- Rows include supported objects from your selected non-production database. Pagila should produce table, index, view, and function-related review context, with unsupported object types handled as beta limitations.
 - Columns stay in Object Diff details for selected tables, not as top-level Results filter rows.
 
-## 13. Run Database To Repository Preview
+## 13. Run Database To Repository Compare Preview
 
 Source & Target page:
 
-1. Set Workflow Mode to `Database to Repository`.
+1. Set Workflow Mode to `Database to Repository Compare`.
 2. Confirm Source is PostgreSQL database.
 3. Confirm Target is repository desired state.
 
@@ -288,7 +335,7 @@ Expected result:
 - No repository files are written during preview.
 - No PostgreSQL mutation occurs.
 
-## 14. Write Repository Files
+## 14. Write Selected Repository Changes
 
 Compare Options page:
 
@@ -300,7 +347,7 @@ Compare Options page:
 WRITE REPOSITORY FILES
 ```
 
-4. Click `Write Repository Files`.
+4. Click `Write Selected Repository Changes`.
 
 Expected result:
 
@@ -313,10 +360,10 @@ Expected result:
 ## 15. Commit Captured Desired-State Files Manually
 
 ```powershell
-cd C:\DbState\ParkingDemo
+cd C:\DbState\PrivateBetaDemo
 git status --short --branch --untracked-files=all
 git add database\objects
-git commit -m "feat: capture ParkingDemo database state"
+git commit -m "feat: capture private beta database state"
 ```
 
 Expected result:
@@ -371,42 +418,88 @@ Expected result:
 - Full Context DDL shows the selected table plus related index DDL where available.
 - Object Only DDL shows only the durable object.
 - Related Objects groups related details.
-- Raw Details shows redacted JSON.
+- Raw Details shows redacted JSON for support evidence and troubleshooting.
+- Raw Details is not the primary review workflow.
 - DDL comparison shows Similar, Different, or DDL unavailable.
+- Source-only lines use a display-only `+` marker.
+- Target-only lines use a display-only `-` marker.
+- Diff markers are visual indicators only. They are not part of source DDL, target DDL, repository files, release SQL, or generated review artifacts.
 
-## 19. Run Release Dry-Run From CLI
+## 19. Run Release Dry-Run From UI
+
+UI:
+
+1. Source & Target page: set Workflow Mode to `Repository to Database Compare`.
+2. Compare Options page: Scope `All`.
+3. Click `Run Compare`.
+4. Open `Release Plan`.
+5. Enter release name:
+
+```text
+beta_review
+```
+
+6. Click `Dry-run Release Artifact`.
+
+Expected result:
+
+- Release Plan shows planned artifact paths, risk information, warnings, and errors where relevant.
+- No files are written under `database/releases/`.
+- DbState does not execute SQL.
+- DbState does not mutate PostgreSQL.
+- DbState does not stage or commit Git changes.
+
+## 20. Generate Release Artifacts From UI
+
+Release Plan page:
+
+1. Review the dry-run result first.
+2. Type:
+
+```text
+GENERATE RELEASE ARTIFACTS
+```
+
+3. Click `Generate Release Artifact`.
+
+Expected result:
+
+- Release artifacts are written under `database/releases/`.
+- DbState does not execute release SQL.
+- DbState does not mutate PostgreSQL.
+- DbState does not stage or commit artifacts.
+
+## 21. CLI Release Fallback
+
+Use the CLI if the UI release path cannot be used in the current environment.
+
+Dry-run:
 
 ```powershell
-cd C:\DbState\ParkingDemo
+cd C:\DbState\PrivateBetaDemo
 
-$env:DBSTATE_POSTGRES_URL = "postgres://postgres:dbstate_test_only@localhost:55417/dbstate_parking_demo"
+$env:DBSTATE_POSTGRES_URL = "postgres://<user>:<password>@127.0.0.1:<port>/<database>"
 
 C:\SourceCodes\DbState\target\debug\dbstate.exe release postgres --all --name beta_review --dry-run --format json
 ```
 
-Expected result:
-
-- Command returns JSON.
-- Planned artifact paths are shown.
-- No files are written under `database/releases/`.
-- Risk information is visible.
-
-## 20. Run Release Write From CLI
+Write review artifacts:
 
 ```powershell
-cd C:\DbState\ParkingDemo
+cd C:\DbState\PrivateBetaDemo
 
 C:\SourceCodes\DbState\target\debug\dbstate.exe release postgres --all --name beta_review
 ```
 
 Expected result:
 
-- Release artifacts are written under `database/releases/`.
+- CLI dry-run writes no files.
+- CLI write creates review artifacts under `database/releases/`.
 - DbState does not execute release SQL.
-- DbState does not apply changes to PostgreSQL.
+- DbState does not mutate PostgreSQL.
 - DbState does not stage or commit artifacts.
 
-## 21. Review Generated Artifacts
+## 22. Review Generated Artifacts
 
 ```powershell
 Get-ChildItem database\releases
@@ -438,18 +531,18 @@ Expected result:
 - Manifest lists generated artifacts.
 - No unsafe executable SQL is generated.
 
-## 22. Commit Release Artifacts Manually
+## 23. Commit Release Artifacts Manually
 
 DbState does not stage or commit release artifacts. If the artifacts are acceptable, commit manually:
 
 ```powershell
-cd C:\DbState\ParkingDemo
+cd C:\DbState\PrivateBetaDemo
 git status --short --branch --untracked-files=all
 git add database\releases
 git commit -m "chore: add beta review release artifacts"
 ```
 
-## 23. Reports And Raw JSON
+## 24. Reports And Raw JSON
 
 UI Reports / Raw JSON page:
 
@@ -464,7 +557,7 @@ Expected result:
 - No token.
 - No secret fields.
 
-## 24. Docker Walkthrough
+## 25. Docker Walkthrough
 
 Use Docker if the tester does not want to install Rust locally.
 
@@ -479,12 +572,14 @@ Run service in Docker:
 
 ```powershell
 docker run --rm `
+  --add-host=host.docker.internal:host-gateway `
+  --entrypoint sh `
   -p 127.0.0.1:4587:4587 `
-  -v "C:\DbState\ParkingDemo:/workspace" `
+  -v "C:\DbState\PrivateBetaDemo:/workspace" `
   -w /workspace `
-  -e DBSTATE_POSTGRES_URL="postgres://postgres:dbstate_test_only@host.docker.internal:55417/dbstate_parking_demo" `
+  -e DBSTATE_POSTGRES_URL="postgres://<user>:<password>@host.docker.internal:<port>/<database>" `
   dbstate-postgres:dev `
-  dbstate serve --host 0.0.0.0 --port 4587
+  -c "git config --global --add safe.directory /workspace && /usr/local/bin/dbstate serve --host 0.0.0.0 --port 4587"
 ```
 
 Open:
@@ -501,25 +596,21 @@ Use this workspace path in the UI:
 
 Docker can browse only paths mounted into the container. It cannot browse arbitrary host paths.
 
-## 25. Cleanup
+## 26. Cleanup
 
 Stop service with `Ctrl+C`.
 
-Remove the disposable PostgreSQL container:
-
-```powershell
-docker rm -f dbstate-parking-demo-pg
-```
+If you created a disposable PostgreSQL database for this walkthrough, drop or remove it according to your local test environment policy.
 
 Remove the fresh workspace only if you no longer need it:
 
 ```powershell
-Remove-Item -LiteralPath C:\DbState\ParkingDemo -Recurse -Force
+Remove-Item -LiteralPath C:\DbState\PrivateBetaDemo -Recurse -Force
 ```
 
 Do not remove a workspace that contains feedback artifacts or changes you still need.
 
-## 26. Troubleshooting
+## 27. Troubleshooting
 
 ### Port 4587 Already In Use
 
@@ -547,12 +638,12 @@ Start Docker Desktop and rerun:
 docker ps
 ```
 
-### PostgreSQL Container Not Ready
+### PostgreSQL Target Not Ready
 
-Wait:
+Confirm your selected non-production PostgreSQL database accepts connections. Example:
 
 ```powershell
-docker exec dbstate-parking-demo-pg pg_isready -U postgres -d dbstate_parking_demo
+pg_isready -h 127.0.0.1 -p <port> -U <user> -d <database>
 ```
 
 ### Cannot Connect To Database
@@ -560,13 +651,13 @@ docker exec dbstate-parking-demo-pg pg_isready -U postgres -d dbstate_parking_de
 Native service should use:
 
 ```text
-postgres://postgres:dbstate_test_only@localhost:55417/dbstate_parking_demo
+postgres://<user>:<password>@127.0.0.1:<port>/<database>
 ```
 
 Docker service should use:
 
 ```text
-postgres://postgres:dbstate_test_only@host.docker.internal:55417/dbstate_parking_demo
+postgres://<user>:<password>@host.docker.internal:<port>/<database>
 ```
 
 ### UI Shows Failed To Fetch
@@ -580,7 +671,7 @@ postgres://postgres:dbstate_test_only@host.docker.internal:55417/dbstate_parking
 Set it in the same terminal before starting the service:
 
 ```powershell
-$env:DBSTATE_POSTGRES_URL = "postgres://postgres:dbstate_test_only@localhost:55417/dbstate_parking_demo"
+$env:DBSTATE_POSTGRES_URL = "postgres://<user>:<password>@127.0.0.1:<port>/<database>"
 cargo run -- serve --host 127.0.0.1 --port 4587
 ```
 
@@ -589,7 +680,7 @@ cargo run -- serve --host 127.0.0.1 --port 4587
 Run:
 
 ```powershell
-cd C:\DbState\ParkingDemo
+cd C:\DbState\PrivateBetaDemo
 git init
 git branch -M dev
 ```
@@ -630,7 +721,7 @@ Press `Ctrl+F5`.
 Host path:
 
 ```text
-C:\DbState\ParkingDemo
+C:\DbState\PrivateBetaDemo
 ```
 
 Container path:
@@ -641,7 +732,7 @@ Container path:
 
 Use `/workspace` in the UI when running the service in Docker.
 
-## 27. Private Beta Readiness Checklist
+## 28. Private Beta Readiness Checklist
 
 - Can run without installing Rust using Docker.
 - Can run natively with cargo for developers.
@@ -664,7 +755,7 @@ Use `/workspace` in the UI when running the service in Docker.
 - Testers have feedback template.
 - Known limitations are documented.
 
-## 28. Feedback
+## 29. Feedback
 
 Use:
 
@@ -672,4 +763,4 @@ Use:
 docs/postgresql-v0.1/49-private-beta-feedback-template.md
 ```
 
-Before sending feedback, redact passwords, full PostgreSQL URLs, production data, tokens, certificates, and secrets.
+Before sending feedback, redact passwords, full PostgreSQL URLs, production data, customer data, regulated data, tokens, certificates, and secrets.
