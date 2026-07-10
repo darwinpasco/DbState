@@ -1,4 +1,8 @@
 use crate::ui;
+use crate::workspace::{
+    resolve_service_workspace, validate_browse_directory_value, workspace_directory_listing,
+    workspace_directory_listing_json, workspace_root_candidates, workspace_roots_json,
+};
 use crate::*;
 use postgres::{Client, NoTls};
 use serde_yaml::{Mapping, Value};
@@ -387,12 +391,6 @@ fn service_health_response() -> ServiceHttpResponse {
     }
 }
 
-#[derive(Debug, Clone)]
-struct WorkspaceDirectoryEntry {
-    name: String,
-    path: String,
-}
-
 fn service_workspace_roots(cwd: &Path) -> ServiceHttpResponse {
     let mut roots = workspace_root_candidates(cwd);
     roots.sort_by(|left, right| {
@@ -426,184 +424,6 @@ fn service_workspace_list_directories(body: &str, cwd: &Path) -> ServiceHttpResp
 
 fn service_workspace_validate(body: &str, cwd: &Path) -> ServiceHttpResponse {
     service_cli_endpoint("workspace validate", body, cwd, &["repo", "status"])
-}
-
-fn workspace_root_candidates(cwd: &Path) -> Vec<WorkspaceDirectoryEntry> {
-    let mut roots = Vec::new();
-    if let Ok(canonical) = fs::canonicalize(cwd) {
-        if canonical.is_dir() {
-            roots.push(WorkspaceDirectoryEntry {
-                name: "Service working directory".to_string(),
-                path: display_path(&canonical),
-            });
-        }
-    }
-
-    #[cfg(target_os = "windows")]
-    {
-        for letter in b'A'..=b'Z' {
-            let path = format!("{}:\\", letter as char);
-            let candidate = PathBuf::from(&path);
-            if candidate.is_dir() {
-                roots.push(WorkspaceDirectoryEntry {
-                    name: path.clone(),
-                    path,
-                });
-            }
-        }
-    }
-
-    #[cfg(not(target_os = "windows"))]
-    {
-        let root = PathBuf::from("/");
-        if root.is_dir() {
-            roots.push(WorkspaceDirectoryEntry {
-                name: "/".to_string(),
-                path: "/".to_string(),
-            });
-        }
-        if let Ok(home) = env::var("HOME") {
-            if !home.trim().is_empty() {
-                let home_path = PathBuf::from(&home);
-                if home_path.is_dir() {
-                    roots.push(WorkspaceDirectoryEntry {
-                        name: "Home".to_string(),
-                        path: display_path(&home_path),
-                    });
-                }
-            }
-        }
-    }
-
-    roots
-}
-
-#[derive(Debug, Clone)]
-struct WorkspaceDirectoryListing {
-    path: String,
-    parent_path: Option<String>,
-    directories: Vec<WorkspaceDirectoryEntry>,
-    warnings: Vec<String>,
-}
-
-fn validate_browse_directory_value(value: &str) -> Result<PathBuf, String> {
-    let trimmed = value.trim();
-    if trimmed.is_empty() {
-        return Err("path is required.".to_string());
-    }
-    if trimmed.contains('\0') {
-        return Err("path contains an invalid null byte.".to_string());
-    }
-    if is_url_like_repository_path(trimmed) {
-        return Err(
-            "path must be a local filesystem path, not a URL or remote repository reference."
-                .to_string(),
-        );
-    }
-    let canonical = fs::canonicalize(PathBuf::from(normalize_local_path_input(trimmed)))
-        .map_err(|_| "path does not exist or cannot be accessed.".to_string())?;
-    if !canonical.is_dir() {
-        return Err("path must point to a directory.".to_string());
-    }
-    Ok(canonical)
-}
-
-fn workspace_directory_listing(path: &Path) -> Result<WorkspaceDirectoryListing, String> {
-    let mut directories = Vec::new();
-    let mut warnings = Vec::new();
-    let entries =
-        fs::read_dir(path).map_err(|error| format!("Could not read directory: {error}"))?;
-    for entry in entries {
-        let entry = match entry {
-            Ok(entry) => entry,
-            Err(error) => {
-                warnings.push(format!("Could not read one directory entry: {error}"));
-                continue;
-            }
-        };
-        let file_type = match entry.file_type() {
-            Ok(file_type) => file_type,
-            Err(error) => {
-                warnings.push(format!("Could not read one directory entry type: {error}"));
-                continue;
-            }
-        };
-        if !file_type.is_dir() {
-            continue;
-        }
-        let child_path = entry.path();
-        directories.push(WorkspaceDirectoryEntry {
-            name: entry.file_name().to_string_lossy().to_string(),
-            path: display_path(&child_path),
-        });
-    }
-    directories.sort_by(|left, right| {
-        left.name
-            .to_ascii_lowercase()
-            .cmp(&right.name.to_ascii_lowercase())
-    });
-    let parent_path = path
-        .parent()
-        .filter(|parent| *parent != path)
-        .map(display_path);
-    Ok(WorkspaceDirectoryListing {
-        path: display_path(path),
-        parent_path,
-        directories,
-        warnings,
-    })
-}
-
-fn workspace_roots_json(roots: &[WorkspaceDirectoryEntry], cwd: &Path) -> String {
-    let current_path = fs::canonicalize(cwd).unwrap_or_else(|_| cwd.to_path_buf());
-    let mut json = String::new();
-    json.push('{');
-    write_json_string_field(&mut json, "command", "workspace roots", true);
-    write_json_bool_field(&mut json, "success", true);
-    write_json_string_field(
-        &mut json,
-        "currentPath",
-        &display_path(&current_path),
-        false,
-    );
-    write_workspace_directory_array_field(&mut json, "roots", roots);
-    write_json_array_field(&mut json, "warnings", &[]);
-    write_json_array_field(&mut json, "errors", &[]);
-    json.push('}');
-    json
-}
-
-fn workspace_directory_listing_json(report: &WorkspaceDirectoryListing) -> String {
-    let mut json = String::new();
-    json.push('{');
-    write_json_string_field(&mut json, "command", "workspace list-directories", true);
-    write_json_bool_field(&mut json, "success", true);
-    write_json_string_field(&mut json, "path", &report.path, false);
-    write_json_optional_string_field(&mut json, "parentPath", report.parent_path.as_deref());
-    write_workspace_directory_array_field(&mut json, "directories", &report.directories);
-    write_json_array_field(&mut json, "warnings", &report.warnings);
-    write_json_array_field(&mut json, "errors", &[]);
-    json.push('}');
-    json
-}
-
-fn write_workspace_directory_array_field(
-    json: &mut String,
-    name: &str,
-    values: &[WorkspaceDirectoryEntry],
-) {
-    json.push(',');
-    write!(json, "\"{}\":[", escape_json(name)).ok();
-    for (index, value) in values.iter().enumerate() {
-        if index > 0 {
-            json.push(',');
-        }
-        json.push('{');
-        write_json_string_field(json, "name", &value.name, true);
-        write_json_string_field(json, "path", &value.path, false);
-        json.push('}');
-    }
-    json.push(']');
 }
 
 fn service_connection_profiles_list() -> ServiceHttpResponse {
@@ -901,10 +721,12 @@ fn service_init_plan_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
     if let Err(error) = validate_service_request_is_safe(&request) {
         return service_error_response(400, "init plan", &error);
     }
-    let workspace = match resolve_service_workspace(&request, cwd) {
-        Ok(workspace) => workspace,
-        Err(error) => return service_error_response(400, "init plan", &error),
-    };
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, "init plan", &error),
+        };
     if matches!(request_bool(&request, "dryRun"), Some(false)) {
         return service_error_response(
             400,
@@ -943,10 +765,12 @@ fn service_init_write_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
             "Initialization requires confirmInitializeProject true and confirmationText INITIALIZE DBSTATE PROJECT.",
         );
     }
-    let workspace = match resolve_service_workspace(&request, cwd) {
-        Ok(workspace) => workspace,
-        Err(error) => return service_error_response(400, "init write", &error),
-    };
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, "init write", &error),
+        };
     match init_project(&workspace, false) {
         Ok(report) => {
             let status = if report.success {
@@ -975,10 +799,12 @@ fn service_cli_endpoint(
     if let Err(error) = validate_service_request_is_safe(&request) {
         return service_error_response(400, command, &error);
     }
-    let workspace = match resolve_service_workspace(&request, cwd) {
-        Ok(workspace) => workspace,
-        Err(error) => return service_error_response(400, command, &error),
-    };
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, command, &error),
+        };
     let mut args: Vec<String> = base_args.iter().map(|value| (*value).to_string()).collect();
     args.extend(["--format".to_string(), "json".to_string()]);
     service_run_cli(command, &workspace, args)
@@ -999,10 +825,12 @@ fn service_postgres_endpoint(
     if let Err(error) = validate_service_request_is_safe(&request) {
         return service_error_response(400, command, &error);
     }
-    let workspace = match resolve_service_workspace(&request, cwd) {
-        Ok(workspace) => workspace,
-        Err(error) => return service_error_response(400, command, &error),
-    };
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, command, &error),
+        };
 
     let mut args: Vec<String> = base_args.iter().map(|value| (*value).to_string()).collect();
     match resolve_service_postgres_connection(&request) {
@@ -1043,10 +871,12 @@ fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
     if let Err(error) = validate_service_request_is_safe(&request) {
         return service_error_response(400, command, &error);
     }
-    let workspace = match resolve_service_workspace(&request, cwd) {
-        Ok(workspace) => workspace,
-        Err(error) => return service_error_response(400, command, &error),
-    };
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, command, &error),
+        };
 
     let object_type = request_string(&request, "objectType").unwrap_or_default();
     let schema = request_string(&request, "schema").unwrap_or_default();
@@ -1695,10 +1525,12 @@ fn service_release_endpoint(
             );
         }
     }
-    let workspace = match resolve_service_workspace(&request, cwd) {
-        Ok(workspace) => workspace,
-        Err(error) => return service_error_response(400, command, &error),
-    };
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, command, &error),
+        };
     let release_name = match request_string(&request, "releaseName") {
         Some(value) if !value.trim().is_empty() => value,
         _ => {
@@ -1773,10 +1605,12 @@ fn service_repository_sync_endpoint(
             );
         }
     }
-    let workspace = match resolve_service_workspace(&request, cwd) {
-        Ok(workspace) => workspace,
-        Err(error) => return service_error_response(400, command, &error),
-    };
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, command, &error),
+        };
 
     let mut args = vec!["sync".to_string(), "postgres".to_string()];
     match resolve_service_postgres_connection(&request) {
@@ -1852,56 +1686,6 @@ fn validate_service_request_is_safe(request: &Value) -> Result<(), String> {
         }
     }
     Ok(())
-}
-
-fn resolve_service_workspace(request: &Value, fallback: &Path) -> Result<PathBuf, String> {
-    let Some(repository_path) = request_string(request, "repositoryPath") else {
-        return Ok(fallback.to_path_buf());
-    };
-    let trimmed = repository_path.trim();
-    if trimmed.is_empty() {
-        return Ok(fallback.to_path_buf());
-    }
-    validate_repository_path_value(trimmed)
-}
-
-fn validate_repository_path_value(value: &str) -> Result<PathBuf, String> {
-    if value.contains('\0') {
-        return Err("repositoryPath contains an invalid null byte.".to_string());
-    }
-    if is_url_like_repository_path(value) {
-        return Err("repositoryPath must be a local filesystem path, not a URL or remote repository reference.".to_string());
-    }
-
-    let path = PathBuf::from(normalize_local_path_input(value));
-    let canonical = fs::canonicalize(&path)
-        .map_err(|_| "repositoryPath does not exist or cannot be accessed.".to_string())?;
-    if !canonical.is_dir() {
-        return Err("repositoryPath must point to a directory.".to_string());
-    }
-    if git_root(&canonical).is_none() {
-        return Err("repositoryPath must be inside a local Git working tree.".to_string());
-    }
-    Ok(canonical)
-}
-
-fn is_url_like_repository_path(value: &str) -> bool {
-    let lower = value.trim().to_ascii_lowercase();
-    lower.starts_with("http://")
-        || lower.starts_with("https://")
-        || lower.starts_with("ssh://")
-        || lower.starts_with("postgres://")
-        || lower.starts_with("postgresql://")
-        || lower.starts_with("git@")
-}
-
-pub(crate) fn normalize_local_path_input(value: &str) -> String {
-    let normalized = value.trim().replace('\\', "/");
-    normalized
-        .strip_prefix("///?/")
-        .or_else(|| normalized.strip_prefix("//?/"))
-        .unwrap_or(&normalized)
-        .to_string()
 }
 
 fn config_dir() -> Result<PathBuf, String> {
