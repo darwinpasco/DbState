@@ -1,0 +1,591 @@
+use crate::repository::objects::*;
+use crate::repository::sync::ExportSelection;
+use crate::*;
+use std::collections::BTreeMap;
+use std::fs;
+use std::path::Path;
+
+pub(crate) fn discover_repository_objects(root: &Path) -> Result<RepositoryImport, String> {
+    let mut import = RepositoryImport {
+        objects: BTreeMap::new(),
+        skipped: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+    };
+
+    discover_schema_files(root, &mut import)?;
+    discover_table_files(root, &mut import)?;
+    discover_extension_files(root, &mut import)?;
+    discover_enum_files(root, &mut import)?;
+    discover_sequence_files(root, &mut import)?;
+    discover_index_files(root, &mut import)?;
+    discover_view_files(root, &mut import)?;
+    import.skipped.sort();
+    import.skipped.dedup();
+    Ok(import)
+}
+
+fn discover_schema_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    let dir = root.join("database/objects/schemas");
+    for entry in fs::read_dir(&dir)
+        .map_err(|error| format!("Could not read database/objects/schemas: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("Could not read schema file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("database/objects/schemas/{file_name}");
+        let Some(schema) = schema_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&schema).is_err() {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        import.objects.insert(
+            schema_key(&schema),
+            DesiredStateObject {
+                object_type: RepositoryObjectType::Schema,
+                schema_name: schema.clone(),
+                table_name: None,
+                object_name: schema,
+                parent_name: None,
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn discover_table_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    let dir = root.join("database/objects/tables");
+    for entry in fs::read_dir(&dir)
+        .map_err(|error| format!("Could not read database/objects/tables: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("Could not read table file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("database/objects/tables/{file_name}");
+        let Some((schema, table)) = table_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&schema).is_err() || safe_file_component(&table).is_err() {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        import.objects.insert(
+            table_key(&schema, &table),
+            DesiredStateObject {
+                object_type: RepositoryObjectType::Table,
+                schema_name: schema,
+                table_name: Some(table.clone()),
+                object_name: table,
+                parent_name: None,
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn discover_extension_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    discover_one_part_object_files(
+        root,
+        import,
+        "database/objects/extensions",
+        RepositoryObjectType::Extension,
+        extension_key,
+    )
+}
+
+fn discover_enum_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    discover_two_part_object_files(
+        root,
+        import,
+        "database/objects/enums",
+        RepositoryObjectType::Enum,
+        enum_key,
+    )
+}
+
+fn discover_sequence_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    discover_two_part_object_files(
+        root,
+        import,
+        "database/objects/sequences",
+        RepositoryObjectType::Sequence,
+        sequence_key,
+    )
+}
+
+fn discover_view_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    discover_two_part_object_files(
+        root,
+        import,
+        "database/objects/views",
+        RepositoryObjectType::View,
+        view_key,
+    )
+}
+
+fn discover_index_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    let dir = root.join("database/objects/indexes");
+    for entry in fs::read_dir(&dir)
+        .map_err(|error| format!("Could not read database/objects/indexes: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("Could not read index file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("database/objects/indexes/{file_name}");
+        let Some((schema, table, index)) = three_part_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&schema).is_err()
+            || safe_file_component(&table).is_err()
+            || safe_file_component(&index).is_err()
+        {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        import.objects.insert(
+            index_key(&schema, &table, &index),
+            DesiredStateObject {
+                object_type: RepositoryObjectType::Index,
+                schema_name: schema,
+                table_name: Some(table.clone()),
+                object_name: index,
+                parent_name: Some(table),
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn discover_one_part_object_files(
+    root: &Path,
+    import: &mut RepositoryImport,
+    folder: &str,
+    object_type: RepositoryObjectType,
+    key_fn: fn(&str) -> String,
+) -> Result<(), String> {
+    let dir = root.join(folder);
+    for entry in fs::read_dir(&dir).map_err(|error| format!("Could not read {folder}: {error}"))? {
+        let entry =
+            entry.map_err(|error| format!("Could not read desired-state file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("{folder}/{file_name}");
+        let Some(name) = schema_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&name).is_err() {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        import.objects.insert(
+            key_fn(&name),
+            DesiredStateObject {
+                object_type: object_type.clone(),
+                schema_name: String::new(),
+                table_name: None,
+                object_name: name,
+                parent_name: None,
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn discover_two_part_object_files(
+    root: &Path,
+    import: &mut RepositoryImport,
+    folder: &str,
+    object_type: RepositoryObjectType,
+    key_fn: fn(&str, &str) -> String,
+) -> Result<(), String> {
+    let dir = root.join(folder);
+    for entry in fs::read_dir(&dir).map_err(|error| format!("Could not read {folder}: {error}"))? {
+        let entry =
+            entry.map_err(|error| format!("Could not read desired-state file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("{folder}/{file_name}");
+        let Some((schema, name)) = table_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&schema).is_err() || safe_file_component(&name).is_err() {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        import.objects.insert(
+            key_fn(&schema, &name),
+            DesiredStateObject {
+                object_type: object_type.clone(),
+                schema_name: schema,
+                table_name: None,
+                object_name: name,
+                parent_name: None,
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn schema_name_from_file(file_name: &str) -> Option<String> {
+    file_name
+        .strip_suffix(".sql")
+        .filter(|stem| !stem.is_empty())
+        .map(|stem| stem.to_string())
+}
+
+fn table_name_from_file(file_name: &str) -> Option<(String, String)> {
+    let stem = file_name.strip_suffix(".sql")?;
+    let parts: Vec<&str> = stem.split('.').collect();
+    if parts.len() != 2 || parts[0].is_empty() || parts[1].is_empty() {
+        return None;
+    }
+    Some((parts[0].to_string(), parts[1].to_string()))
+}
+
+fn three_part_name_from_file(file_name: &str) -> Option<(String, String, String)> {
+    let stem = file_name.strip_suffix(".sql")?;
+    let parts: Vec<&str> = stem.split('.').collect();
+    if parts.len() != 3 || parts.iter().any(|part| part.is_empty()) {
+        return None;
+    }
+    Some((
+        parts[0].to_string(),
+        parts[1].to_string(),
+        parts[2].to_string(),
+    ))
+}
+
+pub(crate) fn render_database_objects_for_selection(
+    _root: &Path,
+    inventory: &PostgresInventory,
+    selection: &ExportSelection,
+) -> Result<BTreeMap<String, DesiredStateObject>, String> {
+    let mut objects = BTreeMap::new();
+
+    let mut schema_names = Vec::new();
+    let mut table_names = Vec::new();
+    let mut include_extensions = false;
+    let mut enum_names = Vec::new();
+    let mut sequence_names = Vec::new();
+    let mut index_names = Vec::new();
+    let mut view_names = Vec::new();
+    match selection {
+        ExportSelection::All => {
+            include_extensions = true;
+            schema_names.extend(inventory.schemas.iter().map(|schema| schema.name.clone()));
+            table_names.extend(
+                inventory
+                    .tables
+                    .iter()
+                    .filter(|table| table.table_type == "BASE TABLE")
+                    .map(|table| (table.schema_name.clone(), table.table_name.clone())),
+            );
+            enum_names.extend(
+                inventory
+                    .enums
+                    .iter()
+                    .map(|item| (item.schema_name.clone(), item.enum_name.clone())),
+            );
+            sequence_names.extend(
+                inventory
+                    .sequences
+                    .iter()
+                    .map(|item| (item.schema_name.clone(), item.sequence_name.clone())),
+            );
+            index_names.extend(inventory.indexes.iter().map(|item| {
+                (
+                    item.schema_name.clone(),
+                    item.table_name.clone(),
+                    item.index_name.clone(),
+                )
+            }));
+            view_names.extend(
+                inventory
+                    .views
+                    .iter()
+                    .map(|item| (item.schema_name.clone(), item.view_name.clone())),
+            );
+        }
+        ExportSelection::Schema(schema) => {
+            if inventory
+                .schemas
+                .iter()
+                .any(|candidate| candidate.name == *schema)
+            {
+                schema_names.push(schema.clone());
+            }
+            table_names.extend(
+                inventory
+                    .tables
+                    .iter()
+                    .filter(|table| {
+                        table.schema_name == *schema && table.table_type == "BASE TABLE"
+                    })
+                    .map(|table| (table.schema_name.clone(), table.table_name.clone())),
+            );
+            enum_names.extend(
+                inventory
+                    .enums
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| (item.schema_name.clone(), item.enum_name.clone())),
+            );
+            sequence_names.extend(
+                inventory
+                    .sequences
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| (item.schema_name.clone(), item.sequence_name.clone())),
+            );
+            index_names.extend(
+                inventory
+                    .indexes
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.table_name.clone(),
+                            item.index_name.clone(),
+                        )
+                    }),
+            );
+            view_names.extend(
+                inventory
+                    .views
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| (item.schema_name.clone(), item.view_name.clone())),
+            );
+        }
+        ExportSelection::Table { schema, table } => {
+            if inventory.tables.iter().any(|candidate| {
+                candidate.schema_name == *schema
+                    && candidate.table_name == *table
+                    && candidate.table_type == "BASE TABLE"
+            }) {
+                table_names.push((schema.clone(), table.clone()));
+            }
+            index_names.extend(
+                inventory
+                    .indexes
+                    .iter()
+                    .filter(|item| item.schema_name == *schema && item.table_name == *table)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.table_name.clone(),
+                            item.index_name.clone(),
+                        )
+                    }),
+            );
+        }
+    }
+
+    schema_names.sort();
+    schema_names.dedup();
+    table_names.sort();
+    table_names.dedup();
+    enum_names.sort();
+    enum_names.dedup();
+    sequence_names.sort();
+    sequence_names.dedup();
+    index_names.sort();
+    index_names.dedup();
+    view_names.sort();
+    view_names.dedup();
+
+    for schema in schema_names {
+        let relative_path = schema_file_path(&schema)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Schema,
+            schema_name: schema.clone(),
+            table_name: None,
+            object_name: schema.clone(),
+            parent_name: None,
+            relative_path,
+            content: render_schema_sql(&schema),
+        };
+        objects.insert(object_key(&object), object);
+    }
+
+    for (schema, table) in table_names {
+        let relative_path = table_file_path(&schema, &table)?;
+        let columns: Vec<ColumnInfo> = inventory
+            .columns
+            .iter()
+            .filter(|column| column.schema_name == schema && column.table_name == table)
+            .cloned()
+            .collect();
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Table,
+            schema_name: schema.clone(),
+            table_name: Some(table.clone()),
+            object_name: table.clone(),
+            parent_name: None,
+            relative_path,
+            content: render_table_sql(&schema, &table, &columns),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    if include_extensions {
+        for extension in &inventory.extensions {
+            let relative_path = extension_file_path(&extension.extension_name)?;
+            let object = DesiredStateObject {
+                object_type: RepositoryObjectType::Extension,
+                schema_name: String::new(),
+                table_name: None,
+                object_name: extension.extension_name.clone(),
+                parent_name: None,
+                relative_path,
+                content: render_extension_sql(extension),
+            };
+            objects.insert(object_key(&object), object);
+        }
+    }
+    for (schema, enum_name) in enum_names {
+        let Some(enum_info) = inventory
+            .enums
+            .iter()
+            .find(|item| item.schema_name == schema && item.enum_name == enum_name)
+        else {
+            continue;
+        };
+        let relative_path = enum_file_path(&schema, &enum_name)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Enum,
+            schema_name: schema.clone(),
+            table_name: None,
+            object_name: enum_name.clone(),
+            parent_name: None,
+            relative_path,
+            content: render_enum_sql(enum_info),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    for (schema, sequence_name) in sequence_names {
+        let Some(sequence) = inventory
+            .sequences
+            .iter()
+            .find(|item| item.schema_name == schema && item.sequence_name == sequence_name)
+        else {
+            continue;
+        };
+        let relative_path = sequence_file_path(&schema, &sequence_name)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Sequence,
+            schema_name: schema.clone(),
+            table_name: None,
+            object_name: sequence_name.clone(),
+            parent_name: None,
+            relative_path,
+            content: render_sequence_sql(sequence),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    for (schema, table, index_name) in index_names {
+        let Some(index) = inventory.indexes.iter().find(|item| {
+            item.schema_name == schema && item.table_name == table && item.index_name == index_name
+        }) else {
+            continue;
+        };
+        let relative_path = index_file_path(&schema, &table, &index_name)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Index,
+            schema_name: schema.clone(),
+            table_name: Some(table.clone()),
+            object_name: index_name.clone(),
+            parent_name: Some(table),
+            relative_path,
+            content: render_index_sql(index),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    for (schema, view_name) in view_names {
+        let Some(view) = inventory
+            .views
+            .iter()
+            .find(|item| item.schema_name == schema && item.view_name == view_name)
+        else {
+            continue;
+        };
+        let relative_path = view_file_path(&schema, &view_name)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::View,
+            schema_name: schema.clone(),
+            table_name: None,
+            object_name: view_name.clone(),
+            parent_name: None,
+            relative_path,
+            content: render_view_sql(view),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    Ok(objects)
+}
+
+pub(crate) fn select_repository_objects(
+    objects: &BTreeMap<String, DesiredStateObject>,
+    selection: &ExportSelection,
+) -> BTreeMap<String, DesiredStateObject> {
+    let mut selected = BTreeMap::new();
+    for (key, object) in objects {
+        let include = match selection {
+            ExportSelection::All => true,
+            ExportSelection::Schema(schema) => object.schema_name == *schema,
+            ExportSelection::Table { schema, table } => {
+                object.schema_name == *schema
+                    && (object.object_type == RepositoryObjectType::Table
+                        && object.table_name.as_deref() == Some(table.as_str())
+                        || object.object_type == RepositoryObjectType::Index
+                            && object.parent_name.as_deref() == Some(table.as_str()))
+            }
+        };
+        if include {
+            selected.insert(key.clone(), object.clone());
+        }
+    }
+    selected
+}
