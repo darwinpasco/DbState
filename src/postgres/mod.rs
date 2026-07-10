@@ -1,0 +1,18 @@
+pub(crate) mod inspect;
+pub(crate) mod inventory;
+pub(crate) mod render;
+
+pub use inspect::{
+    inspect_postgres, inspect_postgres_command, is_user_schema, ColumnInfo, EnumInfo,
+    ExtensionInfo, IndexInfo, InspectionCounts, InspectionReport, SchemaInfo, SequenceInfo,
+    TableInfo, ViewInfo,
+};
+pub(crate) use inspect::{
+    inspect_postgres_scoped_command, invalid_postgres_url_message, is_postgres_connection_url,
+    resolve_postgres_url,
+};
+pub use inventory::PostgresInventory;
+pub use render::{
+    normalize_desired_state_text, quote_postgres_identifier, render_enum_sql, render_extension_sql,
+    render_index_sql, render_schema_sql, render_sequence_sql, render_table_sql, render_view_sql,
+};

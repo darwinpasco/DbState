@@ -1,10 +1,11 @@
+use crate::postgres::{invalid_postgres_url_message, is_postgres_connection_url};
 use crate::ui;
 use crate::workspace::{
     resolve_service_workspace, validate_browse_directory_value, workspace_directory_listing,
     workspace_directory_listing_json, workspace_root_candidates, workspace_roots_json,
 };
 use crate::*;
-use postgres::{Client, NoTls};
+use ::postgres::{Client, NoTls};
 use serde_yaml::{Mapping, Value};
 use std::env;
 use std::fs;
