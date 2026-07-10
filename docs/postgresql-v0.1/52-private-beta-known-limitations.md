@@ -1,6 +1,6 @@
-# Private Beta Known Limitations
+# DbState PostgreSQL v0.1.0 Private Beta 2 Known Limitations
 
-This document lists known limitations for the first DbState PostgreSQL v0.1 private beta.
+This document lists known limitations for DbState PostgreSQL v0.1.0 Private Beta 2.
 
 ## Platform And Packaging
 
@@ -36,6 +36,12 @@ DbState does not:
 - persist full PostgreSQL URLs
 
 Release artifacts are review-only and must be reviewed by a responsible engineer before any manual use outside DbState.
+
+Private Beta 2 testers must use their own non-production PostgreSQL database. Do not use production, UAT, staging, shared, regulated, or customer-data databases. If a tester needs a sample database, Pagila is recommended because it contains tables, relationships, indexes, views, functions, and sample data:
+
+```text
+https://github.com/devrimgunduz/pagila
+```
 
 ## Object Coverage
 
@@ -73,7 +79,15 @@ Constraints and comments may appear as partial review context where available, b
 - Repository storage remains normalized per durable object file.
 - Object Only DDL reflects the durable object file or deterministic object renderer.
 - Related Objects is intentionally narrow.
-- Inline diff highlighting is not implemented.
+- Full Context DDL and Object Only DDL include line-by-line visual DDL comparison.
+- Matched lines are white.
+- Different lines are red.
+- Source-only lines are green with a display-only `+` marker.
+- Target-only lines are red with a display-only `-` marker.
+- Target-only lines do not use strike-through.
+- Plus/minus diff markers are UI indicators only. They must not be treated as source DDL, target DDL, repository object file content, release SQL, generated review artifact content, or future write/update logic.
+- Unavailable related object sections should be read as `Not available in Private Beta`.
+- Raw Details and Selected JSON Item are support/evidence panels, not the primary review workflow.
 
 ## Connection Handling
 
@@ -81,7 +95,7 @@ Constraints and comments may appear as partial review context where available, b
 - Passwords are session-only.
 - Full PostgreSQL URLs are session-only.
 - `%APPDATA%\DbState` may contain non-secret profile metadata if profiles are created.
-- Do not paste production credentials into feedback or screenshots.
+- Do not paste production credentials, non-production credentials, customer data, regulated data, or full PostgreSQL URLs into feedback or screenshots.
 
 ## Workspace And Git
 
@@ -105,6 +119,7 @@ Constraints and comments may appear as partial review context where available, b
 
 - Use `Ctrl+F5` if the browser shows stale UI assets.
 - Use the service environment variable connection mode for repeatable local tests.
-- Use disposable local databases for beta walkthroughs.
-- Use `C:\DbState\ParkingDemo` for the ParkingDemo workspace unless testing a different local repository.
+- Use your own non-production PostgreSQL database for beta walkthroughs.
+- Use Pagila if you need a safe sample database.
+- Use `C:\DbState\PrivateBetaDemo` as the walkthrough workspace unless testing a different fresh local repository.
 - Use Docker only with mounted paths that are visible inside the container, such as `/workspace`.
