@@ -2,7 +2,6 @@ use std::env;
 use std::fmt::Write as _;
 use std::path::Path;
 
-use crate::git::git_root;
 use crate::postgres::{
     inspect_postgres_scoped_command, invalid_postgres_url_message, is_postgres_connection_url,
     resolve_postgres_url,
@@ -281,6 +280,7 @@ pub fn run_cli(
 }
 
 mod git;
+mod object_ddl;
 mod postgres;
 mod project;
 mod reference_data;
@@ -307,8 +307,7 @@ pub use crate::reference_data::{
 use crate::release::release_postgres_command;
 pub use crate::release::{release_postgres_with_inventory, ReleaseReport};
 use crate::repository::{
-    compare_postgres_command, export_postgres_command, plan_postgres_command, safe_file_component,
-    schema_file_path, sync_postgres_command, table_file_path,
+    compare_postgres_command, export_postgres_command, plan_postgres_command, sync_postgres_command,
 };
 pub use crate::repository::{
     compare_postgres_with_inventory, export_postgres_with_inventory, plan_postgres_with_inventory,
@@ -338,7 +337,7 @@ use crate::repository::discovery::discover_repository_objects;
 #[cfg(test)]
 use crate::repository::{
     ensure_database_object_path, enum_file_path, extension_file_path, index_file_path,
-    sequence_file_path, view_file_path,
+    schema_file_path, sequence_file_path, table_file_path, view_file_path,
 };
 #[cfg(test)]
 use project::{PathKind, DEFAULT_REGISTRY, EXPECTED_PATHS};
