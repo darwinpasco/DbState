@@ -1,9 +1,13 @@
 use crate::git::git_root;
+use crate::postgres::{
+    invalid_postgres_url_message, is_postgres_connection_url, resolve_postgres_url,
+};
 use crate::repository::compare::compare_postgres_with_inventory;
 use crate::repository::objects::*;
 use crate::repository::sync::ExportSelection;
 use crate::*;
 use std::collections::{BTreeMap, BTreeSet};
+use std::env;
 use std::path::Path;
 
 #[derive(Debug, Clone)]

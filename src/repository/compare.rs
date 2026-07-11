@@ -1,3 +1,6 @@
+use crate::postgres::{
+    invalid_postgres_url_message, is_postgres_connection_url, resolve_postgres_url,
+};
 use crate::repository::discovery::{
     discover_repository_objects, render_database_objects_for_selection, select_repository_objects,
 };
@@ -5,6 +8,7 @@ use crate::repository::objects::*;
 use crate::repository::sync::ExportSelection;
 use crate::*;
 use std::collections::BTreeSet;
+use std::env;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Clone)]
