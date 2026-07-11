@@ -280,15 +280,20 @@ pub fn run_cli(
 }
 
 mod git;
+mod json;
 mod object_ddl;
 mod postgres;
 mod project;
+mod redaction;
 mod reference_data;
 mod release;
 mod repository;
 mod service;
 mod ui;
 mod workspace;
+
+pub(crate) use crate::json::*;
+pub use crate::redaction::{redact_message, redact_postgres_url};
 
 pub use crate::postgres::{
     inspect_postgres, inspect_postgres_command, is_user_schema, normalize_desired_state_text,
@@ -567,34 +572,6 @@ impl ParsedArgs {
 
 pub fn usage() -> String {
     "Usage:\n  dbstate repo status [--format json|--json]\n  dbstate init [--dry-run] [--format json|--json]\n  dbstate inspect postgres [--url <postgres-url>] [--all | --schema <schema> | --table <schema.table>] [--format json|--json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json|--json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json|--json]\n  dbstate data-compare postgres (--all | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate serve [--host <host>] [--port <port>] [--format json|--json]".to_string()
-}
-
-pub fn redact_message(message: &str, secret: &str) -> String {
-    let redacted = if secret.is_empty() {
-        message.to_string()
-    } else {
-        message.replace(secret, "<redacted>")
-    };
-    redact_postgres_url(&redacted)
-}
-
-pub fn redact_postgres_url(value: &str) -> String {
-    let mut output = String::new();
-    for token in value.split_whitespace() {
-        if token.starts_with("postgres://") || token.starts_with("postgresql://") {
-            output.push_str("<redacted>");
-        } else {
-            if !output.is_empty() {
-                output.push(' ');
-            }
-            output.push_str(token);
-        }
-    }
-    if output.is_empty() && !value.is_empty() {
-        "<redacted>".to_string()
-    } else {
-        output
-    }
 }
 
 fn display_path(path: &Path) -> String {
@@ -896,21 +873,6 @@ fn write_plan_item_text_list(text: &mut String, title: &str, items: &[PlanItem])
     }
 }
 
-fn write_json_string_field(json: &mut String, name: &str, value: &str, first: bool) {
-    if !first {
-        json.push(',');
-    }
-    write!(json, "\"{}\":\"{}\"", escape_json(name), escape_json(value)).ok();
-}
-
-fn write_json_optional_string_field(json: &mut String, name: &str, value: Option<&str>) {
-    json.push(',');
-    match value {
-        Some(value) => write!(json, "\"{}\":\"{}\"", escape_json(name), escape_json(value)).ok(),
-        None => write!(json, "\"{}\":null", escape_json(name)).ok(),
-    };
-}
-
 fn write_repository_context_fields(
     json: &mut String,
     repository_path: &str,
@@ -931,37 +893,6 @@ fn write_repository_context_fields(
         false,
     );
     write_json_bool_field(json, "isDirty", is_dirty);
-}
-
-fn write_json_bool_field(json: &mut String, name: &str, value: bool) {
-    json.push(',');
-    write!(json, "\"{}\":{}", escape_json(name), value).ok();
-}
-
-fn write_json_i32_field(json: &mut String, name: &str, value: i32, first: bool) {
-    if !first {
-        json.push(',');
-    }
-    write!(json, "\"{}\":{}", escape_json(name), value).ok();
-}
-
-fn write_json_i64_field(json: &mut String, name: &str, value: i64, first: bool) {
-    if !first {
-        json.push(',');
-    }
-    write!(json, "\"{}\":{}", escape_json(name), value).ok();
-}
-
-fn write_json_array_field(json: &mut String, name: &str, values: &[String]) {
-    json.push(',');
-    write!(json, "\"{}\":[", escape_json(name)).ok();
-    for (index, value) in values.iter().enumerate() {
-        if index > 0 {
-            json.push(',');
-        }
-        write!(json, "\"{}\"", escape_json(value)).ok();
-    }
-    json.push(']');
 }
 
 fn write_schema_array_field(json: &mut String, name: &str, values: &[SchemaInfo]) {
@@ -1199,24 +1130,6 @@ fn write_compare_summary_field(json: &mut String, name: &str, summary: &CompareS
         summary.skipped
     )
     .ok();
-}
-
-fn escape_json(value: &str) -> String {
-    let mut escaped = String::new();
-    for character in value.chars() {
-        match character {
-            '"' => escaped.push_str("\\\""),
-            '\\' => escaped.push_str("\\\\"),
-            '\n' => escaped.push_str("\\n"),
-            '\r' => escaped.push_str("\\r"),
-            '\t' => escaped.push_str("\\t"),
-            character if character.is_control() => {
-                write!(escaped, "\\u{:04x}", character as u32).ok();
-            }
-            character => escaped.push(character),
-        }
-    }
-    escaped
 }
 
 #[cfg(test)]
