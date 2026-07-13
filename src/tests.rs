@@ -2618,6 +2618,7 @@ fn slice11_service_routes_include_only_approved_endpoints() {
         ("POST", "/api/v1/postgres/repository-sync/write"),
         ("POST", "/api/v1/postgres/release/preview"),
         ("POST", "/api/v1/postgres/release/write"),
+        ("POST", "/api/v1/releases/artifact-preview"),
     ] {
         assert!(routes.contains(&expected), "missing route {expected:?}");
     }
@@ -2627,6 +2628,108 @@ fn slice11_service_routes_include_only_approved_endpoints() {
         assert!(!path.contains("/api/v1/postgres/sync"));
         assert!(!path.contains("apply"));
     }
+}
+
+#[test]
+fn release_artifact_preview_endpoint_reads_release_sql_artifact() {
+    let dir = create_temp_dir("slice25-release-artifact-preview");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let artifact = dir.join("database/releases/0001_test.sql");
+    let content = "-- DbState release artifact\n-- DbState does not execute this SQL.\nSELECT 1;\n";
+    fs::write(&artifact, content).expect("write release artifact");
+
+    let body = format!(
+        r#"{{ "repositoryPath": "{}", "artifactPath": "database/releases/0001_test.sql" }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let response = service_response("POST", "/api/v1/releases/artifact-preview", &body, &dir);
+
+    assert_eq!(response.status_code, 200);
+    assert!(response.body.contains("\"success\":true"));
+    assert!(response.body.contains("\"artifactType\":\"sql\""));
+    assert!(response.body.contains("\"fileName\":\"0001_test.sql\""));
+    assert!(response.body.contains("\"truncated\":false"));
+    assert!(response.body.contains(&escape_json(content)));
+    assert_eq!(
+        fs::read_to_string(&artifact).expect("read release artifact after preview"),
+        content
+    );
+}
+
+#[test]
+fn release_artifact_preview_endpoint_rejects_traversal_and_absolute_paths() {
+    let dir = create_temp_dir("slice25-release-artifact-preview-traversal");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(dir.join("database/releases/0001_test.sql"), "SELECT 1;\n")
+        .expect("write release artifact");
+
+    for artifact_path in [
+        "../Cargo.toml",
+        "database/releases/../../Cargo.toml",
+        "database/releases/%2e%2e/Cargo.toml",
+        "C:/Windows/win.ini",
+        "/etc/passwd",
+    ] {
+        let body = format!(
+            r#"{{ "repositoryPath": "{}", "artifactPath": "{}" }}"#,
+            escape_json(&display_path(&dir)),
+            escape_json(artifact_path)
+        );
+        let response = service_response("POST", "/api/v1/releases/artifact-preview", &body, &dir);
+        assert_eq!(
+            response.status_code, 400,
+            "expected rejection for {artifact_path}, got {}",
+            response.body
+        );
+        assert!(response.body.contains("\"success\":false"));
+    }
+}
+
+#[test]
+fn release_artifact_preview_endpoint_rejects_non_release_paths() {
+    let dir = create_temp_dir("slice25-release-artifact-preview-non-release");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::create_dir_all(dir.join("database/objects/schemas")).expect("create schemas");
+    fs::write(
+        dir.join("database/objects/schemas/public.sql"),
+        "CREATE SCHEMA public;\n",
+    )
+    .expect("write object file");
+
+    let body = format!(
+        r#"{{ "repositoryPath": "{}", "artifactPath": "database/objects/schemas/public.sql" }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let response = service_response("POST", "/api/v1/releases/artifact-preview", &body, &dir);
+
+    assert_eq!(response.status_code, 400);
+    assert!(response.body.contains("\"success\":false"));
+    assert!(response.body.contains("database/releases"));
+}
+
+#[test]
+fn release_artifact_preview_endpoint_rejects_unsupported_extension() {
+    let dir = create_temp_dir("slice25-release-artifact-preview-extension");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(dir.join("database/releases/notes.txt"), "notes\n").expect("write notes");
+
+    let body = format!(
+        r#"{{ "repositoryPath": "{}", "artifactPath": "database/releases/notes.txt" }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let response = service_response("POST", "/api/v1/releases/artifact-preview", &body, &dir);
+
+    assert_eq!(response.status_code, 400);
+    assert!(response.body.contains("\"success\":false"));
+    assert!(response.body.contains(".sql"));
+    assert_eq!(
+        fs::read_to_string(dir.join("database/releases/notes.txt")).expect("read notes"),
+        "notes\n"
+    );
 }
 
 #[test]
@@ -2731,6 +2834,7 @@ fn slice12_ui_javascript_calls_only_approved_endpoints() {
         "/api/v1/postgres/repository-sync/write",
         "/api/v1/postgres/release/preview",
         "/api/v1/postgres/release/write",
+        "/api/v1/releases/artifact-preview",
         "/api/v1/workspace/roots",
         "/api/v1/workspace/list-directories",
         "/api/v1/workspace/validate",
@@ -2745,7 +2849,7 @@ fn slice12_ui_javascript_calls_only_approved_endpoints() {
 
     for forbidden in [
         "/api/v1/postgres/export",
-        "/api/v1/release",
+        "/api/v1/release/",
         "/api/v1/postgres/apply",
         "localStorage",
         "sessionStorage",
@@ -2766,6 +2870,37 @@ fn slice12_ui_javascript_calls_only_approved_endpoints() {
         assert!(
             !js.contains(forbidden),
             "UI JavaScript contains forbidden pattern {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn slice25_ui_contains_release_artifact_preview_contract() {
+    let html = ui_html();
+    let js = ui_js();
+    let combined = format!("{html}\n{js}");
+
+    assert!(html.contains("data-testid=\"release-artifact-preview\""));
+    assert!(html.contains("data-testid=\"release-artifact-preview-content\""));
+    assert!(html.contains("Artifact Preview"));
+    assert!(js.contains("releaseArtifactPreview: \"/api/v1/releases/artifact-preview\""));
+    assert!(js.contains("data-action\", \"release-artifact-preview\""));
+    assert!(js.contains("previewReleaseArtifact"));
+    assert!(
+        js.contains("Preview is available after Generate Release Artifact writes review files.")
+    );
+
+    for forbidden_action in [
+        "release-artifact-execute",
+        "release-artifact-apply",
+        "release-artifact-edit",
+        "release-artifact-save",
+        "release-artifact-delete",
+        "release-artifact-git",
+    ] {
+        assert!(
+            !combined.contains(forbidden_action),
+            "release artifact preview UI exposes forbidden action {forbidden_action}"
         );
     }
 }
