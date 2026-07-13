@@ -2,12 +2,13 @@ use crate::git::git_root;
 use crate::postgres::{
     inspect_postgres, invalid_postgres_url_message, is_postgres_connection_url,
     render_constraint_sql, render_enum_sql, render_extension_sql, render_function_sql,
-    render_index_sql, render_schema_sql, render_sequence_sql, render_table_sql, render_view_sql,
-    ColumnInfo, ConstraintInfo, FunctionInfo, IndexInfo,
+    render_index_sql, render_schema_sql, render_sequence_sql, render_table_sql, render_trigger_sql,
+    render_view_sql, ColumnInfo, ConstraintInfo, FunctionInfo, IndexInfo, TriggerInfo,
 };
 use crate::repository::{
     enum_file_path, extension_file_path, function_identity_slug, index_file_path,
-    safe_file_component, schema_file_path, sequence_file_path, table_file_path, view_file_path,
+    safe_file_component, schema_file_path, sequence_file_path, table_file_path, trigger_file_path,
+    view_file_path,
 };
 use crate::service::{
     parse_service_request, request_string, resolve_service_postgres_connection,
@@ -51,6 +52,7 @@ pub(crate) fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttp
             | "view"
             | "constraint"
             | "function"
+            | "trigger"
     ) {
         return service_json_response(
             200,
@@ -218,6 +220,14 @@ fn default_object_relative_path(
         "constraint" => {
             Err("Constraint DDL detail requires a release/result relativePath.".to_string())
         }
+        "trigger" => {
+            let parts: Vec<&str> = object_name.split('.').collect();
+            if parts.len() == 2 {
+                trigger_file_path(schema, parts[0], parts[1])
+            } else {
+                Err("Trigger DDL detail requires objectName as relation.trigger.".to_string())
+            }
+        }
         _ => Err("Unsupported object type for DDL detail.".to_string()),
     }
 }
@@ -276,6 +286,39 @@ fn repository_full_context_ddl(
                 "Function comment rendering is deferred.",
             ));
         }
+        if object_type == "trigger" {
+            related.push(RelatedObjectSummary::new(
+                "Schema",
+                schema,
+                "Trigger schema",
+            ));
+            if let Some((relation, _trigger)) =
+                trigger_identity_from_name_or_path(object_name, _relative_path)
+            {
+                related.push(RelatedObjectSummary::new(
+                    "Parent Relation",
+                    &relation,
+                    "Trigger parent relation",
+                ));
+            }
+            if let Some(ddl) = object_only_ddl {
+                if let Some(function) = ddl
+                    .lines()
+                    .find_map(|line| line.strip_prefix("-- Trigger function: ").map(str::trim))
+                {
+                    related.push(RelatedObjectSummary::new(
+                        "Trigger Function",
+                        function,
+                        "Trigger function",
+                    ));
+                }
+            }
+            related.push(RelatedObjectSummary::new(
+                "Comments",
+                "Not available in Private Beta",
+                "Trigger comment rendering is deferred.",
+            ));
+        }
         notes.push("Full context is the same as object-only DDL for this object type.".to_string());
         return Ok((object_only_ddl.map(ToOwned::to_owned), related, notes));
     }
@@ -287,6 +330,7 @@ fn repository_full_context_ddl(
 
     let index_files = repository_index_files_for_table(root, schema, object_name)?;
     let constraint_files = repository_constraint_files_for_table(root, schema, object_name)?;
+    let trigger_files = repository_trigger_files_for_relation(root, schema, object_name)?;
     if index_files.is_empty() {
         related.push(RelatedObjectSummary::new(
             "Indexes",
@@ -331,6 +375,25 @@ fn repository_full_context_ddl(
             ));
         }
     }
+    if trigger_files.is_empty() {
+        related.push(RelatedObjectSummary::new(
+            "Triggers",
+            "No related repository trigger files found.",
+            "Not available in repository context",
+        ));
+    } else {
+        for (relative_path, trigger_name, content) in trigger_files {
+            related.push(RelatedObjectSummary::new(
+                "Triggers",
+                &trigger_name,
+                &relative_path,
+            ));
+            ddl_parts.push(format!(
+                "-- Related repository trigger object: {relative_path}\n{}",
+                content.trim()
+            ));
+        }
+    }
     related.push(RelatedObjectSummary::new(
         "Comments",
         "Not available in Private Beta",
@@ -338,6 +401,41 @@ fn repository_full_context_ddl(
     ));
 
     Ok((join_ddl_parts(ddl_parts), related, notes))
+}
+
+fn repository_trigger_files_for_relation(
+    root: &Path,
+    schema: &str,
+    relation: &str,
+) -> Result<Vec<(String, String, String)>, String> {
+    let schema = safe_file_component(schema)?;
+    let relation = safe_file_component(relation)?;
+    let trigger_dir = root.join("database").join("objects").join("triggers");
+    if !trigger_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let prefix = format!("{schema}.{relation}.");
+    let mut files = Vec::new();
+    for entry in fs::read_dir(&trigger_dir)
+        .map_err(|error| format!("Could not read repository triggers folder: {error}"))?
+    {
+        let entry =
+            entry.map_err(|error| format!("Could not read repository trigger entry: {error}"))?;
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        if !file_name.starts_with(&prefix) || !file_name.ends_with(".sql") {
+            continue;
+        }
+        let trigger_name = file_name
+            .trim_start_matches(&prefix)
+            .trim_end_matches(".sql")
+            .to_string();
+        let relative_path = format!("database/objects/triggers/{file_name}");
+        if let Some(content) = read_repository_object_ddl(root, &relative_path)? {
+            files.push((relative_path, trigger_name, content));
+        }
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(files)
 }
 
 fn repository_constraint_files_for_table(
@@ -432,10 +530,20 @@ fn database_full_context_ddl(
             object_name,
             relative_path,
         )?;
-        let related = if object_type == "function" {
-            database_function_related_objects(connection_url, schema, object_name, relative_path)?
-        } else {
-            Vec::new()
+        let related = match object_type {
+            "function" => database_function_related_objects(
+                connection_url,
+                schema,
+                object_name,
+                relative_path,
+            )?,
+            "trigger" => database_trigger_related_objects(
+                connection_url,
+                schema,
+                object_name,
+                relative_path,
+            )?,
+            _ => Vec::new(),
         };
         return Ok((
             ddl,
@@ -511,6 +619,29 @@ fn database_full_context_ddl(
             ddl_parts.push(render_constraint_sql(&constraint));
         }
     }
+    let mut triggers: Vec<TriggerInfo> = inventory
+        .triggers
+        .iter()
+        .filter(|trigger| trigger.schema_name == schema && trigger.relation_name == object_name)
+        .cloned()
+        .collect();
+    triggers.sort_by(|left, right| left.trigger_name.cmp(&right.trigger_name));
+    if triggers.is_empty() {
+        related.push(RelatedObjectSummary::new(
+            "Triggers",
+            "No related database triggers found.",
+            "Not available in database context",
+        ));
+    } else {
+        for trigger in triggers {
+            related.push(RelatedObjectSummary::new(
+                "Triggers",
+                &trigger.trigger_name,
+                &trigger.definition,
+            ));
+            ddl_parts.push(render_trigger_sql(&trigger));
+        }
+    }
     related.push(RelatedObjectSummary::new(
         "Comments",
         "Not available in Private Beta",
@@ -551,6 +682,7 @@ fn validate_repository_object_relative_path(relative_path: &str) -> Result<(), S
         || relative_path.starts_with("database/objects/indexes/")
         || relative_path.starts_with("database/objects/views/")
         || relative_path.starts_with("database/objects/functions/")
+        || relative_path.starts_with("database/objects/triggers/")
         || relative_path.starts_with("database/objects/constraints/primary-keys/")
         || relative_path.starts_with("database/objects/constraints/unique-constraints/")
         || relative_path.starts_with("database/objects/constraints/foreign-keys/")
@@ -647,6 +779,12 @@ fn database_object_ddl(
                     .map(render_function_sql),
             )
         }
+        "trigger" => {
+            Ok(
+                find_trigger_for_object(&inventory.triggers, schema, object_name, relative_path)
+                    .map(render_trigger_sql),
+            )
+        }
         "constraint" => {
             let constraint_name = object_name
                 .rsplit_once('.')
@@ -662,6 +800,40 @@ fn database_object_ddl(
         }
         _ => Ok(None),
     }
+}
+
+fn find_trigger_for_object<'a>(
+    triggers: &'a [TriggerInfo],
+    schema: &str,
+    object_name: &str,
+    relative_path: Option<&str>,
+) -> Option<&'a TriggerInfo> {
+    let (relation_name, trigger_name) =
+        trigger_identity_from_name_or_path(object_name, relative_path)?;
+    triggers.iter().find(|candidate| {
+        candidate.schema_name == schema
+            && candidate.relation_name == relation_name
+            && candidate.trigger_name == trigger_name
+    })
+}
+
+fn trigger_identity_from_name_or_path(
+    object_name: &str,
+    relative_path: Option<&str>,
+) -> Option<(String, String)> {
+    if let Some(path) = relative_path {
+        let file_name = path.strip_prefix("database/objects/triggers/")?;
+        let stem = file_name.strip_suffix(".sql")?;
+        let parts: Vec<&str> = stem.split('.').collect();
+        if parts.len() == 3 && !parts.iter().any(|part| part.is_empty()) {
+            return Some((parts[1].to_string(), parts[2].to_string()));
+        }
+    }
+    let parts: Vec<&str> = object_name.split('.').collect();
+    if parts.len() == 2 && !parts.iter().any(|part| part.is_empty()) {
+        return Some((parts[0].to_string(), parts[1].to_string()));
+    }
+    None
 }
 
 fn find_function_for_object<'a>(
@@ -699,6 +871,48 @@ fn function_identity_from_name_or_path(
         return Some((parts[0].to_string(), parts[1].to_string()));
     }
     None
+}
+
+fn database_trigger_related_objects(
+    connection_url: &str,
+    schema: &str,
+    object_name: &str,
+    relative_path: Option<&str>,
+) -> Result<Vec<RelatedObjectSummary>, String> {
+    if !is_postgres_connection_url(connection_url) {
+        return Err(invalid_postgres_url_message());
+    }
+    let inventory =
+        inspect_postgres(connection_url).map_err(|error| redact_message(&error, connection_url))?;
+    let Some(trigger) =
+        find_trigger_for_object(&inventory.triggers, schema, object_name, relative_path)
+    else {
+        return Ok(Vec::new());
+    };
+    let mut related = vec![
+        RelatedObjectSummary::new("Schema", &trigger.schema_name, "Trigger schema"),
+        RelatedObjectSummary::new(
+            "Parent Relation",
+            &trigger.relation_name,
+            "Trigger parent relation",
+        ),
+    ];
+    if let (Some(function_schema), Some(function_name)) = (
+        &trigger.trigger_function_schema,
+        &trigger.trigger_function_name,
+    ) {
+        related.push(RelatedObjectSummary::new(
+            "Trigger Function",
+            &format!("{function_schema}.{function_name}"),
+            "Trigger function",
+        ));
+    }
+    related.push(RelatedObjectSummary::new(
+        "Comments",
+        "Not available in Private Beta",
+        "Trigger comment rendering is deferred.",
+    ));
+    Ok(related)
 }
 
 fn database_function_related_objects(

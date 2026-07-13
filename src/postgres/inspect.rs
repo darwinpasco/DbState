@@ -97,6 +97,19 @@ pub struct FunctionInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TriggerInfo {
+    pub schema_name: String,
+    pub relation_name: String,
+    pub trigger_name: String,
+    pub trigger_function_schema: Option<String>,
+    pub trigger_function_name: Option<String>,
+    pub timing: Option<String>,
+    pub events: Vec<String>,
+    pub orientation: Option<String>,
+    pub definition: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectionCounts {
     pub schemas: usize,
     pub tables: usize,
@@ -108,6 +121,7 @@ pub struct InspectionCounts {
     pub views: usize,
     pub constraints: usize,
     pub functions: usize,
+    pub triggers: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +140,7 @@ pub struct InspectionReport {
     pub views: Vec<ViewInfo>,
     pub constraints: Vec<ConstraintInfo>,
     pub functions: Vec<FunctionInfo>,
+    pub triggers: Vec<TriggerInfo>,
     pub counts: InspectionCounts,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
@@ -170,6 +185,7 @@ pub(crate) fn inspect_postgres_scoped_command(
             report.views = inventory.views;
             report.constraints = inventory.constraints;
             report.functions = inventory.functions;
+            report.triggers = inventory.triggers;
             if let Err(error) = apply_inspection_scope(&mut report, schema, table) {
                 report.success = false;
                 report.errors.push(error);
@@ -186,6 +202,7 @@ pub(crate) fn inspect_postgres_scoped_command(
                 views: report.views.len(),
                 constraints: report.constraints.len(),
                 functions: report.functions.len(),
+                triggers: report.triggers.len(),
             };
             report.success = true;
         }
@@ -220,6 +237,7 @@ fn apply_inspection_scope(
         report.views.retain(|item| item.schema_name == schema);
         report.constraints.retain(|item| item.schema_name == schema);
         report.functions.retain(|item| item.schema_name == schema);
+        report.triggers.retain(|item| item.schema_name == schema);
         report.inspection_scope = vec![format!("schema:{schema}")];
         return Ok(());
     }
@@ -261,6 +279,9 @@ fn apply_inspection_scope(
             .constraints
             .retain(|item| item.schema_name == schema && item.table_name == table_name);
         report.functions.clear();
+        report
+            .triggers
+            .retain(|item| item.schema_name == schema && item.relation_name == table_name);
         report.inspection_scope = vec![format!("table:{schema}.{table_name}")];
     }
 
@@ -510,6 +531,42 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         )
         .map_err(|_| "PostgreSQL schema inspection failed while reading functions.".to_string())?;
 
+    let trigger_rows = client
+        .query(
+            "SELECT ns.nspname::text,
+                    rel.relname::text,
+                    trig.tgname::text,
+                    fn_ns.nspname::text,
+                    proc.proname::text,
+                    CASE
+                        WHEN (trig.tgtype & 2) <> 0 THEN 'BEFORE'
+                        WHEN (trig.tgtype & 64) <> 0 THEN 'INSTEAD OF'
+                        ELSE 'AFTER'
+                    END::text,
+                    ARRAY_REMOVE(ARRAY[
+                        CASE WHEN (trig.tgtype & 4) <> 0 THEN 'INSERT' END,
+                        CASE WHEN (trig.tgtype & 8) <> 0 THEN 'DELETE' END,
+                        CASE WHEN (trig.tgtype & 16) <> 0 THEN 'UPDATE' END,
+                        CASE WHEN (trig.tgtype & 32) <> 0 THEN 'TRUNCATE' END
+                    ], NULL)::text[],
+                    CASE WHEN (trig.tgtype & 1) <> 0 THEN 'ROW' ELSE 'STATEMENT' END::text,
+                    pg_catalog.pg_get_triggerdef(trig.oid, true)::text
+             FROM pg_catalog.pg_trigger trig
+             JOIN pg_catalog.pg_class rel ON rel.oid = trig.tgrelid
+             JOIN pg_catalog.pg_namespace ns ON ns.oid = rel.relnamespace
+             JOIN pg_catalog.pg_proc proc ON proc.oid = trig.tgfoid
+             JOIN pg_catalog.pg_namespace fn_ns ON fn_ns.oid = proc.pronamespace
+             WHERE trig.tgisinternal = false
+               AND rel.relkind IN ('r', 'p', 'v')
+               AND ns.nspname <> 'pg_catalog'
+               AND ns.nspname <> 'information_schema'
+               AND ns.nspname NOT LIKE 'pg_toast%'
+               AND ns.nspname NOT LIKE 'pg_%'
+             ORDER BY ns.nspname, rel.relname, trig.tgname",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading triggers.".to_string())?;
+
     let schemas = schema_rows
         .into_iter()
         .map(|row| SchemaInfo { name: row.get(0) })
@@ -639,6 +696,29 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         });
     }
 
+    let mut triggers = Vec::new();
+    for row in trigger_rows {
+        triggers.push(TriggerInfo {
+            schema_name: try_get_catalog_string(&row, 0, "trigger schema")?,
+            relation_name: try_get_catalog_string(&row, 1, "trigger relation")?,
+            trigger_name: try_get_catalog_string(&row, 2, "trigger name")?,
+            trigger_function_schema: try_get_catalog_optional_string(
+                &row,
+                3,
+                "trigger function schema",
+            )?,
+            trigger_function_name: try_get_catalog_optional_string(
+                &row,
+                4,
+                "trigger function name",
+            )?,
+            timing: try_get_catalog_optional_string(&row, 5, "trigger timing")?,
+            events: try_get_catalog_string_array(&row, 6, "trigger events")?,
+            orientation: try_get_catalog_optional_string(&row, 7, "trigger orientation")?,
+            definition: try_get_catalog_string(&row, 8, "trigger definition")?,
+        });
+    }
+
     Ok(PostgresInventory {
         schemas,
         tables,
@@ -650,6 +730,7 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         views,
         constraints,
         functions,
+        triggers,
     })
 }
 
@@ -715,6 +796,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             "views".to_string(),
             "constraints".to_string(),
             "functions".to_string(),
+            "triggers".to_string(),
         ],
         schemas: Vec::new(),
         tables: Vec::new(),
@@ -726,6 +808,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
         views: Vec::new(),
         constraints: Vec::new(),
         functions: Vec::new(),
+        triggers: Vec::new(),
         counts: InspectionCounts {
             schemas: 0,
             tables: 0,
@@ -737,6 +820,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             views: 0,
             constraints: 0,
             functions: 0,
+            triggers: 0,
         },
         warnings: Vec::new(),
         errors: Vec::new(),
@@ -775,6 +859,7 @@ impl InspectionReport {
         writeln!(text, "View count: {}", self.counts.views).ok();
         writeln!(text, "Constraint count: {}", self.counts.constraints).ok();
         writeln!(text, "Function count: {}", self.counts.functions).ok();
+        writeln!(text, "Trigger count: {}", self.counts.triggers).ok();
         writeln!(text, "Schemas:").ok();
         for schema in &self.schemas {
             writeln!(text, "  - {}", schema.name).ok();
@@ -844,6 +929,15 @@ impl InspectionReport {
             )
             .ok();
         }
+        writeln!(text, "Triggers:").ok();
+        for trigger in &self.triggers {
+            writeln!(
+                text,
+                "  - {}.{}.{}",
+                trigger.schema_name, trigger.relation_name, trigger.trigger_name
+            )
+            .ok();
+        }
         for warning in &self.warnings {
             writeln!(text, "Warning: {warning}").ok();
         }
@@ -870,6 +964,7 @@ impl InspectionReport {
         write_view_array_field(&mut json, "views", &self.views);
         write_constraint_array_field(&mut json, "constraints", &self.constraints);
         write_function_array_field(&mut json, "functions", &self.functions);
+        write_trigger_array_field(&mut json, "triggers", &self.triggers);
         write_counts_field(&mut json, "counts", &self.counts);
         write_json_array_field(&mut json, "warnings", &self.warnings);
         write_json_array_field(&mut json, "errors", &self.errors);

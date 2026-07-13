@@ -10,7 +10,7 @@ use crate::release::empty_release_report;
 use crate::release::release_postgres_command;
 use crate::repository::discovery::discover_repository_objects;
 use crate::repository::objects::{
-    constraint_file_path, function_file_path, function_identity_slug,
+    constraint_file_path, function_file_path, function_identity_slug, trigger_file_path,
 };
 use crate::repository::{
     compare_postgres_command, ensure_database_object_path, enum_file_path, export_postgres_command,
@@ -262,6 +262,19 @@ fn sample_inventory() -> PostgresInventory {
                             .to_string(),
                 },
             ],
+            triggers: vec![TriggerInfo {
+                schema_name: "dbstate_slice2".to_string(),
+                relation_name: "sample_accounts".to_string(),
+                trigger_name: "sample_accounts_audit_trigger".to_string(),
+                trigger_function_schema: Some("dbstate_slice2".to_string()),
+                trigger_function_name: Some("account_label".to_string()),
+                timing: Some("AFTER".to_string()),
+                events: vec!["INSERT".to_string()],
+                orientation: Some("ROW".to_string()),
+                definition:
+                    "CREATE TRIGGER sample_accounts_audit_trigger AFTER INSERT ON dbstate_slice2.sample_accounts FOR EACH ROW EXECUTE FUNCTION dbstate_slice2.account_label(account_id)"
+                        .to_string(),
+            }],
         }
 }
 
@@ -740,6 +753,19 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
                         .to_string(),
             },
         ],
+        triggers: vec![TriggerInfo {
+            schema_name: "app".to_string(),
+            relation_name: "orders".to_string(),
+            trigger_name: "orders_audit_trigger".to_string(),
+            trigger_function_schema: Some("app".to_string()),
+            trigger_function_name: Some("order_label".to_string()),
+            timing: Some("AFTER".to_string()),
+            events: vec!["INSERT".to_string(), "UPDATE".to_string()],
+            orientation: Some("ROW".to_string()),
+            definition:
+                "CREATE TRIGGER orders_audit_trigger AFTER INSERT OR UPDATE ON app.orders FOR EACH ROW EXECUTE FUNCTION app.order_label(order_id)"
+                    .to_string(),
+        }],
     };
 
     assert_eq!(inventory.schemas[0].name, "app");
@@ -761,6 +787,9 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
         inventory.functions[0].identity_arguments,
         inventory.functions[1].identity_arguments
     );
+    assert_eq!(inventory.triggers.len(), 1);
+    assert_eq!(inventory.triggers[0].relation_name, "orders");
+    assert_eq!(inventory.triggers[0].trigger_name, "orders_audit_trigger");
 }
 
 #[test]
@@ -793,6 +822,9 @@ fn deferred_object_types_are_explicit() {
     assert!(!report
         .deferred_object_types
         .contains(&"functions".to_string()));
+    assert!(!report
+        .deferred_object_types
+        .contains(&"triggers".to_string()));
     assert!(report.deferred_object_types.contains(&"grants".to_string()));
 }
 
@@ -869,9 +901,14 @@ fn export_paths_stay_under_database_objects() {
         function_identity_slug("integer, numeric").expect("function slug"),
         "integer_numeric"
     );
+    assert_eq!(
+        trigger_file_path("core", "payments", "payments_audit_trigger").expect("trigger path"),
+        "database/objects/triggers/core.payments.payments_audit_trigger.sql"
+    );
     assert!(schema_file_path("../evil").is_err());
     assert!(table_file_path("core", "bad/name").is_err());
     assert!(function_file_path("core", "bad/name", "integer").is_err());
+    assert!(trigger_file_path("core", "payments", "bad/name").is_err());
     assert!(ensure_database_object_path("database/releases/bad.sql").is_err());
 }
 
@@ -934,6 +971,10 @@ fn generated_slice16_object_sql_is_deterministic() {
     assert!(render_function_sql(&inventory.functions[1]).contains("STRICT"));
     assert!(render_function_sql(&inventory.functions[0]).ends_with(";\n"));
     assert!(!render_function_sql(&inventory.functions[0]).contains("DROP FUNCTION"));
+    assert!(render_trigger_sql(&inventory.triggers[0]).contains("-- Object type: trigger"));
+    assert!(render_trigger_sql(&inventory.triggers[0]).contains("CREATE TRIGGER"));
+    assert!(render_trigger_sql(&inventory.triggers[0]).ends_with(";\n"));
+    assert!(!render_trigger_sql(&inventory.triggers[0]).contains("DROP TRIGGER"));
 }
 
 #[test]
@@ -1107,6 +1148,11 @@ fn actual_export_creates_schema_and_table_files() {
     assert!(dir
         .join("database/objects/functions/dbstate_slice2.account_label.account_code_text.sql")
         .is_file());
+    assert!(dir
+        .join(
+            "database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql",
+        )
+        .is_file());
 }
 
 #[test]
@@ -1129,6 +1175,10 @@ fn sync_dry_run_creates_or_updates_no_files() {
     ));
     assert!(report.planned_creates.contains(
         &"database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
+            .to_string()
+    ));
+    assert!(report.planned_creates.contains(
+        &"database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql"
             .to_string()
     ));
     assert!(report.created_files.is_empty());
@@ -1200,6 +1250,15 @@ fn sync_creates_added_object_files() {
         &"database/objects/functions/dbstate_slice2.account_label.account_code_text.sql"
             .to_string()
     ));
+    assert!(report.created_files.contains(
+        &"database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql"
+            .to_string()
+    ));
+    assert!(dir
+        .join(
+            "database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql",
+        )
+        .is_file());
 }
 
 #[test]
@@ -1410,6 +1469,18 @@ fn repository_schema_and_table_files_are_discovered() {
         render_function_sql(&sample_inventory().functions[1]),
     )
     .expect("write overloaded function");
+    fs::write(
+        dir.join(
+            "database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql",
+        ),
+        render_trigger_sql(&sample_inventory().triggers[0]),
+    )
+    .expect("write trigger");
+    fs::write(
+        dir.join("database/objects/triggers/dbstate_slice2.other_accounts.sample_accounts_audit_trigger.sql"),
+        "CREATE TRIGGER sample_accounts_audit_trigger AFTER INSERT ON dbstate_slice2.other_accounts FOR EACH ROW EXECUTE FUNCTION dbstate_slice2.account_label(account_id);\n",
+    )
+    .expect("write same trigger name on different relation");
 
     let import = discover_repository_objects(&dir).expect("discover objects");
 
@@ -1429,6 +1500,12 @@ fn repository_schema_and_table_files_are_discovered() {
     assert!(import
         .objects
         .contains_key("function:dbstate_slice2.account_label.account_code_text"));
+    assert!(import
+        .objects
+        .contains_key("trigger:dbstate_slice2.sample_accounts.sample_accounts_audit_trigger"));
+    assert!(import
+        .objects
+        .contains_key("trigger:dbstate_slice2.other_accounts.sample_accounts_audit_trigger"));
     assert!(import.skipped.is_empty());
 }
 
@@ -1451,6 +1528,11 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
         "-- bad function\n",
     )
     .expect("write bad function file");
+    fs::write(
+        dir.join("database/objects/triggers/a.b.sql"),
+        "-- bad trigger\n",
+    )
+    .expect("write bad trigger file");
 
     let import = discover_repository_objects(&dir).expect("discover objects");
 
@@ -1466,6 +1548,9 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
     assert!(import
         .skipped
         .contains(&"database/objects/functions/a.b.sql".to_string()));
+    assert!(import
+        .skipped
+        .contains(&"database/objects/triggers/a.b.sql".to_string()));
 }
 
 #[test]
@@ -1508,6 +1593,13 @@ fn compare_classifies_in_sync_objects() {
         render_function_sql(&sample_inventory().functions[0]),
     )
     .expect("write function");
+    fs::write(
+        dir.join(
+            "database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql",
+        ),
+        render_trigger_sql(&sample_inventory().triggers[0]),
+    )
+    .expect("write trigger");
     commit_all(&dir, "desired state files");
 
     let report = compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
@@ -1525,6 +1617,10 @@ fn compare_classifies_in_sync_objects() {
     ));
     assert!(report.in_sync.contains(
         &"database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
+            .to_string()
+    ));
+    assert!(report.in_sync.contains(
+        &"database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql"
             .to_string()
     ));
 }
@@ -1551,6 +1647,13 @@ fn compare_classifies_repo_different_objects() {
         "-- stale function\n",
     )
     .expect("write stale function");
+    fs::write(
+        dir.join(
+            "database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql",
+        ),
+        "-- stale trigger\n",
+    )
+    .expect("write stale trigger");
     commit_all(&dir, "stale desired state");
 
     let report = compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
@@ -1565,6 +1668,10 @@ fn compare_classifies_repo_different_objects() {
     ));
     assert!(report.repo_different.contains(
         &"database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
+            .to_string()
+    ));
+    assert!(report.repo_different.contains(
+        &"database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql"
             .to_string()
     ));
 }
@@ -1591,6 +1698,11 @@ fn compare_classifies_repo_only_objects() {
         "CREATE FUNCTION dbstate_slice2.local_only()\n RETURNS text\n LANGUAGE sql\nAS $function$\n    SELECT 'local';\n$function$;\n",
     )
     .expect("write local only function");
+    fs::write(
+        dir.join("database/objects/triggers/dbstate_slice2.sample_accounts.local_only_trigger.sql"),
+        "CREATE TRIGGER local_only_trigger AFTER INSERT ON dbstate_slice2.sample_accounts FOR EACH ROW EXECUTE FUNCTION dbstate_slice2.account_label(account_id);\n",
+    )
+    .expect("write local only trigger");
     commit_all(&dir, "local only desired state");
 
     let report = compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
@@ -1606,6 +1718,10 @@ fn compare_classifies_repo_only_objects() {
     assert!(report
         .repo_only
         .contains(&"database/objects/functions/dbstate_slice2.local_only.no_args.sql".to_string()));
+    assert!(report.repo_only.contains(
+        &"database/objects/triggers/dbstate_slice2.sample_accounts.local_only_trigger.sql"
+            .to_string()
+    ));
 }
 
 #[test]
@@ -1634,6 +1750,10 @@ fn compare_classifies_database_only_objects() {
     ));
     assert!(report.database_only.contains(
         &"database/objects/functions/dbstate_slice2.account_label.account_code_text.sql"
+            .to_string()
+    ));
+    assert!(report.database_only.contains(
+        &"database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql"
             .to_string()
     ));
 }
@@ -2121,6 +2241,115 @@ fn function_release_plan_operation_badges_are_deterministic() {
     assert!(database_only_item
         .operation_explanation
         .contains("will not generate destructive SQL"));
+}
+
+#[test]
+fn trigger_release_plan_operation_badges_are_deterministic() {
+    let trigger_ref =
+        "trigger:dbstate_slice2.sample_accounts.sample_accounts_audit_trigger".to_string();
+    let trigger_path =
+        "database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql";
+
+    let repo_only_dir = create_temp_dir("plan-trigger-repo-only");
+    init_git_repo(&repo_only_dir);
+    create_complete_structure(&repo_only_dir);
+    fs::write(
+        repo_only_dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        repo_only_dir.join(trigger_path),
+        render_trigger_sql(&sample_inventory().triggers[0]),
+    )
+    .expect("write repo-only trigger");
+    commit_all(&repo_only_dir, "repo-only trigger");
+    let mut target_inventory = sample_inventory();
+    target_inventory.triggers.clear();
+
+    let repo_only = plan_postgres_with_inventory(
+        &repo_only_dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(vec![trigger_ref.clone()], Vec::new()).expect("selection"),
+    );
+
+    assert!(repo_only.success, "{:?}", repo_only.errors);
+    let item = repo_only
+        .plan_items
+        .iter()
+        .find(|item| item.object_ref == trigger_ref)
+        .expect("trigger plan item");
+    assert_eq!(item.operation_kind, "createTriggerReviewSql");
+    assert_eq!(item.operation_label, "Create Trigger");
+    assert_eq!(item.safety_badge, "Review SQL");
+    assert!(item
+        .operation_explanation
+        .contains("review-only CREATE TRIGGER"));
+    assert!(item
+        .operation_reasons
+        .iter()
+        .any(|reason| reason.contains("does not generate DROP TRIGGER")));
+
+    let changed_dir = create_temp_dir("plan-trigger-changed");
+    init_git_repo(&changed_dir);
+    create_complete_structure(&changed_dir);
+    fs::write(
+        changed_dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(changed_dir.join(trigger_path), "-- stale trigger\n").expect("write trigger");
+    commit_all(&changed_dir, "changed trigger");
+
+    let changed = plan_postgres_with_inventory(
+        &changed_dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(vec![trigger_ref.clone()], Vec::new()).expect("selection"),
+    );
+
+    assert!(changed.success, "{:?}", changed.errors);
+    let changed_item = changed
+        .plan_items
+        .iter()
+        .find(|item| item.object_ref == trigger_ref)
+        .expect("changed trigger item");
+    assert_eq!(changed_item.operation_kind, "manualReviewRequired");
+    assert_eq!(changed_item.safety_badge, "Manual Review");
+    assert!(changed_item
+        .operation_explanation
+        .contains("changed triggers are manual-review only"));
+
+    let database_only_dir = create_temp_dir("plan-trigger-database-only");
+    init_git_repo(&database_only_dir);
+    create_complete_structure(&database_only_dir);
+    fs::write(
+        database_only_dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    commit_all(&database_only_dir, "schema only");
+
+    let database_only = plan_postgres_with_inventory(
+        &database_only_dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(vec![trigger_ref.clone()], Vec::new()).expect("selection"),
+    );
+
+    assert!(database_only.success, "{:?}", database_only.errors);
+    let database_only_item = database_only
+        .plan_items
+        .iter()
+        .find(|item| item.object_ref == trigger_ref)
+        .expect("database-only trigger item");
+    assert_eq!(database_only_item.operation_kind, "databaseOnlyReview");
+    assert_eq!(database_only_item.safety_badge, "Database Only");
+    assert!(database_only_item
+        .operation_reasons
+        .iter()
+        .any(|reason| reason.contains("DROP TRIGGER generation is not available")));
 }
 
 #[test]
@@ -2751,6 +2980,207 @@ fn release_candidate_selection_respects_selected_function_refs() {
         .expect("sql");
     assert!(sql.contains("account_id integer"));
     assert!(!sql.contains("account_code text"));
+}
+
+#[test]
+fn repo_only_trigger_release_generates_review_only_create_trigger_sql() {
+    let dir = create_temp_dir("release-trigger-create");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join(
+            "database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql",
+        ),
+        render_trigger_sql(&sample_inventory().triggers[0]),
+    )
+    .expect("write repo-only trigger");
+    commit_all(&dir, "repo-only trigger");
+    let mut target_inventory = sample_inventory();
+    target_inventory.triggers.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec![
+                "trigger:dbstate_slice2.sample_accounts.sample_accounts_audit_trigger".to_string(),
+            ],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice30_trigger",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.plan_items[0].operation_kind,
+        "createTriggerReviewSql"
+    );
+    assert_eq!(report.plan_items[0].operation_label, "Create Trigger");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice30_trigger.sql")).expect("sql");
+    assert!(sql.contains("-- Review-only trigger suggestion."));
+    assert!(sql.contains("-- DbState does not execute this SQL."));
+    assert!(sql.contains("-- Review before applying manually outside DbState."));
+    assert!(sql.contains("CREATE TRIGGER sample_accounts_audit_trigger"));
+    assert!(!sql.contains("\nDROP TRIGGER"));
+    assert!(!sql.contains("\nALTER TRIGGER"));
+    assert!(!sql.contains("DELETE FROM"));
+    assert!(!sql.contains("INSERT INTO"));
+}
+
+#[test]
+fn changed_trigger_release_remains_manual_review_only() {
+    let dir = create_temp_dir("release-trigger-changed");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join(
+            "database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql",
+        ),
+        "-- stale trigger\n",
+    )
+    .expect("write changed trigger");
+    commit_all(&dir, "changed trigger");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec![
+                "trigger:dbstate_slice2.sample_accounts.sample_accounts_audit_trigger".to_string(),
+            ],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice30_changed_trigger",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].operation_kind, "manualReviewRequired");
+    assert!(report.plan_items[0]
+        .operation_explanation
+        .contains("changed triggers are manual-review only"));
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice30_changed_trigger.sql"))
+        .expect("sql");
+    assert!(sql.contains("changed triggers are manual-review only"));
+    assert!(!sql.contains("\nDROP TRIGGER"));
+    assert!(!sql.contains("\nALTER TRIGGER"));
+    assert!(!sql.contains("CREATE TRIGGER sample_accounts_audit_trigger"));
+}
+
+#[test]
+fn database_only_trigger_release_does_not_generate_drop_trigger() {
+    let dir = create_temp_dir("release-trigger-db-only");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    commit_all(&dir, "schema only");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec![
+                "trigger:dbstate_slice2.sample_accounts.sample_accounts_audit_trigger".to_string(),
+            ],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice30_database_only_trigger",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].compare_classification, "databaseOnly");
+    assert_eq!(report.plan_items[0].operation_kind, "databaseOnlyReview");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice30_database_only_trigger.sql"))
+            .expect("sql");
+    assert!(sql.contains("object exists only in target database"));
+    assert!(!sql.contains("DROP TRIGGER"));
+    assert!(!sql.contains("ALTER TRIGGER"));
+}
+
+#[test]
+fn release_candidate_selection_respects_selected_trigger_refs() {
+    let dir = create_temp_dir("release-trigger-selection");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    let mut selected = sample_inventory().triggers[0].clone();
+    selected.trigger_name = "selected_audit_trigger".to_string();
+    selected.definition =
+        "CREATE TRIGGER selected_audit_trigger AFTER INSERT ON dbstate_slice2.sample_accounts FOR EACH ROW EXECUTE FUNCTION dbstate_slice2.account_label(account_id)"
+            .to_string();
+    let mut unselected = selected.clone();
+    unselected.trigger_name = "unselected_audit_trigger".to_string();
+    unselected.definition =
+        "CREATE TRIGGER unselected_audit_trigger AFTER INSERT ON dbstate_slice2.sample_accounts FOR EACH ROW EXECUTE FUNCTION dbstate_slice2.account_label(account_id)"
+            .to_string();
+    fs::write(
+        dir.join(
+            "database/objects/triggers/dbstate_slice2.sample_accounts.selected_audit_trigger.sql",
+        ),
+        render_trigger_sql(&selected),
+    )
+    .expect("write selected trigger");
+    fs::write(
+        dir.join(
+            "database/objects/triggers/dbstate_slice2.sample_accounts.unselected_audit_trigger.sql",
+        ),
+        render_trigger_sql(&unselected),
+    )
+    .expect("write unselected trigger");
+    commit_all(&dir, "repo-only triggers");
+    let mut target_inventory = sample_inventory();
+    target_inventory.triggers.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["trigger:dbstate_slice2.sample_accounts.selected_audit_trigger".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice30_trigger_selection",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.included_objects,
+        vec!["trigger:dbstate_slice2.sample_accounts.selected_audit_trigger".to_string()]
+    );
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice30_trigger_selection.sql"))
+        .expect("sql");
+    assert!(sql.contains("selected_audit_trigger"));
+    assert!(!sql.contains("unselected_audit_trigger"));
 }
 
 #[test]
@@ -4303,6 +4733,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "database/objects/views/",
         "database/objects/constraints/",
         "database/objects/functions/",
+        "database/objects/triggers/",
         "objectType: \"schema\"",
         "objectType: \"table\"",
         "objectType: \"extension\"",
@@ -4312,6 +4743,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "objectType: \"view\"",
         "objectType: \"constraint\"",
         "objectType: \"function\"",
+        "objectType: \"trigger\"",
         "referenceDataRow",
         "rowMatchesFilter",
         "rowMatchesStatusFilter",
@@ -4328,6 +4760,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "data.views",
         "data.constraints",
         "data.functions",
+        "data.triggers",
         "functionIdentitySlug",
         "updateCompareOptionLists",
         "updateTableOptions",
@@ -4346,6 +4779,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
 
     assert!(!js.contains("objectRef: \"column:"));
     assert!(!html.contains("functions future"));
+    assert!(!html.contains("triggers future"));
     assert!(js.contains("label === \"Inspect\""));
     assert!(js.contains("label === \"Reference-data compare\""));
     assert!(js.contains("appendOption(select, \"referenceData\", \"Reference data\")"));
@@ -4456,7 +4890,20 @@ fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
         "ALTER TABLE \"core\".\"accounts\"\n    ADD CONSTRAINT \"accounts_pkey\" PRIMARY KEY (\"account_id\");\n",
     )
     .expect("write constraint ddl");
-    commit_all(&dir, "complete structure with table index and constraint");
+    let trigger_path = dir
+        .join("database")
+        .join("objects")
+        .join("triggers")
+        .join("core.accounts.accounts_audit_trigger.sql");
+    fs::write(
+        &trigger_path,
+        "-- DbState PostgreSQL desired-state object\n-- Object type: trigger\n-- Object name: core.accounts.accounts_audit_trigger\n-- Trigger function: core.audit_accounts\n\nCREATE TRIGGER accounts_audit_trigger AFTER INSERT ON core.accounts FOR EACH ROW EXECUTE FUNCTION core.audit_accounts();\n",
+    )
+    .expect("write trigger ddl");
+    commit_all(
+        &dir,
+        "complete structure with table index constraint and trigger",
+    );
 
     let body = r#"{ "scope": "all", "objectType": "table", "schema": "core", "objectName": "accounts", "relativePath": "database/objects/tables/core.accounts.sql" }"#;
     let response = service_response("POST", "/api/v1/postgres/object-ddl", body, &dir);
@@ -4469,6 +4916,7 @@ fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
     assert!(response.body.contains("CREATE TABLE"));
     assert!(response.body.contains("accounts_code_idx"));
     assert!(response.body.contains("accounts_pkey"));
+    assert!(response.body.contains("accounts_audit_trigger"));
     assert!(response
         .body
         .contains("database/objects/indexes/core.accounts.accounts_code_idx.sql"));
@@ -4477,6 +4925,7 @@ fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
         .contains("database/objects/constraints/primary-keys/core.accounts.accounts_pkey.sql"));
     assert!(response.body.contains("\"group\":\"Indexes\""));
     assert!(response.body.contains("\"group\":\"Constraints\""));
+    assert!(response.body.contains("\"group\":\"Triggers\""));
     assert!(response.body.contains("\"group\":\"Comments\""));
     assert!(response
         .body
@@ -4531,6 +4980,32 @@ fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
         .body
         .contains("Function comment rendering is deferred"));
     assert!(!function_response.body.contains("DROP FUNCTION"));
+
+    let trigger_body = r#"{ "scope": "all", "objectType": "trigger", "schema": "core", "objectName": "accounts.accounts_audit_trigger", "relativePath": "database/objects/triggers/core.accounts.accounts_audit_trigger.sql" }"#;
+    let trigger_response =
+        service_response("POST", "/api/v1/postgres/object-ddl", trigger_body, &dir);
+
+    assert_eq!(
+        trigger_response.status_code, 200,
+        "{}",
+        trigger_response.body
+    );
+    assert!(trigger_response.body.contains("\"objectType\":\"trigger\""));
+    assert!(trigger_response
+        .body
+        .contains("CREATE TRIGGER accounts_audit_trigger"));
+    assert!(trigger_response.body.contains("\"group\":\"Schema\""));
+    assert!(trigger_response
+        .body
+        .contains("\"group\":\"Parent Relation\""));
+    assert!(trigger_response
+        .body
+        .contains("\"group\":\"Trigger Function\""));
+    assert!(trigger_response
+        .body
+        .contains("Trigger comment rendering is deferred"));
+    assert!(!trigger_response.body.contains("DROP TRIGGER"));
+    assert!(!trigger_response.body.contains("ALTER TRIGGER"));
 }
 
 #[test]

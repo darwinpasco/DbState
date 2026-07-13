@@ -651,8 +651,9 @@ fn release_object_order(item: &&PlanItem) -> (u8, String) {
         "table" => 5,
         "constraint" => 6,
         "function" => 7,
-        "index" => 8,
-        "view" => 9,
+        "trigger" => 8,
+        "index" => 9,
+        "view" => 10,
         _ => 99,
     };
     (order, item.object_ref.clone())
@@ -689,6 +690,15 @@ fn render_create_later_sql(root: &Path, item: &PlanItem) -> Result<String, Strin
                 content.trim_start()
             ))
         }
+        ObjectRef::Trigger { .. } => {
+            ensure_database_object_path(&item.relative_path)?;
+            let content = fs::read_to_string(root.join(&item.relative_path))
+                .map_err(|error| format!("Could not read {}: {error}", item.relative_path))?;
+            Ok(format!(
+                "-- Review-only trigger suggestion.\n-- DbState does not execute this SQL.\n-- Review before applying manually outside DbState.\n{}",
+                content.trim_start()
+            ))
+        }
         ObjectRef::Constraint { .. } => {
             ensure_database_object_path(&item.relative_path)?;
             let content = fs::read_to_string(root.join(&item.relative_path))
@@ -717,6 +727,12 @@ fn render_update_database_later_sql(
         if matches!(object_ref, ObjectRef::Function { .. }) {
             return Ok(
                 "-- REVIEW REQUIRED: function differs; changed functions are manual-review only. DbState does not generate DROP FUNCTION or replacement function SQL.\n"
+                    .to_string(),
+            );
+        }
+        if matches!(object_ref, ObjectRef::Trigger { .. }) {
+            return Ok(
+                "-- REVIEW REQUIRED: trigger differs; changed triggers are manual-review only. DbState does not generate DROP TRIGGER, ALTER TRIGGER, or replacement trigger SQL.\n"
                     .to_string(),
             );
         }
