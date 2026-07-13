@@ -54,10 +54,14 @@ Supported beta object types:
 - sequences
 - non-constraint-backed indexes
 - views
+- primary key constraints
+- unique constraints
+- foreign key constraints
+- check constraints
+- regular PostgreSQL functions
 
 Deferred object types and details:
 
-- functions
 - triggers
 - grants
 - policies
@@ -66,12 +70,11 @@ Deferred object types and details:
 - materialized views
 - partitioning details
 - row-level security
-- durable constraints as first-class objects
 - durable comments as first-class objects
 - full dependency graph
 - full SQL parser
 
-Constraints and comments may appear as partial review context where available, but they are not durable first-class desired-state object types in this beta.
+Comments may appear as partial review context where available, but they are not durable first-class desired-state object types in this beta. Procedures, aggregates, and window functions remain outside the regular-function support in this beta.
 
 ## Object Diff
 

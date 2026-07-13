@@ -9,7 +9,9 @@ use crate::reference_data::{
 use crate::release::empty_release_report;
 use crate::release::release_postgres_command;
 use crate::repository::discovery::discover_repository_objects;
-use crate::repository::objects::constraint_file_path;
+use crate::repository::objects::{
+    constraint_file_path, function_file_path, function_identity_slug,
+};
 use crate::repository::{
     compare_postgres_command, ensure_database_object_path, enum_file_path, export_postgres_command,
     extension_file_path, index_file_path, plan_postgres_command, schema_file_path,
@@ -230,6 +232,34 @@ fn sample_inventory() -> PostgresInventory {
                     referenced_schema: None,
                     referenced_table: None,
                     referenced_columns: Vec::new(),
+                },
+            ],
+            functions: vec![
+                FunctionInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    function_name: "account_label".to_string(),
+                    identity_arguments: "account_id integer".to_string(),
+                    result_type: Some("text".to_string()),
+                    language: Some("sql".to_string()),
+                    volatility: Some("stable".to_string()),
+                    security_definer: false,
+                    is_strict: false,
+                    definition:
+                        "CREATE FUNCTION dbstate_slice2.account_label(account_id integer)\n RETURNS text\n LANGUAGE sql\n STABLE\nAS $function$\n    SELECT 'account-' || account_id::text;\n$function$"
+                            .to_string(),
+                },
+                FunctionInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    function_name: "account_label".to_string(),
+                    identity_arguments: "account_code text".to_string(),
+                    result_type: Some("text".to_string()),
+                    language: Some("sql".to_string()),
+                    volatility: Some("stable".to_string()),
+                    security_definer: false,
+                    is_strict: true,
+                    definition:
+                        "CREATE FUNCTION dbstate_slice2.account_label(account_code text)\n RETURNS text\n LANGUAGE sql\n STABLE\n STRICT\nAS $function$\n    SELECT upper(account_code);\n$function$"
+                            .to_string(),
                 },
             ],
         }
@@ -682,6 +712,34 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
                 referenced_columns: Vec::new(),
             },
         ],
+        functions: vec![
+            FunctionInfo {
+                schema_name: "app".to_string(),
+                function_name: "order_label".to_string(),
+                identity_arguments: "order_id integer".to_string(),
+                result_type: Some("text".to_string()),
+                language: Some("sql".to_string()),
+                volatility: Some("stable".to_string()),
+                security_definer: false,
+                is_strict: false,
+                definition:
+                    "CREATE FUNCTION app.order_label(order_id integer)\n RETURNS text\n LANGUAGE sql\n STABLE\nAS $function$\n    SELECT order_id::text;\n$function$"
+                        .to_string(),
+            },
+            FunctionInfo {
+                schema_name: "app".to_string(),
+                function_name: "order_label".to_string(),
+                identity_arguments: "order_code text".to_string(),
+                result_type: Some("text".to_string()),
+                language: Some("sql".to_string()),
+                volatility: Some("stable".to_string()),
+                security_definer: false,
+                is_strict: true,
+                definition:
+                    "CREATE FUNCTION app.order_label(order_code text)\n RETURNS text\n LANGUAGE sql\n STABLE\n STRICT\nAS $function$\n    SELECT upper(order_code);\n$function$"
+                        .to_string(),
+            },
+        ],
     };
 
     assert_eq!(inventory.schemas[0].name, "app");
@@ -697,6 +755,12 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
     assert_eq!(inventory.constraints[1].constraint_type, "uniqueConstraint");
     assert_eq!(inventory.constraints[2].constraint_type, "foreignKey");
     assert_eq!(inventory.constraints[3].constraint_type, "checkConstraint");
+    assert_eq!(inventory.functions.len(), 2);
+    assert_eq!(inventory.functions[0].function_name, "order_label");
+    assert_ne!(
+        inventory.functions[0].identity_arguments,
+        inventory.functions[1].identity_arguments
+    );
 }
 
 #[test]
@@ -726,7 +790,7 @@ fn deferred_object_types_are_explicit() {
     assert!(!report
         .deferred_object_types
         .contains(&"checkConstraints".to_string()));
-    assert!(report
+    assert!(!report
         .deferred_object_types
         .contains(&"functions".to_string()));
     assert!(report.deferred_object_types.contains(&"grants".to_string()));
@@ -793,8 +857,21 @@ fn export_paths_stay_under_database_objects() {
         .expect("check constraint path"),
         "database/objects/constraints/check-constraints/core.payments.payments_amount_check.sql"
     );
+    assert_eq!(
+        function_file_path("core", "calculate_total", "integer, numeric").expect("function path"),
+        "database/objects/functions/core.calculate_total.integer_numeric.sql"
+    );
+    assert_eq!(
+        function_file_path("core", "now_utc", "").expect("function no-args path"),
+        "database/objects/functions/core.now_utc.no_args.sql"
+    );
+    assert_eq!(
+        function_identity_slug("integer, numeric").expect("function slug"),
+        "integer_numeric"
+    );
     assert!(schema_file_path("../evil").is_err());
     assert!(table_file_path("core", "bad/name").is_err());
+    assert!(function_file_path("core", "bad/name", "integer").is_err());
     assert!(ensure_database_object_path("database/releases/bad.sql").is_err());
 }
 
@@ -850,6 +927,13 @@ fn generated_slice16_object_sql_is_deterministic() {
     assert!(render_constraint_sql(&inventory.constraints[3])
         .contains("ADD CONSTRAINT \"sample_accounts_code_check\" CHECK"));
     assert!(!render_constraint_sql(&inventory.constraints[0]).contains("DROP"));
+    assert!(render_function_sql(&inventory.functions[0])
+        .contains("-- Object type: function\n-- Object name: dbstate_slice2.account_label(account_id integer)"));
+    assert!(render_function_sql(&inventory.functions[0])
+        .contains("CREATE FUNCTION dbstate_slice2.account_label(account_id integer)"));
+    assert!(render_function_sql(&inventory.functions[1]).contains("STRICT"));
+    assert!(render_function_sql(&inventory.functions[0]).ends_with(";\n"));
+    assert!(!render_function_sql(&inventory.functions[0]).contains("DROP FUNCTION"));
 }
 
 #[test]
@@ -1017,6 +1101,12 @@ fn actual_export_creates_schema_and_table_files() {
     assert!(dir
         .join("database/objects/constraints/check-constraints/dbstate_slice2.sample_accounts.sample_accounts_code_check.sql")
         .is_file());
+    assert!(dir
+        .join("database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql")
+        .is_file());
+    assert!(dir
+        .join("database/objects/functions/dbstate_slice2.account_label.account_code_text.sql")
+        .is_file());
 }
 
 #[test]
@@ -1035,6 +1125,10 @@ fn sync_dry_run_creates_or_updates_no_files() {
         .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
     assert!(report.planned_creates.contains(
         &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
+            .to_string()
+    ));
+    assert!(report.planned_creates.contains(
+        &"database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
             .to_string()
     ));
     assert!(report.created_files.is_empty());
@@ -1098,6 +1192,14 @@ fn sync_creates_added_object_files() {
     assert!(report
         .created_files
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert!(report.created_files.contains(
+        &"database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
+            .to_string()
+    ));
+    assert!(report.created_files.contains(
+        &"database/objects/functions/dbstate_slice2.account_label.account_code_text.sql"
+            .to_string()
+    ));
 }
 
 #[test]
@@ -1298,6 +1400,16 @@ fn repository_schema_and_table_files_are_discovered() {
         render_constraint_sql(&sample_inventory().constraints[1]),
     )
     .expect("write unique constraint");
+    fs::write(
+        dir.join("database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"),
+        render_function_sql(&sample_inventory().functions[0]),
+    )
+    .expect("write function");
+    fs::write(
+        dir.join("database/objects/functions/dbstate_slice2.account_label.account_code_text.sql"),
+        render_function_sql(&sample_inventory().functions[1]),
+    )
+    .expect("write overloaded function");
 
     let import = discover_repository_objects(&dir).expect("discover objects");
 
@@ -1311,6 +1423,12 @@ fn repository_schema_and_table_files_are_discovered() {
     assert!(import
         .objects
         .contains_key("constraint:dbstate_slice2.sample_accounts.sample_accounts_code_key"));
+    assert!(import
+        .objects
+        .contains_key("function:dbstate_slice2.account_label.account_id_integer"));
+    assert!(import
+        .objects
+        .contains_key("function:dbstate_slice2.account_label.account_code_text"));
     assert!(import.skipped.is_empty());
 }
 
@@ -1328,6 +1446,11 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
         "-- bad\n",
     )
     .expect("write bad constraint file");
+    fs::write(
+        dir.join("database/objects/functions/a.b.sql"),
+        "-- bad function\n",
+    )
+    .expect("write bad function file");
 
     let import = discover_repository_objects(&dir).expect("discover objects");
 
@@ -1340,6 +1463,9 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
     assert!(import
         .skipped
         .contains(&"database/objects/constraints/primary-keys/a.b.sql".to_string()));
+    assert!(import
+        .skipped
+        .contains(&"database/objects/functions/a.b.sql".to_string()));
 }
 
 #[test]
@@ -1377,6 +1503,11 @@ fn compare_classifies_in_sync_objects() {
         render_constraint_sql(&sample_inventory().constraints[0]),
     )
     .expect("write constraint");
+    fs::write(
+        dir.join("database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"),
+        render_function_sql(&sample_inventory().functions[0]),
+    )
+    .expect("write function");
     commit_all(&dir, "desired state files");
 
     let report = compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
@@ -1390,6 +1521,10 @@ fn compare_classifies_in_sync_objects() {
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
     assert!(report.in_sync.contains(
         &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
+            .to_string()
+    ));
+    assert!(report.in_sync.contains(
+        &"database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
             .to_string()
     ));
 }
@@ -1411,16 +1546,14 @@ fn compare_classifies_repo_different_objects() {
         "-- stale constraint\n",
     )
     .expect("write stale constraint");
+    fs::write(
+        dir.join("database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"),
+        "-- stale function\n",
+    )
+    .expect("write stale function");
     commit_all(&dir, "stale desired state");
 
-    let report = compare_postgres_with_inventory(
-        &dir,
-        &sample_inventory(),
-        &ExportSelection::Table {
-            schema: "dbstate_slice2".to_string(),
-            table: "sample_accounts".to_string(),
-        },
-    );
+    let report = compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
 
     assert!(report.success);
     assert!(report
@@ -1428,6 +1561,10 @@ fn compare_classifies_repo_different_objects() {
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
     assert!(report.repo_different.contains(
         &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
+            .to_string()
+    ));
+    assert!(report.repo_different.contains(
+        &"database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
             .to_string()
     ));
 }
@@ -1449,6 +1586,11 @@ fn compare_classifies_repo_only_objects() {
         "-- local only constraint\n",
     )
     .expect("write local only constraint");
+    fs::write(
+        dir.join("database/objects/functions/dbstate_slice2.local_only.no_args.sql"),
+        "CREATE FUNCTION dbstate_slice2.local_only()\n RETURNS text\n LANGUAGE sql\nAS $function$\n    SELECT 'local';\n$function$;\n",
+    )
+    .expect("write local only function");
     commit_all(&dir, "local only desired state");
 
     let report = compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
@@ -1461,6 +1603,9 @@ fn compare_classifies_repo_only_objects() {
         &"database/objects/constraints/check-constraints/dbstate_slice2.sample_accounts.local_only_check.sql"
             .to_string()
     ));
+    assert!(report
+        .repo_only
+        .contains(&"database/objects/functions/dbstate_slice2.local_only.no_args.sql".to_string()));
 }
 
 #[test]
@@ -1481,6 +1626,14 @@ fn compare_classifies_database_only_objects() {
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
     assert!(report.database_only.contains(
         &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
+            .to_string()
+    ));
+    assert!(report.database_only.contains(
+        &"database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
+            .to_string()
+    ));
+    assert!(report.database_only.contains(
+        &"database/objects/functions/dbstate_slice2.account_label.account_code_text.sql"
             .to_string()
     ));
 }
@@ -1847,6 +2000,127 @@ fn plan_json_includes_expected_fields_and_no_secrets() {
     }
     assert!(!json.contains("postgres://"));
     assert!(!json.contains("sensitive-marker"));
+}
+
+#[test]
+fn function_release_plan_operation_badges_are_deterministic() {
+    let repo_only_dir = create_temp_dir("plan-function-repo-only");
+    init_git_repo(&repo_only_dir);
+    create_complete_structure(&repo_only_dir);
+    fs::write(
+        repo_only_dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        repo_only_dir
+            .join("database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"),
+        render_function_sql(&sample_inventory().functions[0]),
+    )
+    .expect("write repo-only function");
+    commit_all(&repo_only_dir, "repo-only function");
+    let mut target_inventory = sample_inventory();
+    target_inventory.functions.clear();
+
+    let repo_only = plan_postgres_with_inventory(
+        &repo_only_dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["function:dbstate_slice2.account_label.account_id_integer".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+    );
+
+    assert!(repo_only.success, "{:?}", repo_only.errors);
+    let item = repo_only
+        .plan_items
+        .iter()
+        .find(|item| item.object_ref == "function:dbstate_slice2.account_label.account_id_integer")
+        .expect("function plan item");
+    assert_eq!(item.operation_kind, "createFunctionReviewSql");
+    assert_eq!(item.operation_label, "Create Function");
+    assert_eq!(item.safety_badge, "Review SQL");
+    assert!(item
+        .operation_explanation
+        .contains("review-only CREATE FUNCTION"));
+    assert!(item
+        .operation_reasons
+        .iter()
+        .any(|reason| reason.contains("does not generate DROP FUNCTION")));
+
+    let changed_dir = create_temp_dir("plan-function-changed");
+    init_git_repo(&changed_dir);
+    create_complete_structure(&changed_dir);
+    fs::write(
+        changed_dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        changed_dir
+            .join("database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"),
+        "CREATE FUNCTION dbstate_slice2.account_label(account_id integer)\n RETURNS text\n LANGUAGE sql\nAS $function$\n    SELECT 'changed';\n$function$;\n",
+    )
+    .expect("write changed function");
+    commit_all(&changed_dir, "changed function");
+
+    let changed = plan_postgres_with_inventory(
+        &changed_dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["function:dbstate_slice2.account_label.account_id_integer".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+    );
+
+    assert!(changed.success, "{:?}", changed.errors);
+    let changed_item = changed
+        .plan_items
+        .iter()
+        .find(|item| item.object_ref == "function:dbstate_slice2.account_label.account_id_integer")
+        .expect("changed function item");
+    assert_eq!(changed_item.operation_kind, "manualReviewRequired");
+    assert_eq!(changed_item.safety_badge, "Manual Review");
+    assert!(changed_item
+        .operation_explanation
+        .contains("changed functions are manual-review only"));
+
+    let database_only_dir = create_temp_dir("plan-function-database-only");
+    init_git_repo(&database_only_dir);
+    create_complete_structure(&database_only_dir);
+    fs::write(
+        database_only_dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    commit_all(&database_only_dir, "schema only");
+
+    let database_only = plan_postgres_with_inventory(
+        &database_only_dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["function:dbstate_slice2.account_label.account_id_integer".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+    );
+
+    assert!(database_only.success, "{:?}", database_only.errors);
+    let database_only_item = database_only
+        .plan_items
+        .iter()
+        .find(|item| item.object_ref == "function:dbstate_slice2.account_label.account_id_integer")
+        .expect("database-only function item");
+    assert_eq!(database_only_item.operation_kind, "databaseOnlyReview");
+    assert_eq!(database_only_item.safety_badge, "Database Only");
+    assert!(database_only_item
+        .operation_explanation
+        .contains("will not generate destructive SQL"));
 }
 
 #[test]
@@ -2303,6 +2577,180 @@ fn release_candidate_selection_respects_selected_constraint_refs() {
             .expect("sql");
     assert!(sql.contains("selected_constraint_check"));
     assert!(!sql.contains("unselected_constraint_check"));
+}
+
+#[test]
+fn repo_only_function_release_generates_review_only_create_function_sql() {
+    let dir = create_temp_dir("release-function-create");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"),
+        render_function_sql(&sample_inventory().functions[0]),
+    )
+    .expect("write repo-only function");
+    commit_all(&dir, "repo-only function");
+    let mut target_inventory = sample_inventory();
+    target_inventory.functions.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["function:dbstate_slice2.account_label.account_id_integer".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice29_function",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.plan_items[0].operation_kind,
+        "createFunctionReviewSql"
+    );
+    assert_eq!(report.plan_items[0].operation_label, "Create Function");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice29_function.sql")).expect("sql");
+    assert!(sql.contains("-- Review-only function suggestion."));
+    assert!(sql.contains("-- DbState does not execute this SQL."));
+    assert!(sql.contains("-- Review before applying manually outside DbState."));
+    assert!(sql.contains("CREATE FUNCTION dbstate_slice2.account_label(account_id integer)"));
+    assert!(!sql.contains("\nDROP FUNCTION"));
+    assert!(!sql.contains("DELETE FROM"));
+    assert!(!sql.contains("INSERT INTO"));
+}
+
+#[test]
+fn changed_function_release_remains_manual_review_only() {
+    let dir = create_temp_dir("release-function-changed");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"),
+        "CREATE FUNCTION dbstate_slice2.account_label(account_id integer)\n RETURNS text\n LANGUAGE sql\nAS $function$\n    SELECT 'changed';\n$function$;\n",
+    )
+    .expect("write changed function");
+    commit_all(&dir, "changed function");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["function:dbstate_slice2.account_label.account_id_integer".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice29_changed_function",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].operation_kind, "manualReviewRequired");
+    assert!(report.plan_items[0]
+        .operation_explanation
+        .contains("changed functions are manual-review only"));
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice29_changed_function.sql"))
+        .expect("sql");
+    assert!(sql.contains("changed functions are manual-review only"));
+    assert!(!sql.contains("\nDROP FUNCTION"));
+    assert!(!sql.contains("CREATE FUNCTION dbstate_slice2.account_label"));
+}
+
+#[test]
+fn database_only_function_release_does_not_generate_drop_function() {
+    let dir = create_temp_dir("release-function-db-only");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    commit_all(&dir, "schema only");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["function:dbstate_slice2.account_label.account_id_integer".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice29_database_only_function",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].compare_classification, "databaseOnly");
+    assert_eq!(report.plan_items[0].operation_kind, "databaseOnlyReview");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice29_database_only_function.sql"))
+            .expect("sql");
+    assert!(sql.contains("object exists only in target database"));
+    assert!(!sql.contains("DROP FUNCTION"));
+}
+
+#[test]
+fn release_candidate_selection_respects_selected_function_refs() {
+    let dir = create_temp_dir("release-function-selection");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"),
+        render_function_sql(&sample_inventory().functions[0]),
+    )
+    .expect("write selected function");
+    fs::write(
+        dir.join("database/objects/functions/dbstate_slice2.account_label.account_code_text.sql"),
+        render_function_sql(&sample_inventory().functions[1]),
+    )
+    .expect("write unselected function");
+    commit_all(&dir, "repo-only functions");
+    let mut target_inventory = sample_inventory();
+    target_inventory.functions.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["function:dbstate_slice2.account_label.account_id_integer".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice29_function_selection",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.included_objects,
+        vec!["function:dbstate_slice2.account_label.account_id_integer".to_string()]
+    );
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice29_function_selection.sql"))
+        .expect("sql");
+    assert!(sql.contains("account_id integer"));
+    assert!(!sql.contains("account_code text"));
 }
 
 #[test]
@@ -3854,6 +4302,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "database/objects/indexes/",
         "database/objects/views/",
         "database/objects/constraints/",
+        "database/objects/functions/",
         "objectType: \"schema\"",
         "objectType: \"table\"",
         "objectType: \"extension\"",
@@ -3862,6 +4311,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "objectType: \"index\"",
         "objectType: \"view\"",
         "objectType: \"constraint\"",
+        "objectType: \"function\"",
         "referenceDataRow",
         "rowMatchesFilter",
         "rowMatchesStatusFilter",
@@ -3877,6 +4327,8 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "data.indexes",
         "data.views",
         "data.constraints",
+        "data.functions",
+        "functionIdentitySlug",
         "updateCompareOptionLists",
         "updateTableOptions",
         "updateReferenceDataOptions",
@@ -3893,6 +4345,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
     }
 
     assert!(!js.contains("objectRef: \"column:"));
+    assert!(!html.contains("functions future"));
     assert!(js.contains("label === \"Inspect\""));
     assert!(js.contains("label === \"Reference-data compare\""));
     assert!(js.contains("appendOption(select, \"referenceData\", \"Reference data\")"));
@@ -4044,6 +4497,40 @@ fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
         .contains("\"objectType\":\"constraint\""));
     assert!(constraint_response.body.contains("ADD CONSTRAINT"));
     assert!(constraint_response.body.contains("accounts_pkey"));
+
+    let function_path = dir
+        .join("database")
+        .join("objects")
+        .join("functions")
+        .join("core.account_label.account_id_integer.sql");
+    fs::write(
+        &function_path,
+        "-- DbState PostgreSQL desired-state object\n-- Object type: function\n-- Object name: core.account_label(account_id integer)\n-- Language: sql\n\nCREATE FUNCTION core.account_label(account_id integer)\n RETURNS text\n LANGUAGE sql\nAS $function$\n    SELECT 'account-' || account_id::text;\n$function$;\n",
+    )
+    .expect("write function ddl");
+    commit_all(&dir, "add function object");
+
+    let function_body = r#"{ "scope": "all", "objectType": "function", "schema": "core", "objectName": "account_label.account_id_integer", "relativePath": "database/objects/functions/core.account_label.account_id_integer.sql" }"#;
+    let function_response =
+        service_response("POST", "/api/v1/postgres/object-ddl", function_body, &dir);
+
+    assert_eq!(
+        function_response.status_code, 200,
+        "{}",
+        function_response.body
+    );
+    assert!(function_response
+        .body
+        .contains("\"objectType\":\"function\""));
+    assert!(function_response
+        .body
+        .contains("CREATE FUNCTION core.account_label"));
+    assert!(function_response.body.contains("\"group\":\"Schema\""));
+    assert!(function_response.body.contains("\"group\":\"Language\""));
+    assert!(function_response
+        .body
+        .contains("Function comment rendering is deferred"));
+    assert!(!function_response.body.contains("DROP FUNCTION"));
 }
 
 #[test]

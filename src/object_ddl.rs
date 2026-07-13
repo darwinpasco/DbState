@@ -1,13 +1,13 @@
 use crate::git::git_root;
 use crate::postgres::{
     inspect_postgres, invalid_postgres_url_message, is_postgres_connection_url,
-    render_constraint_sql, render_enum_sql, render_extension_sql, render_index_sql,
-    render_schema_sql, render_sequence_sql, render_table_sql, render_view_sql, ColumnInfo,
-    ConstraintInfo, IndexInfo,
+    render_constraint_sql, render_enum_sql, render_extension_sql, render_function_sql,
+    render_index_sql, render_schema_sql, render_sequence_sql, render_table_sql, render_view_sql,
+    ColumnInfo, ConstraintInfo, FunctionInfo, IndexInfo,
 };
 use crate::repository::{
-    enum_file_path, extension_file_path, index_file_path, safe_file_component, schema_file_path,
-    sequence_file_path, table_file_path, view_file_path,
+    enum_file_path, extension_file_path, function_identity_slug, index_file_path,
+    safe_file_component, schema_file_path, sequence_file_path, table_file_path, view_file_path,
 };
 use crate::service::{
     parse_service_request, request_string, resolve_service_postgres_connection,
@@ -42,7 +42,15 @@ pub(crate) fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttp
         .unwrap_or_default();
     if !matches!(
         object_type.as_str(),
-        "schema" | "table" | "extension" | "enum" | "sequence" | "index" | "view" | "constraint"
+        "schema"
+            | "table"
+            | "extension"
+            | "enum"
+            | "sequence"
+            | "index"
+            | "view"
+            | "constraint"
+            | "function"
     ) {
         return service_json_response(
             200,
@@ -75,7 +83,13 @@ pub(crate) fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttp
     let mut errors = Vec::new();
     let database_ddl = match resolve_service_postgres_connection(&request) {
         Ok(Some(connection)) => {
-            match database_object_ddl(&connection.url, &object_type, &schema, &object_name) {
+            match database_object_ddl(
+                &connection.url,
+                &object_type,
+                &schema,
+                &object_name,
+                relative_path.as_deref(),
+            ) {
                 Ok(ddl) => ddl,
                 Err(error) => {
                     warnings.push(error);
@@ -125,7 +139,13 @@ pub(crate) fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttp
     };
 
     if let Ok(Some(connection)) = resolve_service_postgres_connection(&request) {
-        match database_full_context_ddl(&connection.url, &object_type, &schema, &object_name) {
+        match database_full_context_ddl(
+            &connection.url,
+            &object_type,
+            &schema,
+            &object_name,
+            relative_path.as_deref(),
+        ) {
             Ok((ddl, related, notes)) => {
                 full_context.database_ddl = ddl.or_else(|| object_only.database_ddl.clone());
                 related_objects.database = related;
@@ -182,6 +202,19 @@ fn default_object_relative_path(
             }
         }
         "view" => view_file_path(schema, object_name),
+        "function" => {
+            let parts: Vec<&str> = object_name.split('.').collect();
+            if parts.len() == 2 {
+                Ok(format!(
+                    "database/objects/functions/{}.{}.{}.sql",
+                    safe_file_component(schema)?,
+                    safe_file_component(parts[0])?,
+                    safe_file_component(parts[1])?
+                ))
+            } else {
+                Err("Function DDL detail requires a release/result relativePath.".to_string())
+            }
+        }
         "constraint" => {
             Err("Constraint DDL detail requires a release/result relativePath.".to_string())
         }
@@ -219,6 +252,30 @@ fn repository_full_context_ddl(
     let mut related = Vec::new();
     let mut notes = Vec::new();
     if object_type != "table" {
+        if object_type == "function" {
+            related.push(RelatedObjectSummary::new(
+                "Schema",
+                schema,
+                "Function schema",
+            ));
+            if let Some(ddl) = object_only_ddl {
+                if let Some(language) = ddl
+                    .lines()
+                    .find_map(|line| line.strip_prefix("-- Language: ").map(str::trim))
+                {
+                    related.push(RelatedObjectSummary::new(
+                        "Language",
+                        language,
+                        "Function language",
+                    ));
+                }
+            }
+            related.push(RelatedObjectSummary::new(
+                "Comments",
+                "Not available in Private Beta",
+                "Function comment rendering is deferred.",
+            ));
+        }
         notes.push("Full context is the same as object-only DDL for this object type.".to_string());
         return Ok((object_only_ddl.map(ToOwned::to_owned), related, notes));
     }
@@ -365,12 +422,24 @@ fn database_full_context_ddl(
     object_type: &str,
     schema: &str,
     object_name: &str,
+    relative_path: Option<&str>,
 ) -> Result<DdlContextResult, String> {
     if object_type != "table" {
-        let ddl = database_object_ddl(connection_url, object_type, schema, object_name)?;
+        let ddl = database_object_ddl(
+            connection_url,
+            object_type,
+            schema,
+            object_name,
+            relative_path,
+        )?;
+        let related = if object_type == "function" {
+            database_function_related_objects(connection_url, schema, object_name, relative_path)?
+        } else {
+            Vec::new()
+        };
         return Ok((
             ddl,
-            Vec::new(),
+            related,
             vec!["Full context is the same as object-only DDL for this object type.".to_string()],
         ));
     }
@@ -481,6 +550,7 @@ fn validate_repository_object_relative_path(relative_path: &str) -> Result<(), S
         || relative_path.starts_with("database/objects/sequences/")
         || relative_path.starts_with("database/objects/indexes/")
         || relative_path.starts_with("database/objects/views/")
+        || relative_path.starts_with("database/objects/functions/")
         || relative_path.starts_with("database/objects/constraints/primary-keys/")
         || relative_path.starts_with("database/objects/constraints/unique-constraints/")
         || relative_path.starts_with("database/objects/constraints/foreign-keys/")
@@ -497,6 +567,7 @@ fn database_object_ddl(
     object_type: &str,
     schema: &str,
     object_name: &str,
+    relative_path: Option<&str>,
 ) -> Result<Option<String>, String> {
     if !is_postgres_connection_url(connection_url) {
         return Err(invalid_postgres_url_message());
@@ -570,6 +641,12 @@ fn database_object_ddl(
             .iter()
             .find(|candidate| candidate.schema_name == schema && candidate.view_name == object_name)
             .map(render_view_sql)),
+        "function" => {
+            Ok(
+                find_function_for_object(&inventory.functions, schema, object_name, relative_path)
+                    .map(render_function_sql),
+            )
+        }
         "constraint" => {
             let constraint_name = object_name
                 .rsplit_once('.')
@@ -585,6 +662,79 @@ fn database_object_ddl(
         }
         _ => Ok(None),
     }
+}
+
+fn find_function_for_object<'a>(
+    functions: &'a [FunctionInfo],
+    schema: &str,
+    object_name: &str,
+    relative_path: Option<&str>,
+) -> Option<&'a FunctionInfo> {
+    let (function_name, signature_slug) =
+        function_identity_from_name_or_path(object_name, relative_path)?;
+    functions.iter().find(|candidate| {
+        candidate.schema_name == schema
+            && candidate.function_name == function_name
+            && function_identity_slug(&candidate.identity_arguments)
+                .ok()
+                .as_deref()
+                == Some(signature_slug.as_str())
+    })
+}
+
+fn function_identity_from_name_or_path(
+    object_name: &str,
+    relative_path: Option<&str>,
+) -> Option<(String, String)> {
+    if let Some(path) = relative_path {
+        let file_name = path.strip_prefix("database/objects/functions/")?;
+        let stem = file_name.strip_suffix(".sql")?;
+        let parts: Vec<&str> = stem.split('.').collect();
+        if parts.len() == 3 && !parts.iter().any(|part| part.is_empty()) {
+            return Some((parts[1].to_string(), parts[2].to_string()));
+        }
+    }
+    let parts: Vec<&str> = object_name.split('.').collect();
+    if parts.len() == 2 && !parts.iter().any(|part| part.is_empty()) {
+        return Some((parts[0].to_string(), parts[1].to_string()));
+    }
+    None
+}
+
+fn database_function_related_objects(
+    connection_url: &str,
+    schema: &str,
+    object_name: &str,
+    relative_path: Option<&str>,
+) -> Result<Vec<RelatedObjectSummary>, String> {
+    if !is_postgres_connection_url(connection_url) {
+        return Err(invalid_postgres_url_message());
+    }
+    let inventory =
+        inspect_postgres(connection_url).map_err(|error| redact_message(&error, connection_url))?;
+    let Some(function) =
+        find_function_for_object(&inventory.functions, schema, object_name, relative_path)
+    else {
+        return Ok(Vec::new());
+    };
+    let mut related = vec![RelatedObjectSummary::new(
+        "Schema",
+        &function.schema_name,
+        "Function schema",
+    )];
+    if let Some(language) = &function.language {
+        related.push(RelatedObjectSummary::new(
+            "Language",
+            language,
+            "Function language",
+        ));
+    }
+    related.push(RelatedObjectSummary::new(
+        "Comments",
+        "Not available in Private Beta",
+        "Function comment rendering is deferred.",
+    ));
+    Ok(related)
 }
 
 #[derive(Debug, Clone)]

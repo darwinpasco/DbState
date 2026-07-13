@@ -107,7 +107,7 @@ Release artifacts remain review-only.
 - telemetry
 - MySQL, SQL Server, SQLite, Db2, or Access support
 - full PostgreSQL object coverage
-- functions
+- procedures, aggregates, and window functions
 - triggers
 - grants
 - policies
@@ -116,7 +116,6 @@ Release artifacts remain review-only.
 - materialized views
 - partitioning details
 - row-level security
-- durable constraints as first-class objects
 - durable comments as first-class objects
 - reference-data DML generation
 - arbitrary transactional data compare

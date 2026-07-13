@@ -1,5 +1,6 @@
 use crate::postgres::inspect::{
-    ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, IndexInfo, SequenceInfo, ViewInfo,
+    ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, IndexInfo, SequenceInfo,
+    ViewInfo,
 };
 use std::fmt::Write as _;
 
@@ -232,6 +233,51 @@ pub fn render_constraint_sql(constraint: &ConstraintInfo) -> String {
         quote_postgres_identifier(&constraint.constraint_name)
     )
     .ok();
+    sql
+}
+
+pub fn render_function_sql(function: &FunctionInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: function").ok();
+    writeln!(
+        sql,
+        "-- Object name: {}.{}({})",
+        function.schema_name, function.function_name, function.identity_arguments
+    )
+    .ok();
+    if let Some(result_type) = &function.result_type {
+        writeln!(sql, "-- Result type: {result_type}").ok();
+    }
+    if let Some(language) = &function.language {
+        writeln!(sql, "-- Language: {language}").ok();
+    }
+    if let Some(volatility) = &function.volatility {
+        writeln!(sql, "-- Volatility: {volatility}").ok();
+    }
+    writeln!(
+        sql,
+        "-- Security: {}",
+        if function.security_definer {
+            "SECURITY DEFINER"
+        } else {
+            "SECURITY INVOKER"
+        }
+    )
+    .ok();
+    writeln!(
+        sql,
+        "-- Null input: {}",
+        if function.is_strict {
+            "STRICT"
+        } else {
+            "CALLED ON NULL INPUT"
+        }
+    )
+    .ok();
+    writeln!(sql).ok();
+    let definition = function.definition.trim().trim_end_matches(';');
+    writeln!(sql, "{definition};").ok();
     sql
 }
 

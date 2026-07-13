@@ -10,6 +10,7 @@ pub(crate) enum RepositoryObjectType {
     Index,
     View,
     Constraint,
+    Function,
 }
 
 #[derive(Debug, Clone)]
@@ -60,6 +61,11 @@ pub(crate) enum ObjectRef {
         schema: String,
         table: String,
         constraint: String,
+    },
+    Function {
+        schema: String,
+        function: String,
+        signature: String,
     },
 }
 
@@ -147,8 +153,24 @@ impl ObjectRef {
                     constraint: parts[2].to_string(),
                 })
             }
+            "function" => {
+                let parts: Vec<&str> = identity.split('.').collect();
+                if parts.len() != 3 || parts.iter().any(|part| part.trim().is_empty()) {
+                    return Err(format!(
+                        "Invalid function object reference '{value}'. Use function:<schema>.<function>.<signature>."
+                    ));
+                }
+                safe_file_component(parts[0])?;
+                safe_file_component(parts[1])?;
+                safe_file_component(parts[2])?;
+                Ok(Self::Function {
+                    schema: parts[0].to_string(),
+                    function: parts[1].to_string(),
+                    signature: parts[2].to_string(),
+                })
+            }
             _ => Err(format!(
-                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, or constraint:<schema>.<table>.<name>."
+                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, constraint:<schema>.<table>.<name>, or function:<schema>.<function>.<signature>."
             )),
         }
     }
@@ -173,6 +195,11 @@ impl ObjectRef {
             } => {
                 format!("constraint:{schema}.{table}.{constraint}")
             }
+            Self::Function {
+                schema,
+                function,
+                signature,
+            } => format!("function:{schema}.{function}.{signature}"),
         }
     }
 
@@ -186,6 +213,7 @@ impl ObjectRef {
             Self::Index { .. } => "index",
             Self::View { .. } => "view",
             Self::Constraint { .. } => "constraint",
+            Self::Function { .. } => "function",
         }
     }
 
@@ -195,7 +223,8 @@ impl ObjectRef {
             Self::Table { schema, .. } => Some(Self::Schema(schema.clone())),
             Self::Enum { schema, .. }
             | Self::Sequence { schema, .. }
-            | Self::View { schema, .. } => Some(Self::Schema(schema.clone())),
+            | Self::View { schema, .. }
+            | Self::Function { schema, .. } => Some(Self::Schema(schema.clone())),
             Self::Index { schema, .. } | Self::Constraint { schema, .. } => {
                 Some(Self::Schema(schema.clone()))
             }
@@ -285,6 +314,18 @@ pub(crate) fn object_ref_from_relative_path(relative_path: &str) -> Result<Objec
         };
         return Ok(ObjectRef::View { schema, view });
     }
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/functions/") {
+        let Some((schema, function, signature)) = three_part_name_from_file(file_name) else {
+            return Err(format!(
+                "Invalid function desired-state file path: {relative_path}"
+            ));
+        };
+        return Ok(ObjectRef::Function {
+            schema,
+            function,
+            signature,
+        });
+    }
     for folder in [
         "primary-keys",
         "unique-constraints",
@@ -365,6 +406,19 @@ pub(crate) fn view_file_path(schema: &str, view: &str) -> Result<String, String>
     ))
 }
 
+pub(crate) fn function_file_path(
+    schema: &str,
+    function: &str,
+    identity_arguments: &str,
+) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/functions/{}.{}.{}.sql",
+        safe_file_component(schema)?,
+        safe_file_component(function)?,
+        function_identity_slug(identity_arguments)?
+    ))
+}
+
 pub(crate) fn constraint_file_path(
     constraint_type: &str,
     schema: &str,
@@ -410,6 +464,31 @@ pub(crate) fn safe_file_component(value: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
+pub(crate) fn function_identity_slug(identity_arguments: &str) -> Result<String, String> {
+    let trimmed = identity_arguments.trim();
+    if trimmed.is_empty() {
+        return Ok("no_args".to_string());
+    }
+    let mut slug = String::new();
+    let mut last_was_separator = false;
+    for character in trimmed.chars() {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character.to_ascii_lowercase());
+            last_was_separator = false;
+        } else if !last_was_separator {
+            slug.push('_');
+            last_was_separator = true;
+        }
+    }
+    let slug = slug.trim_matches('_');
+    if slug.is_empty() {
+        return Err(format!(
+            "Could not create a safe function identity slug for arguments: {trimmed}"
+        ));
+    }
+    Ok(slug.chars().take(80).collect())
+}
+
 pub(crate) fn ensure_database_object_path(relative_path: &str) -> Result<(), String> {
     if relative_path.starts_with("database/objects/") {
         Ok(())
@@ -441,6 +520,7 @@ pub(crate) fn object_key(object: &DesiredStateObject) -> String {
             object.parent_name.as_deref().unwrap_or(""),
             &object.object_name,
         ),
+        RepositoryObjectType::Function => function_key(&object.schema_name, &object.object_name),
     }
 }
 
@@ -474,6 +554,10 @@ pub(crate) fn view_key(schema: &str, view: &str) -> String {
 
 pub(crate) fn constraint_key(schema: &str, table: &str, constraint: &str) -> String {
     format!("constraint:{schema}.{table}.{constraint}")
+}
+
+pub(crate) fn function_key(schema: &str, object_name: &str) -> String {
+    format!("function:{schema}.{object_name}")
 }
 
 pub(crate) fn schema_name_from_file(file_name: &str) -> Option<String> {

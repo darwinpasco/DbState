@@ -164,7 +164,7 @@ Expected result:
 - A non-production `pagila` database exists.
 - Pagila tables, relationships, indexes, views, functions, and sample data are loaded.
 
-Durable first-class constraint coverage remains deferred in v0.1. Constraint context may appear in Object Diff review where available.
+Durable first-class constraint and regular-function coverage is available in the current beta. Procedures, aggregates, window functions, comments, triggers, grants, materialized views, and row-level security remain deferred or unavailable review context.
 
 ## 5. Create Fresh Private Beta Demo Git Repository
 
@@ -313,7 +313,9 @@ Expected Results page:
   - Sequence
   - Index
   - View
-- Rows include supported objects from your selected non-production database. Pagila should produce table, index, view, and function-related review context, with unsupported object types handled as beta limitations.
+  - Constraint
+  - Function
+- Rows include supported objects from your selected non-production database. Pagila should produce table, index, view, constraint, and regular-function review rows where present, with unsupported object types handled as beta limitations.
 - Columns stay in Object Diff details for selected tables, not as top-level Results filter rows.
 
 ## 13. Run Database To Repository Compare Preview
@@ -392,7 +394,7 @@ Expected result:
 In Results:
 
 1. Use object type filter.
-2. Try Schema, Table, Extension, Enum, Sequence, Index, and View.
+2. Try Schema, Table, Extension, Enum, Sequence, Index, View, Constraint, and Function.
 3. Review status badges and legend.
 4. Select a table row.
 
