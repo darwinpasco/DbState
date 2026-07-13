@@ -2,9 +2,10 @@ use crate::postgres::{
     inspect_postgres, invalid_postgres_url_message, is_postgres_connection_url,
     quote_postgres_identifier, resolve_postgres_url,
 };
+use crate::repository::plan::{analyze_table_difference, parse_repository_table_columns};
 use crate::repository::{
     ensure_database_object_path, plan_postgres_with_inventory, DependencyWarning, ExportSelection,
-    ObjectRef, PlanItem, PlanSelection,
+    ObjectRef, PlanColumn, PlanItem, PlanSelection, TableDifferenceAnalysis,
 };
 use crate::*;
 use std::collections::BTreeMap;
@@ -680,27 +681,6 @@ fn render_create_later_sql(root: &Path, item: &PlanItem) -> Result<String, Strin
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ReleaseColumn {
-    name: String,
-    data_type: String,
-    is_nullable: bool,
-    has_default: bool,
-    default_expression: Option<String>,
-}
-
-impl From<&ColumnInfo> for ReleaseColumn {
-    fn from(column: &ColumnInfo) -> Self {
-        Self {
-            name: column.column_name.clone(),
-            data_type: column.data_type.clone(),
-            is_nullable: column.is_nullable,
-            has_default: column.has_default,
-            default_expression: column.default_expression.clone(),
-        }
-    }
-}
-
 fn render_update_database_later_sql(
     root: &Path,
     item: &PlanItem,
@@ -722,11 +702,11 @@ fn render_update_database_later_sql(
             "-- REVIEW REQUIRED: table {schema}.{table} differs; repository table DDL is not in the supported additive-column review shape.\n"
         ));
     };
-    let database_columns: Vec<ReleaseColumn> = inventory
+    let database_columns: Vec<PlanColumn> = inventory
         .columns
         .iter()
         .filter(|column| column.schema_name == schema && column.table_name == table)
-        .map(ReleaseColumn::from)
+        .map(PlanColumn::from)
         .collect();
     if database_columns.is_empty() {
         return Ok(format!(
@@ -737,44 +717,17 @@ fn render_update_database_later_sql(
     Ok(render_additive_table_difference_sql(
         &schema,
         &table,
-        &repository_columns,
-        &database_columns,
+        &analyze_table_difference(&repository_columns, &database_columns),
     ))
 }
 
 fn render_additive_table_difference_sql(
     schema: &str,
     table: &str,
-    repository_columns: &[ReleaseColumn],
-    database_columns: &[ReleaseColumn],
+    analysis: &TableDifferenceAnalysis,
 ) -> String {
     let mut sql = String::new();
-    let repository_by_name: BTreeMap<&str, &ReleaseColumn> = repository_columns
-        .iter()
-        .map(|column| (column.name.as_str(), column))
-        .collect();
-    let database_by_name: BTreeMap<&str, &ReleaseColumn> = database_columns
-        .iter()
-        .map(|column| (column.name.as_str(), column))
-        .collect();
-
-    let mut manual_reasons = Vec::new();
-    for database_column in database_columns {
-        match repository_by_name.get(database_column.name.as_str()) {
-            Some(repository_column)
-                if existing_columns_match(repository_column, database_column) => {}
-            Some(_) => manual_reasons.push(format!(
-                "existing column {} differs between repository and target database",
-                quote_postgres_identifier(&database_column.name)
-            )),
-            None => manual_reasons.push(format!(
-                "target database column {} is not present in repository desired state",
-                quote_postgres_identifier(&database_column.name)
-            )),
-        }
-    }
-
-    if !manual_reasons.is_empty() {
+    if let TableDifferenceAnalysis::NotClearlyAdditive(manual_reasons) = analysis {
         writeln!(
             sql,
             "-- REVIEW REQUIRED: table {schema}.{table} differs; difference is not clearly additive."
@@ -786,20 +739,7 @@ fn render_additive_table_difference_sql(
         return sql;
     }
 
-    let mut safe_adds = Vec::new();
-    let mut unsafe_adds = Vec::new();
-    for repository_column in repository_columns {
-        if database_by_name.contains_key(repository_column.name.as_str()) {
-            continue;
-        }
-        if !repository_column.is_nullable && repository_column.default_expression.is_none() {
-            unsafe_adds.push(repository_column);
-        } else {
-            safe_adds.push(repository_column);
-        }
-    }
-
-    if safe_adds.is_empty() && unsafe_adds.is_empty() {
+    if matches!(analysis, TableDifferenceAnalysis::NoSafeSuggestion) {
         writeln!(
             sql,
             "-- REVIEW REQUIRED: table {schema}.{table} differs; no safe additive column suggestion was identified."
@@ -807,6 +747,14 @@ fn render_additive_table_difference_sql(
         .ok();
         return sql;
     }
+
+    let TableDifferenceAnalysis::Additive {
+        safe_adds,
+        unsafe_adds,
+    } = analysis
+    else {
+        return sql;
+    };
 
     for column in safe_adds {
         writeln!(sql, "-- Review-only additive column suggestion.").ok();
@@ -834,27 +782,7 @@ fn render_additive_table_difference_sql(
     sql
 }
 
-fn existing_columns_match(
-    repository_column: &ReleaseColumn,
-    database_column: &ReleaseColumn,
-) -> bool {
-    repository_column
-        .data_type
-        .trim()
-        .eq_ignore_ascii_case(database_column.data_type.trim())
-        && repository_column.is_nullable == database_column.is_nullable
-        && repository_column.has_default == database_column.has_default
-        && normalize_default_expression(repository_column.default_expression.as_deref())
-            == normalize_default_expression(database_column.default_expression.as_deref())
-}
-
-fn normalize_default_expression(value: Option<&str>) -> Option<String> {
-    value
-        .map(|value| value.trim().to_string())
-        .filter(|value| !value.is_empty())
-}
-
-fn render_column_definition(column: &ReleaseColumn) -> String {
+fn render_column_definition(column: &PlanColumn) -> String {
     let mut definition = format!(
         "{} {}",
         quote_postgres_identifier(&column.name),
@@ -869,88 +797,6 @@ fn render_column_definition(column: &ReleaseColumn) -> String {
         definition.push_str(" NOT NULL");
     }
     definition
-}
-
-fn parse_repository_table_columns(content: &str) -> Option<Vec<ReleaseColumn>> {
-    let mut in_create_table = false;
-    let mut columns = Vec::new();
-    for raw_line in content.lines() {
-        let line = raw_line.trim();
-        if line.starts_with("CREATE TABLE ") {
-            in_create_table = true;
-            continue;
-        }
-        if !in_create_table {
-            continue;
-        }
-        if line == ");" {
-            break;
-        }
-        if line.is_empty() || line.starts_with("--") {
-            continue;
-        }
-        columns.push(parse_repository_column_line(
-            line.trim_end_matches(',').trim(),
-        )?);
-    }
-    if columns.is_empty() {
-        None
-    } else {
-        Some(columns)
-    }
-}
-
-fn parse_repository_column_line(line: &str) -> Option<ReleaseColumn> {
-    let (name, remainder) = parse_quoted_identifier(line)?;
-    let mut definition = remainder.trim();
-    let is_nullable = if let Some(without_not_null) = definition.strip_suffix(" NOT NULL") {
-        definition = without_not_null.trim_end();
-        false
-    } else {
-        true
-    };
-    let (data_type, default_expression) =
-        if let Some((data_type, default_expression)) = definition.split_once(" DEFAULT ") {
-            (
-                data_type.trim(),
-                Some(default_expression.trim().to_string()),
-            )
-        } else {
-            (definition.trim(), None)
-        };
-    if data_type.is_empty() {
-        return None;
-    }
-    Some(ReleaseColumn {
-        name,
-        data_type: data_type.to_string(),
-        is_nullable,
-        has_default: default_expression.is_some(),
-        default_expression,
-    })
-}
-
-fn parse_quoted_identifier(value: &str) -> Option<(String, &str)> {
-    if !value.starts_with('"') {
-        return None;
-    }
-    let mut index = 1;
-    let mut identifier = String::new();
-    while index < value.len() {
-        let remaining = &value[index..];
-        if remaining.starts_with("\"\"") {
-            identifier.push('"');
-            index += 2;
-            continue;
-        }
-        if remaining.starts_with('"') {
-            return Some((identifier, &value[index + 1..]));
-        }
-        let character = remaining.chars().next()?;
-        identifier.push(character);
-        index += character.len_utf8();
-    }
-    None
 }
 
 fn render_release_summary(report: &ReleaseReport, artifacts: &ReleaseArtifactPaths) -> String {

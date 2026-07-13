@@ -638,6 +638,17 @@ fn write_plan_item_array_field(json: &mut String, name: &str, values: &[PlanItem
             false,
         );
         write_json_string_field(json, "planIntent", &value.plan_intent, false);
+        write_json_string_field(json, "operationKind", &value.operation_kind, false);
+        write_json_string_field(json, "operationLabel", &value.operation_label, false);
+        write_json_string_field(json, "safetyBadge", &value.safety_badge, false);
+        write_json_string_field(json, "safetyLevel", &value.safety_level, false);
+        write_json_string_field(
+            json,
+            "operationExplanation",
+            &value.operation_explanation,
+            false,
+        );
+        write_json_array_field(json, "operationReasons", &value.operation_reasons);
         write_json_bool_field(json, "selected", value.selected);
         write_json_bool_field(json, "blocked", value.blocked);
         write_json_array_field(json, "warnings", &value.warnings);

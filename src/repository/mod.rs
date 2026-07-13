@@ -20,5 +20,5 @@ pub(crate) use objects::{
     safe_file_component, schema_file_path, sequence_file_path, table_file_path, view_file_path,
     ObjectRef,
 };
-pub(crate) use plan::plan_postgres_command;
+pub(crate) use plan::{plan_postgres_command, PlanColumn, TableDifferenceAnalysis};
 pub(crate) use sync::{export_postgres_command, sync_postgres_command};

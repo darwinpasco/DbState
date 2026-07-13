@@ -433,10 +433,11 @@ const UI_HTML: &str = r#"<!doctype html>
           </div>
           <div class="release-card">
             <h3>Release Candidates</h3>
+            <p class="note">Release operation badges can include Review SQL, Additive ADD COLUMN, Manual Review, Blocked, Database Only, and Deferred. Generated SQL remains review-only; DbState does not execute SQL.</p>
             <div class="table-wrap">
               <table class="results-grid" aria-label="Release candidates" data-testid="release-candidates">
                 <thead>
-                  <tr><th>Object type</th><th>Schema</th><th>Object name</th><th>Status</th><th>Planned operation</th><th>Warnings</th></tr>
+                  <tr><th>Object type</th><th>Schema</th><th>Object name</th><th>Status</th><th>Planned operation</th><th>Operation / safety</th><th>Explanation</th><th>Reasons</th><th>Warnings</th></tr>
                 </thead>
                 <tbody id="release-candidates-body">
                   <tr><td colspan="6">No selected result rows yet.</td></tr>
@@ -1025,6 +1026,38 @@ button:hover {
 
 .release-card h3 {
   margin-top: 0;
+}
+
+.release-operation-badge {
+  display: inline-block;
+  padding: 2px 6px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: #f5f7fa;
+  color: var(--text);
+  font-size: 11px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.release-operation-badge.blocked {
+  background: #ffeceb;
+  border-color: #f2b5b0;
+}
+
+.release-operation-badge.manualReview {
+  background: #fff4d6;
+  border-color: #e6c36a;
+}
+
+.release-operation-badge.reviewOnly {
+  background: #e7f5ee;
+  border-color: #9bd0b5;
+}
+
+.release-operation-badge.informational {
+  background: #eef2f7;
+  border-color: #c4ceda;
 }
 
 .diff-line-grid {
@@ -2197,6 +2230,12 @@ const UI_JS: &str = r#"(function () {
       name: raw.name || raw.table || identity.name || fileNameWithoutSql(raw.relativePath) || status,
       status: raw.compareClassification || raw.classification || status,
       operation: raw.planIntent || raw.plannedOperation || operationByStatus[status] || (status === "inspected" ? "" : ""),
+      operationKind: raw.operationKind || "",
+      operationLabel: raw.operationLabel || "",
+      safetyBadge: raw.safetyBadge || "",
+      safetyLevel: raw.safetyLevel || "",
+      operationExplanation: raw.operationExplanation || "",
+      operationReasons: Array.isArray(raw.operationReasons) ? raw.operationReasons : [],
       warnings: raw.warnings || raw.dependencyWarnings || [],
       source: raw.source || (isRepositorySync ? "PostgreSQL database" : "repository"),
       target: raw.relativePath || raw.target || raw.value || (isRepositorySync ? "repository desired-state file" : "postgresql"),
@@ -3422,6 +3461,36 @@ const UI_JS: &str = r#"(function () {
     });
   }
 
+  function releaseCandidateRowsFromResponse(data) {
+    if (!data) {
+      return [];
+    }
+    const rows = [];
+    function append(values, fallbackStatus) {
+      if (!Array.isArray(values)) {
+        return;
+      }
+      values.forEach(function (item) {
+        const identity = splitIdentity(item.objectRef);
+        rows.push({
+          objectType: item.objectType || "",
+          schema: identity.schema,
+          name: identity.name,
+          status: item.compareClassification || fallbackStatus,
+          operation: item.planIntent || "",
+          safetyBadge: item.safetyBadge || item.operationLabel || "",
+          safetyLevel: item.safetyLevel || "",
+          operationExplanation: item.operationExplanation || "",
+          operationReasons: Array.isArray(item.operationReasons) ? item.operationReasons : [],
+          warnings: item.warnings || []
+        });
+      });
+    }
+    append(data.planItems, "planned");
+    append(data.blockedItems, "blocked");
+    return rows;
+  }
+
   function renderReleasePlan() {
     const mode = currentWorkflowMode();
     const notApplicable = byId("release-plan-not-applicable");
@@ -3436,7 +3505,8 @@ const UI_JS: &str = r#"(function () {
     }
     content.hidden = false;
     notApplicable.hidden = true;
-    const includedRows = state.rows.filter(function (row, index) {
+    const responseCandidateRows = releaseCandidateRowsFromResponse(state.releaseResponse);
+    const includedRows = responseCandidateRows.length ? responseCandidateRows : state.rows.filter(function (row, index) {
       return state.included.has(rowRef(row, index));
     });
     updateSummary("release-context", {
@@ -3473,31 +3543,48 @@ const UI_JS: &str = r#"(function () {
     if (!includedRows.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 6;
+      td.colSpan = 9;
       td.textContent = "No selected result rows yet. Run Repository to Database Compare or Plan, then check rows in Results.";
       tr.appendChild(td);
       body.appendChild(tr);
     } else {
       includedRows.slice(0, 200).forEach(function (row) {
         const tr = document.createElement("tr");
-        [
+        const values = [
           row.objectType,
           row.schema,
           row.name,
           row.status,
-          row.operation || row.planIntent || "review",
-          Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings)
-        ].forEach(function (value) {
+          row.operation || row.planIntent || "review"
+        ];
+        values.forEach(function (value) {
           const td = document.createElement("td");
           td.textContent = textOrEmpty(value);
           tr.appendChild(td);
         });
+        const badgeCell = document.createElement("td");
+        const badge = document.createElement("span");
+        badge.className = "release-operation-badge " + textOrEmpty(row.safetyLevel);
+        badge.textContent = textOrEmpty(row.safetyBadge || row.operationLabel || "Manual Review");
+        badgeCell.appendChild(badge);
+        tr.appendChild(badgeCell);
+        const explanation = document.createElement("td");
+        explanation.textContent = textOrEmpty(row.operationExplanation || "Review selected object before artifact generation. DbState remains review-only.");
+        tr.appendChild(explanation);
+        const reasons = document.createElement("td");
+        reasons.textContent = Array.isArray(row.operationReasons) && row.operationReasons.length
+          ? row.operationReasons.join("; ")
+          : "";
+        tr.appendChild(reasons);
+        const warningCell = document.createElement("td");
+        warningCell.textContent = Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings);
+        tr.appendChild(warningCell);
         body.appendChild(tr);
       });
       if (includedRows.length > 200) {
         const tr = document.createElement("tr");
         const td = document.createElement("td");
-        td.colSpan = 6;
+        td.colSpan = 9;
         td.textContent = "Additional in-sync rows summarized only: " + (includedRows.length - 200);
         tr.appendChild(td);
         body.appendChild(tr);
@@ -3568,6 +3655,7 @@ const UI_JS: &str = r#"(function () {
       if (config.releaseResult) {
         state.releaseResponse = data;
         renderReleaseArtifactResult(data);
+        renderReleasePlan();
       }
       if (config.profiles || Array.isArray(data.profiles)) {
         updateProfileList(data);

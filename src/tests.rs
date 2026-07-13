@@ -1759,6 +1759,11 @@ fn release_dry_run_writes_no_files_and_plans_artifacts() {
         .contains(&"database/releases/0001_slice7.sql".to_string()));
     assert!(report.created_artifacts.is_empty());
     assert!(!dir.join("database/releases/0001_slice7.sql").exists());
+    let json = report.to_json();
+    assert!(json.contains("\"operationKind\":\"createReviewSql\""));
+    assert!(json.contains("\"safetyBadge\":\"Review SQL\""));
+    assert!(json.contains("review-only SQL"));
+    assert!(json.contains("DbState does not execute SQL"));
 }
 
 #[test]
@@ -1931,6 +1936,18 @@ fn release_blocks_when_selected_plan_items_are_blocked() {
         .blocked_items
         .iter()
         .any(|item| item.object_ref == "table:dbstate_slice2.sample_accounts"));
+    let blocked = report
+        .blocked_items
+        .iter()
+        .find(|item| item.object_ref == "table:dbstate_slice2.sample_accounts")
+        .expect("blocked table item");
+    assert_eq!(blocked.operation_kind, "blocked");
+    assert_eq!(blocked.safety_badge, "Blocked");
+    assert_eq!(blocked.safety_level, "blocked");
+    assert!(blocked
+        .operation_explanation
+        .contains("Release artifact generation is blocked"));
+    assert!(!blocked.operation_reasons.is_empty());
 }
 
 #[test]
@@ -1974,6 +1991,10 @@ fn additive_nullable_column_release_generates_review_only_add_column_sql() {
     );
 
     assert!(report.success, "{:?}", report.errors);
+    let json = report.to_json();
+    assert!(json.contains("\"operationKind\":\"additiveAddColumnReviewSql\""));
+    assert!(json.contains("\"safetyBadge\":\"Additive ADD COLUMN\""));
+    assert!(json.contains("review-only ADD COLUMN"));
     let sql = fs::read_to_string(dir.join("database/releases/0001_slice24_nullable.sql"))
         .expect("read sql");
     assert!(sql.contains("-- Review-only additive column suggestion."));
@@ -2038,6 +2059,11 @@ fn not_null_column_without_default_release_stays_manual_review_only() {
     );
 
     assert!(report.success, "{:?}", report.errors);
+    let json = report.to_json();
+    assert!(json.contains("\"operationKind\":\"manualReviewRequired\""));
+    assert!(json.contains("\"safetyBadge\":\"Manual Review\""));
+    assert!(json.contains("NOT NULL with no default"));
+    assert!(json.contains("manual review"));
     let sql = fs::read_to_string(dir.join("database/releases/0001_slice24_required.sql"))
         .expect("read sql");
     assert!(sql.contains("NOT NULL with no default"));
@@ -2081,6 +2107,11 @@ fn changed_existing_column_release_stays_manual_review_only() {
     );
 
     assert!(report.success, "{:?}", report.errors);
+    let json = report.to_json();
+    assert!(json.contains("\"operationKind\":\"manualReviewRequired\""));
+    assert!(json.contains("\"safetyBadge\":\"Manual Review\""));
+    assert!(json.contains("existing-column changes are manual-review only"));
+    assert!(!json.contains("\"safetyBadge\":\"Additive ADD COLUMN\""));
     let sql = fs::read_to_string(dir.join("database/releases/0001_slice24_changed.sql"))
         .expect("read sql");
     assert!(sql.contains("difference is not clearly additive"));
@@ -2901,6 +2932,42 @@ fn slice25_ui_contains_release_artifact_preview_contract() {
         assert!(
             !combined.contains(forbidden_action),
             "release artifact preview UI exposes forbidden action {forbidden_action}"
+        );
+    }
+}
+
+#[test]
+fn slice26_ui_contains_release_operation_badge_contract() {
+    let html = ui_html();
+    let css = ui_css();
+    let js = ui_js();
+    let combined = format!("{html}\n{css}\n{js}");
+
+    assert!(html.contains("Operation / safety"));
+    assert!(html.contains("Release operation badges"));
+    assert!(html.contains("Review SQL"));
+    assert!(html.contains("Additive ADD COLUMN"));
+    assert!(html.contains("Manual Review"));
+    assert!(html.contains("Blocked"));
+    assert!(html.contains("DbState does not execute SQL"));
+    assert!(css.contains(".release-operation-badge"));
+    assert!(js.contains("operationExplanation"));
+    assert!(js.contains("operationReasons"));
+    assert!(js.contains("safetyBadge"));
+
+    for forbidden_action in [
+        "release-artifact-execute",
+        "release-artifact-apply",
+        "release-artifact-edit",
+        "release-artifact-save",
+        "release-artifact-delete",
+        "release-artifact-git",
+        "data-action=\"apply\"",
+        "data-action=\"execute\"",
+    ] {
+        assert!(
+            !combined.contains(forbidden_action),
+            "release operation UI exposes forbidden action {forbidden_action}"
         );
     }
 }
