@@ -20,6 +20,7 @@ pub(crate) fn discover_repository_objects(root: &Path) -> Result<RepositoryImpor
     discover_sequence_files(root, &mut import)?;
     discover_index_files(root, &mut import)?;
     discover_view_files(root, &mut import)?;
+    discover_function_files(root, &mut import)?;
     discover_constraint_files(root, &mut import)?;
     import.skipped.sort();
     import.skipped.dedup();
@@ -140,6 +141,49 @@ fn discover_view_files(root: &Path, import: &mut RepositoryImport) -> Result<(),
         RepositoryObjectType::View,
         view_key,
     )
+}
+
+fn discover_function_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    let dir = root.join("database/objects/functions");
+    for entry in fs::read_dir(&dir)
+        .map_err(|error| format!("Could not read database/objects/functions: {error}"))?
+    {
+        let entry =
+            entry.map_err(|error| format!("Could not read function file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("database/objects/functions/{file_name}");
+        let Some((schema, function, signature)) = three_part_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&schema).is_err()
+            || safe_file_component(&function).is_err()
+            || safe_file_component(&signature).is_err()
+        {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        let object_name = format!("{function}.{signature}");
+        import.objects.insert(
+            function_key(&schema, &object_name),
+            DesiredStateObject {
+                object_type: RepositoryObjectType::Function,
+                schema_name: schema,
+                table_name: None,
+                object_name,
+                parent_name: None,
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
 }
 
 fn discover_index_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
@@ -362,6 +406,7 @@ pub(crate) fn render_database_objects_for_selection(
     let mut index_names = Vec::new();
     let mut view_names = Vec::new();
     let mut constraint_names = Vec::new();
+    let mut function_names = Vec::new();
     match selection {
         ExportSelection::All => {
             include_extensions = true;
@@ -403,6 +448,13 @@ pub(crate) fn render_database_objects_for_selection(
                     item.schema_name.clone(),
                     item.table_name.clone(),
                     item.constraint_name.clone(),
+                )
+            }));
+            function_names.extend(inventory.functions.iter().map(|item| {
+                (
+                    item.schema_name.clone(),
+                    item.function_name.clone(),
+                    item.identity_arguments.clone(),
                 )
             }));
         }
@@ -470,6 +522,19 @@ pub(crate) fn render_database_objects_for_selection(
                         )
                     }),
             );
+            function_names.extend(
+                inventory
+                    .functions
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.function_name.clone(),
+                            item.identity_arguments.clone(),
+                        )
+                    }),
+            );
         }
         ExportSelection::Table { schema, table } => {
             if inventory.tables.iter().any(|candidate| {
@@ -522,6 +587,8 @@ pub(crate) fn render_database_objects_for_selection(
     view_names.dedup();
     constraint_names.sort();
     constraint_names.dedup();
+    function_names.sort();
+    function_names.dedup();
 
     for schema in schema_names {
         let relative_path = schema_file_path(&schema)?;
@@ -646,6 +713,28 @@ pub(crate) fn render_database_objects_for_selection(
             parent_name: None,
             relative_path,
             content: render_view_sql(view),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    for (schema, function_name, identity_arguments) in function_names {
+        let Some(function) = inventory.functions.iter().find(|item| {
+            item.schema_name == schema
+                && item.function_name == function_name
+                && item.identity_arguments == identity_arguments
+        }) else {
+            continue;
+        };
+        let relative_path = function_file_path(&schema, &function_name, &identity_arguments)?;
+        let signature = function_identity_slug(&identity_arguments)?;
+        let object_name = format!("{function_name}.{signature}");
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Function,
+            schema_name: schema.clone(),
+            table_name: None,
+            object_name,
+            parent_name: None,
+            relative_path,
+            content: render_function_sql(function),
         };
         objects.insert(object_key(&object), object);
     }

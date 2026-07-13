@@ -84,6 +84,19 @@ pub struct ConstraintInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FunctionInfo {
+    pub schema_name: String,
+    pub function_name: String,
+    pub identity_arguments: String,
+    pub result_type: Option<String>,
+    pub language: Option<String>,
+    pub volatility: Option<String>,
+    pub security_definer: bool,
+    pub is_strict: bool,
+    pub definition: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectionCounts {
     pub schemas: usize,
     pub tables: usize,
@@ -94,6 +107,7 @@ pub struct InspectionCounts {
     pub indexes: usize,
     pub views: usize,
     pub constraints: usize,
+    pub functions: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -111,6 +125,7 @@ pub struct InspectionReport {
     pub indexes: Vec<IndexInfo>,
     pub views: Vec<ViewInfo>,
     pub constraints: Vec<ConstraintInfo>,
+    pub functions: Vec<FunctionInfo>,
     pub counts: InspectionCounts,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
@@ -154,6 +169,7 @@ pub(crate) fn inspect_postgres_scoped_command(
             report.indexes = inventory.indexes;
             report.views = inventory.views;
             report.constraints = inventory.constraints;
+            report.functions = inventory.functions;
             if let Err(error) = apply_inspection_scope(&mut report, schema, table) {
                 report.success = false;
                 report.errors.push(error);
@@ -169,6 +185,7 @@ pub(crate) fn inspect_postgres_scoped_command(
                 indexes: report.indexes.len(),
                 views: report.views.len(),
                 constraints: report.constraints.len(),
+                functions: report.functions.len(),
             };
             report.success = true;
         }
@@ -202,6 +219,7 @@ fn apply_inspection_scope(
         report.indexes.retain(|item| item.schema_name == schema);
         report.views.retain(|item| item.schema_name == schema);
         report.constraints.retain(|item| item.schema_name == schema);
+        report.functions.retain(|item| item.schema_name == schema);
         report.inspection_scope = vec![format!("schema:{schema}")];
         return Ok(());
     }
@@ -242,6 +260,7 @@ fn apply_inspection_scope(
         report
             .constraints
             .retain(|item| item.schema_name == schema && item.table_name == table_name);
+        report.functions.clear();
         report.inspection_scope = vec![format!("table:{schema}.{table_name}")];
     }
 
@@ -460,6 +479,37 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         )
         .map_err(|_| "PostgreSQL schema inspection failed while reading constraints.".to_string())?;
 
+    let function_rows = client
+        .query(
+            "SELECT ns.nspname::text,
+                    proc.proname::text,
+                    pg_catalog.pg_get_function_identity_arguments(proc.oid)::text,
+                    pg_catalog.pg_get_function_result(proc.oid)::text,
+                    lang.lanname::text,
+                    CASE proc.provolatile
+                        WHEN 'i' THEN 'immutable'
+                        WHEN 's' THEN 'stable'
+                        WHEN 'v' THEN 'volatile'
+                        ELSE proc.provolatile::text
+                    END::text,
+                    proc.prosecdef::bool,
+                    proc.proisstrict::bool,
+                    pg_catalog.pg_get_functiondef(proc.oid)::text
+             FROM pg_catalog.pg_proc proc
+             JOIN pg_catalog.pg_namespace ns ON ns.oid = proc.pronamespace
+             JOIN pg_catalog.pg_language lang ON lang.oid = proc.prolang
+             WHERE proc.prokind = 'f'
+               AND ns.nspname <> 'pg_catalog'
+               AND ns.nspname <> 'information_schema'
+               AND ns.nspname NOT LIKE 'pg_toast%'
+               AND ns.nspname NOT LIKE 'pg_%'
+             ORDER BY ns.nspname,
+                      proc.proname,
+                      pg_catalog.pg_get_function_identity_arguments(proc.oid)",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading functions.".to_string())?;
+
     let schemas = schema_rows
         .into_iter()
         .map(|row| SchemaInfo { name: row.get(0) })
@@ -574,6 +624,21 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         });
     }
 
+    let mut functions = Vec::new();
+    for row in function_rows {
+        functions.push(FunctionInfo {
+            schema_name: try_get_catalog_string(&row, 0, "function schema")?,
+            function_name: try_get_catalog_string(&row, 1, "function name")?,
+            identity_arguments: try_get_catalog_string(&row, 2, "function identity arguments")?,
+            result_type: try_get_catalog_optional_string(&row, 3, "function result type")?,
+            language: try_get_catalog_optional_string(&row, 4, "function language")?,
+            volatility: try_get_catalog_optional_string(&row, 5, "function volatility")?,
+            security_definer: try_get_catalog_bool(&row, 6, "function security definer")?,
+            is_strict: try_get_catalog_bool(&row, 7, "function strictness")?,
+            definition: try_get_catalog_string(&row, 8, "function definition")?,
+        });
+    }
+
     Ok(PostgresInventory {
         schemas,
         tables,
@@ -584,6 +649,7 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         indexes,
         views,
         constraints,
+        functions,
     })
 }
 
@@ -648,6 +714,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             "indexes".to_string(),
             "views".to_string(),
             "constraints".to_string(),
+            "functions".to_string(),
         ],
         schemas: Vec::new(),
         tables: Vec::new(),
@@ -658,6 +725,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
         indexes: Vec::new(),
         views: Vec::new(),
         constraints: Vec::new(),
+        functions: Vec::new(),
         counts: InspectionCounts {
             schemas: 0,
             tables: 0,
@@ -668,6 +736,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             indexes: 0,
             views: 0,
             constraints: 0,
+            functions: 0,
         },
         warnings: Vec::new(),
         errors: Vec::new(),
@@ -705,6 +774,7 @@ impl InspectionReport {
         writeln!(text, "Index count: {}", self.counts.indexes).ok();
         writeln!(text, "View count: {}", self.counts.views).ok();
         writeln!(text, "Constraint count: {}", self.counts.constraints).ok();
+        writeln!(text, "Function count: {}", self.counts.functions).ok();
         writeln!(text, "Schemas:").ok();
         for schema in &self.schemas {
             writeln!(text, "  - {}", schema.name).ok();
@@ -765,6 +835,15 @@ impl InspectionReport {
             )
             .ok();
         }
+        writeln!(text, "Functions:").ok();
+        for function in &self.functions {
+            writeln!(
+                text,
+                "  - {}.{}({})",
+                function.schema_name, function.function_name, function.identity_arguments
+            )
+            .ok();
+        }
         for warning in &self.warnings {
             writeln!(text, "Warning: {warning}").ok();
         }
@@ -790,6 +869,7 @@ impl InspectionReport {
         write_index_array_field(&mut json, "indexes", &self.indexes);
         write_view_array_field(&mut json, "views", &self.views);
         write_constraint_array_field(&mut json, "constraints", &self.constraints);
+        write_function_array_field(&mut json, "functions", &self.functions);
         write_counts_field(&mut json, "counts", &self.counts);
         write_json_array_field(&mut json, "warnings", &self.warnings);
         write_json_array_field(&mut json, "errors", &self.errors);

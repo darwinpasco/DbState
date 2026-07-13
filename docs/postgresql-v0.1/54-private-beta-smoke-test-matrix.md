@@ -26,7 +26,7 @@ C:\DbState\PrivateBetaDemo
 | Reference-Data Compare guardrail | Select Reference-Data Compare. | Out-of-scope modal appears and UI returns to the previous valid workflow. |  |  |
 | Disabled beta controls | Open Compare Options. | Include refs, Exclude refs, Reference-data scope, Reference-data table, and Run Reference Data Compare are disabled. |  |  |
 | Non-Git workspace guardrail | Select a non-Git folder and run workspace/repo/init actions. | Not a Git Repository modal appears instead of confusing raw output. |  |  |
-| Non-production database inspect | Follow walkthrough through Inspect against the selected non-production database. | Supported object types appear. Pagila should show table, index, view, and function-related review context where supported or deferred. |  |  |
+| Non-production database inspect | Follow walkthrough through Inspect against the selected non-production database. | Supported object types appear. Pagila should show table, index, view, constraint, and regular-function rows where present. Unsupported object types remain deferred review context. |  |  |
 | Results status filter | Run an operation and use the Status dropdown. | All is the default and status filtering works. repoDifferent rows are prioritized near the top when present. |  |  |
 | Database to Repository Compare preview | Run Preview Repository Sync in Database to Repository Compare. | Preview rows appear and no files are written. |  |  |
 | Database to Repository Compare write | Type `WRITE REPOSITORY FILES` and click Write Selected Repository Changes on a clean repo. | Files are written only under `database/objects/`. PostgreSQL is not mutated. |  |  |

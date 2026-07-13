@@ -249,7 +249,7 @@ const UI_HTML: &str = r#"<!doctype html>
           <label><input type="checkbox" checked disabled> tables</label>
           <label><input type="checkbox" disabled> indexes future</label>
           <label><input type="checkbox" disabled> views future</label>
-          <label><input type="checkbox" disabled> functions future</label>
+          <label><input type="checkbox" checked disabled> functions</label>
           <label><input type="checkbox" disabled> triggers future</label>
           <label><input type="checkbox" disabled> grants future</label>
         </div>
@@ -2104,7 +2104,7 @@ const UI_JS: &str = r#"(function () {
     select.options[0].value = "all";
     appendOption(select, "schema", "Schema");
     appendOption(select, "table", "Table");
-    ["extension", "enum", "sequence", "index", "view"].forEach(function (type) {
+    ["extension", "enum", "sequence", "index", "view", "constraint", "function"].forEach(function (type) {
       if (rows.some(function (row) { return row.objectType === type; })) {
         appendOption(select, type, type.charAt(0).toUpperCase() + type.slice(1));
       }
@@ -2202,6 +2202,14 @@ const UI_JS: &str = r#"(function () {
     };
   }
 
+  function functionIdentitySlug(identityArguments) {
+    const text = textOrEmpty(identityArguments).trim();
+    if (!text) {
+      return "no_args";
+    }
+    return text.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "").slice(0, 80) || "args";
+  }
+
   function fileNameWithoutSql(path) {
     const normalized = textOrEmpty(path).replace(/\\/g, "/");
     const fileName = normalized.split("/").filter(Boolean).pop() || normalized;
@@ -2281,6 +2289,16 @@ const UI_JS: &str = r#"(function () {
         };
       }
     }
+    if (normalized.indexOf("database/objects/functions/") >= 0) {
+      const parts = fileBase.split(".");
+      if (parts.length >= 3) {
+        return {
+          objectType: "function",
+          schema: parts[0],
+          name: parts.slice(1).join(".")
+        };
+      }
+    }
     if (normalized.indexOf("database/objects/constraints/") >= 0) {
       const parts = fileBase.split(".");
       if (parts.length >= 3) {
@@ -2343,6 +2361,13 @@ const UI_JS: &str = r#"(function () {
         return { objectType: "constraint", schema: parts[0], name: parts.slice(2).join("."), parentName: parts[1] };
       }
     }
+    if (text.indexOf("function:") === 0) {
+      const identity = text.slice("function:".length);
+      const parts = identity.split(".");
+      if (parts.length >= 3) {
+        return { objectType: "function", schema: parts[0], name: parts.slice(1).join(".") };
+      }
+    }
     return null;
   }
 
@@ -2363,7 +2388,7 @@ const UI_JS: &str = r#"(function () {
     if (text === "reference table") {
       return "referenceDataTable";
     }
-    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "constraint", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
+    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "constraint", "function", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
       return text;
     }
     return text || "unknown";
@@ -2561,6 +2586,23 @@ const UI_JS: &str = r#"(function () {
             schema: item.schemaName,
             name: item.constraintName,
             parentName: item.tableName,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: item
+          });
+        });
+      }
+      if (Array.isArray(data.functions)) {
+        data.functions.forEach(function (item) {
+          const signature = functionIdentitySlug(item.identityArguments || "");
+          rows.push({
+            objectRef: "function:" + item.schemaName + "." + item.functionName + "." + signature,
+            objectType: "function",
+            schema: item.schemaName,
+            name: item.functionName + "." + signature,
             status: "inspected",
             operation: "",
             warnings: [],
