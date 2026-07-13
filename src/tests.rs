@@ -3543,6 +3543,92 @@ fn slice27_ui_contains_release_candidate_selection_contract() {
 }
 
 #[test]
+fn slice28a_ui_contains_related_object_comparison_contract() {
+    let html = ui_html();
+    let css = ui_css();
+    let js = ui_js();
+    let combined = format!("{html}\n{css}\n{js}");
+
+    assert!(html.contains("Related Object Comparison"));
+    assert!(html.contains("related-object-comparison-body"));
+    assert!(html.contains("Source Related Objects"));
+    assert!(html.contains("Target Related Objects"));
+    assert!(html.contains("Constraints"));
+    assert!(html.contains("Indexes"));
+    assert!(css.contains(".related-object-status"));
+    assert!(css.contains(".related-object-type-group"));
+    assert!(css.contains(".related-object-type-table"));
+    assert!(js.contains("relatedObjectComparisonRows"));
+    assert!(js.contains("relatedObjectRowsByGroup"));
+    assert!(js.contains("renderRelatedObjectComparison"));
+    assert!(js.contains("relatedObjectComparisonStatus"));
+    assert!(js.contains("No \" + sideLabel + \" \" + group.group + \" available."));
+    assert!(js.contains("heading.textContent = group.group;"));
+    assert!(!js.contains("row.group + \" - \" + row.name"));
+    assert!(js.contains("\"Source only\""));
+    assert!(js.contains("\"Target only\""));
+    assert!(js.contains("\"In sync\""));
+    assert!(js.contains("\"Different\""));
+    assert!(js.contains("\"Not available\""));
+
+    for forbidden_action in [
+        "release-artifact-execute",
+        "release-artifact-apply",
+        "data-action=\"apply\"",
+        "data-action=\"execute\"",
+    ] {
+        assert!(
+            !combined.contains(forbidden_action),
+            "related object UI exposes forbidden action {forbidden_action}"
+        );
+    }
+}
+
+#[test]
+fn slice28a_related_object_panels_alignment_contract() {
+    let html = ui_html();
+    let css = ui_css();
+
+    assert!(html.contains("related-objects-two-column"));
+    assert!(html.contains("related-object-side-panel"));
+    assert!(css.contains(".related-objects-grid"));
+    assert!(css.contains("grid-template-columns: repeat(2, minmax(0, 1fr));"));
+    assert!(css.contains("align-items: stretch;"));
+    assert!(css.contains(".related-object-side-panel"));
+    assert!(css.contains("flex-direction: column;"));
+    assert!(css.contains(".related-object-type-group"));
+    assert!(css.contains(".related-object-type-table"));
+    assert!(css.contains("table-layout: fixed;"));
+    assert!(css.contains("#related-objects-view[hidden]"));
+}
+
+#[test]
+fn slice28a_release_candidate_table_readability_contract() {
+    let html = ui_html();
+    let css = ui_css();
+    let js = ui_js();
+
+    assert!(html.contains("release-candidates-table"));
+    assert!(html.contains("release-candidate-select-col"));
+    assert!(html.contains("release-candidate-explanation-col"));
+    assert!(html.contains("release-candidate-reasons-col"));
+    assert!(html.contains("release-candidate-warnings-col"));
+    assert!(html.contains("data-testid=\"release-selected-count\""));
+    assert!(html.contains("data-testid=\"release-select-all-eligible\""));
+    assert!(html.contains("data-testid=\"release-clear-selection\""));
+    assert!(css.contains(".release-candidates-table"));
+    assert!(css.contains("table-layout: fixed;"));
+    assert!(css.contains("white-space: normal;"));
+    assert!(css.contains("overflow-wrap: anywhere;"));
+    assert!(css.contains(".release-candidate-explanation-col"));
+    assert!(css.contains(".release-candidate-reasons-col"));
+    assert!(css.contains(".release-candidate-warnings-col"));
+    assert!(js.contains("release-candidate-explanation-cell"));
+    assert!(js.contains("release-candidate-reasons-cell"));
+    assert!(js.contains("release-candidate-warnings-cell"));
+}
+
+#[test]
 fn ui_contains_stable_playwright_demo_selectors() {
     let html = ui_html();
     let js = ui_js();

@@ -370,15 +370,31 @@ const UI_HTML: &str = r#"<!doctype html>
             </section>
           </div>
         </div>
-        <div id="related-objects-view" class="related-objects-grid" hidden>
-          <section>
+        <div id="related-objects-view" class="related-objects-view" hidden>
+          <section class="related-object-comparison-panel" aria-label="Related Object Comparison">
+            <h3>Related Object Comparison</h3>
+            <p class="note">Related object comparison can include Constraints, Indexes, Comments, and other object details when available.</p>
+            <div class="table-wrap">
+              <table class="results-grid related-object-comparison-table" aria-label="Related Object Comparison">
+                <thead>
+                  <tr><th>Type</th><th>Object</th><th>Status</th><th>Source detail</th><th>Target detail</th></tr>
+                </thead>
+                <tbody id="related-object-comparison-body">
+                  <tr><td colspan="5">No related object comparison loaded.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <div class="related-objects-grid related-objects-two-column">
+          <section class="related-object-side-panel">
             <h3>Source Related Objects</h3>
             <div id="source-related-objects" class="related-object-list">No related object details loaded.</div>
           </section>
-          <section>
+          <section class="related-object-side-panel">
             <h3>Target Related Objects</h3>
             <div id="target-related-objects" class="related-object-list">No related object details loaded.</div>
           </section>
+          </div>
         </div>
         <section class="subsection">
           <h3>Selected JSON Item</h3>
@@ -441,9 +457,9 @@ const UI_HTML: &str = r#"<!doctype html>
               <span class="note">Selected candidates only are included in release artifact dry-run or generation.</span>
             </div>
             <div class="table-wrap">
-              <table class="results-grid" aria-label="Release candidates" data-testid="release-candidates">
+              <table class="results-grid release-candidates-table" aria-label="Release candidates" data-testid="release-candidates">
                 <thead>
-                  <tr><th>Select</th><th>Object type</th><th>Schema</th><th>Object name</th><th>Status</th><th>Planned operation</th><th>Operation / safety</th><th>Explanation</th><th>Reasons</th><th>Warnings</th></tr>
+                  <tr><th class="release-candidate-select-col">Select</th><th class="release-candidate-type-col">Object type</th><th class="release-candidate-schema-col">Schema</th><th class="release-candidate-name-col">Object name</th><th class="release-candidate-status-col">Status</th><th class="release-candidate-operation-col">Planned operation</th><th class="release-candidate-badge-col">Operation / safety</th><th class="release-candidate-explanation-col">Explanation</th><th class="release-candidate-reasons-col">Reasons</th><th class="release-candidate-warnings-col">Warnings</th></tr>
                 </thead>
                 <tbody id="release-candidates-body">
                   <tr><td colspan="10">No selected result rows yet.</td></tr>
@@ -1042,6 +1058,50 @@ button:hover {
   margin: 8px 0 10px;
 }
 
+.release-candidates-table {
+  table-layout: fixed;
+  min-width: 1420px;
+}
+
+.release-candidates-table th,
+.release-candidates-table td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.release-candidate-select-col {
+  width: 64px;
+}
+
+.release-candidate-type-col,
+.release-candidate-schema-col,
+.release-candidate-status-col,
+.release-candidate-operation-col {
+  width: 120px;
+}
+
+.release-candidate-name-col,
+.release-candidate-badge-col {
+  width: 150px;
+}
+
+.release-candidate-explanation-col {
+  width: 280px;
+}
+
+.release-candidate-reasons-col {
+  width: 300px;
+}
+
+.release-candidate-warnings-col {
+  width: 240px;
+}
+
+.release-candidate-cell {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
 .release-operation-badge {
   display: inline-block;
   padding: 2px 6px;
@@ -1134,15 +1194,48 @@ button:hover {
   font-weight: 700;
 }
 
+.related-objects-view {
+  display: grid;
+  gap: 14px;
+}
+
+#related-objects-view[hidden] {
+  display: none;
+}
+
 .related-objects-grid {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
+  align-items: stretch;
   gap: 14px;
+}
+
+.related-objects-two-column {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.related-object-comparison-table {
+  table-layout: fixed;
+  min-width: 980px;
+}
+
+.related-object-comparison-table th,
+.related-object-comparison-table td {
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+.related-object-side-panel {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
 }
 
 .related-object-list {
   display: grid;
   gap: 8px;
+  align-content: start;
+  flex: 1 1 auto;
 }
 
 .related-object-group {
@@ -1150,6 +1243,44 @@ button:hover {
   border-radius: 8px;
   background: #ffffff;
   padding: 10px;
+}
+
+.related-object-type-group {
+  min-width: 0;
+}
+
+.related-object-type-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+}
+
+.related-object-type-table th,
+.related-object-type-table td {
+  border-top: 1px solid var(--border);
+  padding: 6px 4px;
+  text-align: left;
+  vertical-align: top;
+  white-space: normal;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+}
+
+.related-object-type-table th {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.related-object-status {
+  display: inline-block;
+  margin-bottom: 4px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 1px 7px;
+  background: #eef2f7;
+  color: #344451;
+  font-size: 11px;
+  font-weight: 700;
 }
 
 .related-object-group h4 {
@@ -1246,6 +1377,10 @@ pre {
   .split-pane,
   .diff-grid,
   .related-objects-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .related-objects-two-column {
     grid-template-columns: 1fr;
   }
 }
@@ -2646,6 +2781,7 @@ const UI_JS: &str = r#"(function () {
     byId("target-detail").className = "";
     byId("source-detail").textContent = message || "DDL not available yet for this object.";
     byId("target-detail").textContent = message || "DDL not available yet for this object.";
+    byId("related-object-comparison-body").innerHTML = "<tr><td colspan=\"5\">No related object comparison loaded.</td></tr>";
     byId("source-related-objects").textContent = "No related object details loaded.";
     byId("target-related-objects").textContent = "No related object details loaded.";
     byId("selected-json").textContent = "{}";
@@ -2694,40 +2830,162 @@ const UI_JS: &str = r#"(function () {
     return Array.isArray(related[side]) ? related[side] : [];
   }
 
-  function groupRelatedObjects(items) {
-    const groups = {};
-    if (!items.length) {
-      groups["Details"] = ["Not available in Private Beta"];
-      return groups;
+  function relatedObjectGroup(item) {
+    return textOrEmpty(item && item.group) || "Details";
+  }
+
+  function relatedObjectName(item) {
+    return textOrEmpty(item && item.name) || "Not available in Private Beta";
+  }
+
+  function relatedObjectDetail(item) {
+    if (!item) {
+      return "";
     }
-    items.forEach(function (item) {
-      const group = item.group || "Details";
-      const value = item.name === "Not available in Private Beta" ? item.name : ([item.name, item.detail].filter(Boolean).join(" - ") || "Not available in Private Beta");
+    const name = relatedObjectName(item);
+    const detail = textOrEmpty(item.detail);
+    if (name === "Not available in Private Beta") {
+      return detail || name;
+    }
+    return [name, detail].filter(Boolean).join(" - ") || "Not available in Private Beta";
+  }
+
+  function relatedObjectIdentity(item) {
+    return relatedObjectGroup(item) + "::" + relatedObjectName(item);
+  }
+
+  function relatedObjectComparisonStatus(sourceDetail, targetDetail) {
+    if (!sourceDetail && !targetDetail) {
+      return "Not available";
+    }
+    if (sourceDetail && !targetDetail) {
+      return "Source only";
+    }
+    if (!sourceDetail && targetDetail) {
+      return "Target only";
+    }
+    if (sourceDetail === "Not available in Private Beta" && targetDetail === "Not available in Private Beta") {
+      return "Not available";
+    }
+    return sourceDetail === targetDetail ? "In sync" : "Different";
+  }
+
+  function relatedObjectComparisonRows(detail, direction) {
+    const sourceItems = relatedObjectsForSide(detail, direction.sourceDdlSide);
+    const targetItems = relatedObjectsForSide(detail, direction.targetDdlSide);
+    const rowsByKey = {};
+    function add(side, item) {
+      const key = relatedObjectIdentity(item);
+      if (!rowsByKey[key]) {
+        rowsByKey[key] = {
+          group: relatedObjectGroup(item),
+          name: relatedObjectName(item),
+          sourceDetail: "",
+          targetDetail: ""
+        };
+      }
+      rowsByKey[key][side + "Detail"] = relatedObjectDetail(item);
+    }
+    sourceItems.forEach(function (item) {
+      add("source", item);
+    });
+    targetItems.forEach(function (item) {
+      add("target", item);
+    });
+    const rows = Object.keys(rowsByKey).sort().map(function (key) {
+      const row = rowsByKey[key];
+      row.status = relatedObjectComparisonStatus(row.sourceDetail, row.targetDetail);
+      return row;
+    });
+    if (!rows.length) {
+      rows.push({
+        group: "Details",
+        name: "Not available in Private Beta",
+        status: "Not available",
+        sourceDetail: "Not available in Private Beta",
+        targetDetail: "Not available in Private Beta"
+      });
+    }
+    return rows;
+  }
+
+  function renderRelatedObjectComparison(rows) {
+    const body = byId("related-object-comparison-body");
+    body.innerHTML = "";
+    rows.forEach(function (row) {
+      const tr = document.createElement("tr");
+      [row.group, row.name, row.status, row.sourceDetail || "--", row.targetDetail || "--"].forEach(function (value, index) {
+        const td = document.createElement("td");
+        td.textContent = value;
+        if (index === 2) {
+          td.className = "related-object-status-cell";
+        }
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+  }
+
+  function relatedObjectRowsByGroup(rows) {
+    const groups = {};
+    rows.forEach(function (row) {
+      const group = row.group || "Details";
       if (!groups[group]) {
         groups[group] = [];
       }
-      groups[group].push(value);
+      groups[group].push(row);
     });
-    return groups;
+    return Object.keys(groups).sort().map(function (group) {
+      return {
+        group: group,
+        rows: groups[group].sort(function (left, right) {
+          return String(left.name).localeCompare(String(right.name));
+        })
+      };
+    });
   }
 
-  function renderRelatedObjectList(targetId, items) {
+  function renderRelatedObjectList(targetId, rows, side) {
     const target = byId(targetId);
     target.innerHTML = "";
-    const groups = groupRelatedObjects(items);
-    Object.keys(groups).sort().forEach(function (group) {
+    const sideLabel = side === "source" ? "source" : "target";
+    relatedObjectRowsByGroup(rows).forEach(function (group) {
       const wrapper = document.createElement("div");
-      wrapper.className = "related-object-group";
+      wrapper.className = "related-object-group related-object-type-group";
       const heading = document.createElement("h4");
-      heading.textContent = group;
+      heading.textContent = group.group;
       wrapper.appendChild(heading);
-      const list = document.createElement("ul");
-      groups[group].forEach(function (value) {
-        const item = document.createElement("li");
-        item.textContent = value;
-        list.appendChild(item);
+      const table = document.createElement("table");
+      table.className = "related-object-type-table";
+      const thead = document.createElement("thead");
+      const header = document.createElement("tr");
+      ["Object", "Status", "Detail"].forEach(function (label) {
+        const th = document.createElement("th");
+        th.textContent = label;
+        header.appendChild(th);
       });
-      wrapper.appendChild(list);
+      thead.appendChild(header);
+      table.appendChild(thead);
+      const tbody = document.createElement("tbody");
+      group.rows.forEach(function (row) {
+        const detailValue = row[side + "Detail"] || "";
+        const tr = document.createElement("tr");
+        const objectCell = document.createElement("td");
+        objectCell.textContent = detailValue ? row.name : "--";
+        tr.appendChild(objectCell);
+        const statusCell = document.createElement("td");
+        const status = document.createElement("span");
+        status.className = "related-object-status";
+        status.textContent = row.status;
+        statusCell.appendChild(status);
+        tr.appendChild(statusCell);
+        const detailCell = document.createElement("td");
+        detailCell.textContent = detailValue || ("No " + sideLabel + " " + group.group + " available.");
+        tr.appendChild(detailCell);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      wrapper.appendChild(table);
       target.appendChild(wrapper);
     });
   }
@@ -2857,8 +3115,10 @@ const UI_JS: &str = r#"(function () {
     if (showRelated) {
       byId("ddl-comparison-status").textContent = "DDL unavailable";
       byId("ddl-comparison-status").className = "ddl-comparison-status ddl-unavailable";
-      renderRelatedObjectList("source-related-objects", relatedObjectsForSide(state.selectedObjectDdl, direction.sourceDdlSide));
-      renderRelatedObjectList("target-related-objects", relatedObjectsForSide(state.selectedObjectDdl, direction.targetDdlSide));
+      const rows = relatedObjectComparisonRows(state.selectedObjectDdl, direction);
+      renderRelatedObjectComparison(rows);
+      renderRelatedObjectList("source-related-objects", rows, "source");
+      renderRelatedObjectList("target-related-objects", rows, "target");
       byId("selected-json").textContent = redactedJson({
         selected: objectDiffDisplayPayload(row, direction),
         objectDdl: state.selectedObjectDdl
@@ -3685,6 +3945,7 @@ const UI_JS: &str = r#"(function () {
         const objectRef = releaseCandidateObjectRef(row, index);
         const eligible = releaseCandidateEligible(row);
         const selectCell = document.createElement("td");
+        selectCell.className = "release-candidate-cell release-candidate-select-cell";
         const checkbox = document.createElement("input");
         checkbox.type = "checkbox";
         checkbox.setAttribute("data-action", "release-candidate-select");
@@ -3701,26 +3962,38 @@ const UI_JS: &str = r#"(function () {
           row.status,
           row.operation || row.planIntent || "review"
         ];
-        values.forEach(function (value) {
+        const valueClasses = [
+          "release-candidate-type-cell",
+          "release-candidate-schema-cell",
+          "release-candidate-name-cell",
+          "release-candidate-status-cell",
+          "release-candidate-operation-cell"
+        ];
+        values.forEach(function (value, valueIndex) {
           const td = document.createElement("td");
+          td.className = "release-candidate-cell " + valueClasses[valueIndex];
           td.textContent = textOrEmpty(value);
           tr.appendChild(td);
         });
         const badgeCell = document.createElement("td");
+        badgeCell.className = "release-candidate-cell release-candidate-badge-cell";
         const badge = document.createElement("span");
         badge.className = "release-operation-badge " + textOrEmpty(row.safetyLevel);
         badge.textContent = textOrEmpty(row.safetyBadge || row.operationLabel || "Manual Review");
         badgeCell.appendChild(badge);
         tr.appendChild(badgeCell);
         const explanation = document.createElement("td");
+        explanation.className = "release-candidate-cell release-candidate-explanation-cell";
         explanation.textContent = textOrEmpty(row.operationExplanation || "Review selected object before artifact generation. DbState remains review-only.");
         tr.appendChild(explanation);
         const reasons = document.createElement("td");
+        reasons.className = "release-candidate-cell release-candidate-reasons-cell";
         reasons.textContent = Array.isArray(row.operationReasons) && row.operationReasons.length
           ? row.operationReasons.join("; ")
           : "";
         tr.appendChild(reasons);
         const warningCell = document.createElement("td");
+        warningCell.className = "release-candidate-cell release-candidate-warnings-cell";
         warningCell.textContent = Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings);
         tr.appendChild(warningCell);
         body.appendChild(tr);
