@@ -1906,6 +1906,104 @@ fn release_does_not_overwrite_existing_artifacts() {
 }
 
 #[test]
+fn release_selected_refs_include_only_selected_candidate() {
+    let dir = create_temp_dir("release-selected-only");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/local_one.sql"),
+        render_schema_sql("local_one"),
+    )
+    .expect("write first repo-only schema");
+    fs::write(
+        dir.join("database/objects/schemas/local_two.sql"),
+        render_schema_sql("local_two"),
+    )
+    .expect("write second repo-only schema");
+    commit_all(&dir, "two repo-only schemas");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(vec!["schema:local_one".to_string()], Vec::new())
+            .expect("plan selection"),
+        "slice27_selected",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.included_objects,
+        vec!["schema:local_one".to_string()]
+    );
+    assert!(!report
+        .included_objects
+        .contains(&"schema:local_two".to_string()));
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice27_selected.sql"))
+        .expect("read sql");
+    assert!(sql.contains("schema:local_one"));
+    assert!(sql.contains("CREATE SCHEMA IF NOT EXISTS \"local_one\";"));
+    assert!(!sql.contains("schema:local_two"));
+    assert!(!sql.contains("CREATE SCHEMA IF NOT EXISTS \"local_two\";"));
+}
+
+#[test]
+fn release_selected_ref_not_in_current_plan_is_rejected_safely() {
+    let dir = create_temp_dir("release-selected-missing");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/local_one.sql"),
+        render_schema_sql("local_one"),
+    )
+    .expect("write repo-only schema");
+    commit_all(&dir, "one repo-only schema");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(vec!["schema:missing_selected".to_string()], Vec::new())
+            .expect("plan selection"),
+        "slice27_missing",
+        false,
+    );
+
+    assert!(!report.success);
+    assert!(report
+        .errors
+        .iter()
+        .any(|error| error.contains("was not found in the selected compare scope")));
+    assert!(report.created_artifacts.is_empty());
+    assert!(!dir
+        .join("database/releases/0001_slice27_missing.sql")
+        .exists());
+}
+
+#[test]
+fn release_service_rejects_empty_selected_object_refs() {
+    let dir = create_temp_dir("release-service-empty-selection");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+
+    let body = format!(
+        r#"{{ "repositoryPath": "{}", "releaseName": "slice27_empty", "scope": "all", "selectedObjectRefs": [] }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let response = service_response("POST", "/api/v1/postgres/release/preview", &body, &dir);
+
+    assert_eq!(response.status_code, 400);
+    assert!(response
+        .body
+        .contains("Select at least one release candidate"));
+    assert!(!dir
+        .join("database/releases/0001_slice27_empty.sql")
+        .exists());
+}
+
+#[test]
 fn release_blocks_when_selected_plan_items_are_blocked() {
     let dir = create_temp_dir("release-blocked");
     init_git_repo(&dir);
@@ -2968,6 +3066,38 @@ fn slice26_ui_contains_release_operation_badge_contract() {
         assert!(
             !combined.contains(forbidden_action),
             "release operation UI exposes forbidden action {forbidden_action}"
+        );
+    }
+}
+
+#[test]
+fn slice27_ui_contains_release_candidate_selection_contract() {
+    let html = ui_html();
+    let js = ui_js();
+    let combined = format!("{html}\n{js}");
+
+    assert!(html.contains("data-testid=\"release-candidate-selection-controls\""));
+    assert!(html.contains("data-testid=\"release-selected-count\""));
+    assert!(html.contains("data-testid=\"release-select-all-eligible\""));
+    assert!(html.contains("data-testid=\"release-clear-selection\""));
+    assert!(html.contains("Selected candidates only are included"));
+    assert!(js.contains("selectedObjectRefs"));
+    assert!(js.contains("releaseSelectedRefs"));
+    assert!(js.contains("data-testid\", \"release-candidate-checkbox\""));
+    assert!(js.contains("Select at least one release candidate."));
+    assert!(js.contains("releaseCandidateEligible"));
+
+    for forbidden_action in [
+        "release-artifact-execute",
+        "release-artifact-apply",
+        "release-artifact-edit",
+        "release-artifact-delete",
+        "data-action=\"apply\"",
+        "data-action=\"execute\"",
+    ] {
+        assert!(
+            !combined.contains(forbidden_action),
+            "release candidate selection UI exposes forbidden action {forbidden_action}"
         );
     }
 }
