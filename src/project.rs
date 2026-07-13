@@ -109,6 +109,26 @@ pub(crate) const EXPECTED_PATHS: &[ExpectedPath] = &[
         kind: PathKind::Directory,
     },
     ExpectedPath {
+        relative: "database/objects/constraints",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
+        relative: "database/objects/constraints/primary-keys",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
+        relative: "database/objects/constraints/unique-constraints",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
+        relative: "database/objects/constraints/foreign-keys",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
+        relative: "database/objects/constraints/check-constraints",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
         relative: "database/objects/materialized-views",
         kind: PathKind::Directory,
     },

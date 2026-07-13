@@ -649,8 +649,9 @@ fn release_object_order(item: &&PlanItem) -> (u8, String) {
         "enum" => 3,
         "sequence" => 4,
         "table" => 5,
-        "index" => 6,
-        "view" => 7,
+        "constraint" => 6,
+        "index" => 7,
+        "view" => 8,
         _ => 99,
     };
     (order, item.object_ref.clone())
@@ -678,6 +679,15 @@ fn render_create_later_sql(root: &Path, item: &PlanItem) -> Result<String, Strin
             fs::read_to_string(root.join(&item.relative_path))
                 .map_err(|error| format!("Could not read {}: {error}", item.relative_path))
         }
+        ObjectRef::Constraint { .. } => {
+            ensure_database_object_path(&item.relative_path)?;
+            let content = fs::read_to_string(root.join(&item.relative_path))
+                .map_err(|error| format!("Could not read {}: {error}", item.relative_path))?;
+            Ok(format!(
+                "-- Review-only constraint suggestion.\n-- DbState does not execute this SQL.\n-- Review before applying manually outside DbState.\n{}",
+                content.trim_start()
+            ))
+        }
     }
 }
 
@@ -688,6 +698,12 @@ fn render_update_database_later_sql(
 ) -> Result<String, String> {
     let object_ref = ObjectRef::parse(&item.object_ref)?;
     let ObjectRef::Table { schema, table } = object_ref else {
+        if matches!(object_ref, ObjectRef::Constraint { .. }) {
+            return Ok(
+                "-- REVIEW REQUIRED: constraint differs; changed constraints are manual-review only. DbState does not generate destructive constraint removal or replacement SQL.\n"
+                    .to_string(),
+            );
+        }
         return Ok(
             "-- REVIEW REQUIRED: object differs; automatic ALTER is not generated in Private Beta.\n"
                 .to_string(),

@@ -20,6 +20,7 @@ pub(crate) fn discover_repository_objects(root: &Path) -> Result<RepositoryImpor
     discover_sequence_files(root, &mut import)?;
     discover_index_files(root, &mut import)?;
     discover_view_files(root, &mut import)?;
+    discover_constraint_files(root, &mut import)?;
     import.skipped.sort();
     import.skipped.dedup();
     Ok(import)
@@ -182,6 +183,55 @@ fn discover_index_files(root: &Path, import: &mut RepositoryImport) -> Result<()
     Ok(())
 }
 
+fn discover_constraint_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    for folder in [
+        "primary-keys",
+        "unique-constraints",
+        "foreign-keys",
+        "check-constraints",
+    ] {
+        let dir = root.join("database/objects/constraints").join(folder);
+        for entry in fs::read_dir(&dir).map_err(|error| {
+            format!("Could not read database/objects/constraints/{folder}: {error}")
+        })? {
+            let entry =
+                entry.map_err(|error| format!("Could not read constraint file entry: {error}"))?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            let relative_path = format!("database/objects/constraints/{folder}/{file_name}");
+            let Some((schema, table, constraint)) = three_part_name_from_file(&file_name) else {
+                import.skipped.push(relative_path);
+                continue;
+            };
+            if safe_file_component(&schema).is_err()
+                || safe_file_component(&table).is_err()
+                || safe_file_component(&constraint).is_err()
+            {
+                import.skipped.push(relative_path);
+                continue;
+            }
+            let content = fs::read_to_string(&path)
+                .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+            import.objects.insert(
+                constraint_key(&schema, &table, &constraint),
+                DesiredStateObject {
+                    object_type: RepositoryObjectType::Constraint,
+                    schema_name: schema,
+                    table_name: Some(table.clone()),
+                    object_name: constraint,
+                    parent_name: Some(table),
+                    relative_path,
+                    content,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 fn discover_one_part_object_files(
     root: &Path,
     import: &mut RepositoryImport,
@@ -311,6 +361,7 @@ pub(crate) fn render_database_objects_for_selection(
     let mut sequence_names = Vec::new();
     let mut index_names = Vec::new();
     let mut view_names = Vec::new();
+    let mut constraint_names = Vec::new();
     match selection {
         ExportSelection::All => {
             include_extensions = true;
@@ -347,6 +398,13 @@ pub(crate) fn render_database_objects_for_selection(
                     .iter()
                     .map(|item| (item.schema_name.clone(), item.view_name.clone())),
             );
+            constraint_names.extend(inventory.constraints.iter().map(|item| {
+                (
+                    item.schema_name.clone(),
+                    item.table_name.clone(),
+                    item.constraint_name.clone(),
+                )
+            }));
         }
         ExportSelection::Schema(schema) => {
             if inventory
@@ -399,6 +457,19 @@ pub(crate) fn render_database_objects_for_selection(
                     .filter(|item| item.schema_name == *schema)
                     .map(|item| (item.schema_name.clone(), item.view_name.clone())),
             );
+            constraint_names.extend(
+                inventory
+                    .constraints
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.table_name.clone(),
+                            item.constraint_name.clone(),
+                        )
+                    }),
+            );
         }
         ExportSelection::Table { schema, table } => {
             if inventory.tables.iter().any(|candidate| {
@@ -421,6 +492,19 @@ pub(crate) fn render_database_objects_for_selection(
                         )
                     }),
             );
+            constraint_names.extend(
+                inventory
+                    .constraints
+                    .iter()
+                    .filter(|item| item.schema_name == *schema && item.table_name == *table)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.table_name.clone(),
+                            item.constraint_name.clone(),
+                        )
+                    }),
+            );
         }
     }
 
@@ -436,6 +520,8 @@ pub(crate) fn render_database_objects_for_selection(
     index_names.dedup();
     view_names.sort();
     view_names.dedup();
+    constraint_names.sort();
+    constraint_names.dedup();
 
     for schema in schema_names {
         let relative_path = schema_file_path(&schema)?;
@@ -563,6 +649,31 @@ pub(crate) fn render_database_objects_for_selection(
         };
         objects.insert(object_key(&object), object);
     }
+    for (schema, table, constraint_name) in constraint_names {
+        let Some(constraint) = inventory.constraints.iter().find(|item| {
+            item.schema_name == schema
+                && item.table_name == table
+                && item.constraint_name == constraint_name
+        }) else {
+            continue;
+        };
+        let relative_path = constraint_file_path(
+            &constraint.constraint_type,
+            &schema,
+            &table,
+            &constraint_name,
+        )?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Constraint,
+            schema_name: schema.clone(),
+            table_name: Some(table.clone()),
+            object_name: constraint_name.clone(),
+            parent_name: Some(table),
+            relative_path,
+            content: render_constraint_sql(constraint),
+        };
+        objects.insert(object_key(&object), object);
+    }
     Ok(objects)
 }
 
@@ -580,6 +691,8 @@ pub(crate) fn select_repository_objects(
                     && (object.object_type == RepositoryObjectType::Table
                         && object.table_name.as_deref() == Some(table.as_str())
                         || object.object_type == RepositoryObjectType::Index
+                            && object.parent_name.as_deref() == Some(table.as_str())
+                        || object.object_type == RepositoryObjectType::Constraint
                             && object.parent_name.as_deref() == Some(table.as_str()))
             }
         };

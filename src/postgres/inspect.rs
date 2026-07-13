@@ -71,6 +71,19 @@ pub struct ViewInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConstraintInfo {
+    pub schema_name: String,
+    pub table_name: String,
+    pub constraint_name: String,
+    pub constraint_type: String,
+    pub definition: String,
+    pub columns: Vec<String>,
+    pub referenced_schema: Option<String>,
+    pub referenced_table: Option<String>,
+    pub referenced_columns: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectionCounts {
     pub schemas: usize,
     pub tables: usize,
@@ -80,6 +93,7 @@ pub struct InspectionCounts {
     pub sequences: usize,
     pub indexes: usize,
     pub views: usize,
+    pub constraints: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -96,6 +110,7 @@ pub struct InspectionReport {
     pub sequences: Vec<SequenceInfo>,
     pub indexes: Vec<IndexInfo>,
     pub views: Vec<ViewInfo>,
+    pub constraints: Vec<ConstraintInfo>,
     pub counts: InspectionCounts,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
@@ -138,6 +153,7 @@ pub(crate) fn inspect_postgres_scoped_command(
             report.sequences = inventory.sequences;
             report.indexes = inventory.indexes;
             report.views = inventory.views;
+            report.constraints = inventory.constraints;
             if let Err(error) = apply_inspection_scope(&mut report, schema, table) {
                 report.success = false;
                 report.errors.push(error);
@@ -152,6 +168,7 @@ pub(crate) fn inspect_postgres_scoped_command(
                 sequences: report.sequences.len(),
                 indexes: report.indexes.len(),
                 views: report.views.len(),
+                constraints: report.constraints.len(),
             };
             report.success = true;
         }
@@ -184,6 +201,7 @@ fn apply_inspection_scope(
         report.sequences.retain(|item| item.schema_name == schema);
         report.indexes.retain(|item| item.schema_name == schema);
         report.views.retain(|item| item.schema_name == schema);
+        report.constraints.retain(|item| item.schema_name == schema);
         report.inspection_scope = vec![format!("schema:{schema}")];
         return Ok(());
     }
@@ -220,6 +238,9 @@ fn apply_inspection_scope(
         report.views.clear();
         report
             .indexes
+            .retain(|item| item.schema_name == schema && item.table_name == table_name);
+        report
+            .constraints
             .retain(|item| item.schema_name == schema && item.table_name == table_name);
         report.inspection_scope = vec![format!("table:{schema}.{table_name}")];
     }
@@ -401,6 +422,44 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         )
         .map_err(|_| "PostgreSQL schema inspection failed while reading views.".to_string())?;
 
+    let constraint_rows = client
+        .query(
+            "SELECT ns.nspname::text,
+                    tbl.relname::text,
+                    con.conname::text,
+                    con.contype::text,
+                    pg_catalog.pg_get_constraintdef(con.oid, true)::text,
+                    COALESCE(array_agg(att.attname::text ORDER BY key_position.ordinality)
+                        FILTER (WHERE att.attname IS NOT NULL), ARRAY[]::text[]),
+                    ref_ns.nspname::text,
+                    ref_tbl.relname::text,
+                    COALESCE(array_agg(ref_att.attname::text ORDER BY key_position.ordinality)
+                        FILTER (WHERE ref_att.attname IS NOT NULL), ARRAY[]::text[])
+             FROM pg_catalog.pg_constraint con
+             JOIN pg_catalog.pg_class tbl ON tbl.oid = con.conrelid
+             JOIN pg_catalog.pg_namespace ns ON ns.oid = tbl.relnamespace
+             LEFT JOIN pg_catalog.pg_class ref_tbl ON ref_tbl.oid = con.confrelid AND con.confrelid <> 0
+             LEFT JOIN pg_catalog.pg_namespace ref_ns ON ref_ns.oid = ref_tbl.relnamespace
+             LEFT JOIN LATERAL unnest(con.conkey) WITH ORDINALITY AS key_position(attnum, ordinality) ON true
+             LEFT JOIN pg_catalog.pg_attribute att
+               ON att.attrelid = con.conrelid
+              AND att.attnum = key_position.attnum
+             LEFT JOIN pg_catalog.pg_attribute ref_att
+               ON ref_att.attrelid = con.confrelid
+              AND ref_att.attnum = con.confkey[key_position.ordinality]
+             WHERE con.contype IN ('p', 'u', 'f', 'c')
+               AND tbl.relkind IN ('r', 'p')
+               AND ns.nspname <> 'pg_catalog'
+               AND ns.nspname <> 'information_schema'
+               AND ns.nspname NOT LIKE 'pg_toast%'
+               AND ns.nspname NOT LIKE 'pg_%'
+             GROUP BY ns.nspname, tbl.relname, con.conname, con.contype, con.oid,
+                      ref_ns.nspname, ref_tbl.relname
+             ORDER BY ns.nspname, tbl.relname, con.contype, con.conname",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading constraints.".to_string())?;
+
     let schemas = schema_rows
         .into_iter()
         .map(|row| SchemaInfo { name: row.get(0) })
@@ -492,6 +551,29 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         });
     }
 
+    let mut constraints = Vec::new();
+    for row in constraint_rows {
+        let constraint_type = match try_get_catalog_string(&row, 3, "constraint type")?.as_str() {
+            "p" => "primaryKey",
+            "u" => "uniqueConstraint",
+            "f" => "foreignKey",
+            "c" => "checkConstraint",
+            _ => "unknownConstraint",
+        }
+        .to_string();
+        constraints.push(ConstraintInfo {
+            schema_name: try_get_catalog_string(&row, 0, "constraint schema")?,
+            table_name: try_get_catalog_string(&row, 1, "constraint table")?,
+            constraint_name: try_get_catalog_string(&row, 2, "constraint name")?,
+            constraint_type,
+            definition: try_get_catalog_string(&row, 4, "constraint definition")?,
+            columns: try_get_catalog_string_array(&row, 5, "constraint columns")?,
+            referenced_schema: try_get_catalog_optional_string(&row, 6, "referenced schema")?,
+            referenced_table: try_get_catalog_optional_string(&row, 7, "referenced table")?,
+            referenced_columns: try_get_catalog_string_array(&row, 8, "referenced columns")?,
+        });
+    }
+
     Ok(PostgresInventory {
         schemas,
         tables,
@@ -501,6 +583,7 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         sequences,
         indexes,
         views,
+        constraints,
     })
 }
 
@@ -540,6 +623,16 @@ fn try_get_catalog_bool(row: &::postgres::Row, index: usize, field: &str) -> Res
     })
 }
 
+fn try_get_catalog_string_array(
+    row: &::postgres::Row,
+    index: usize,
+    field: &str,
+) -> Result<Vec<String>, String> {
+    row.try_get(index).map_err(|error| {
+        format!("PostgreSQL schema inspection failed while decoding {field}: {error}")
+    })
+}
+
 pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport {
     InspectionReport {
         command,
@@ -554,6 +647,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             "sequences".to_string(),
             "indexes".to_string(),
             "views".to_string(),
+            "constraints".to_string(),
         ],
         schemas: Vec::new(),
         tables: Vec::new(),
@@ -563,6 +657,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
         sequences: Vec::new(),
         indexes: Vec::new(),
         views: Vec::new(),
+        constraints: Vec::new(),
         counts: InspectionCounts {
             schemas: 0,
             tables: 0,
@@ -572,6 +667,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             sequences: 0,
             indexes: 0,
             views: 0,
+            constraints: 0,
         },
         warnings: Vec::new(),
         errors: Vec::new(),
@@ -608,6 +704,7 @@ impl InspectionReport {
         writeln!(text, "Sequence count: {}", self.counts.sequences).ok();
         writeln!(text, "Index count: {}", self.counts.indexes).ok();
         writeln!(text, "View count: {}", self.counts.views).ok();
+        writeln!(text, "Constraint count: {}", self.counts.constraints).ok();
         writeln!(text, "Schemas:").ok();
         for schema in &self.schemas {
             writeln!(text, "  - {}", schema.name).ok();
@@ -656,6 +753,18 @@ impl InspectionReport {
         for view in &self.views {
             writeln!(text, "  - {}.{}", view.schema_name, view.view_name).ok();
         }
+        writeln!(text, "Constraints:").ok();
+        for constraint in &self.constraints {
+            writeln!(
+                text,
+                "  - {}.{}.{} ({})",
+                constraint.schema_name,
+                constraint.table_name,
+                constraint.constraint_name,
+                constraint.constraint_type
+            )
+            .ok();
+        }
         for warning in &self.warnings {
             writeln!(text, "Warning: {warning}").ok();
         }
@@ -680,6 +789,7 @@ impl InspectionReport {
         write_sequence_array_field(&mut json, "sequences", &self.sequences);
         write_index_array_field(&mut json, "indexes", &self.indexes);
         write_view_array_field(&mut json, "views", &self.views);
+        write_constraint_array_field(&mut json, "constraints", &self.constraints);
         write_counts_field(&mut json, "counts", &self.counts);
         write_json_array_field(&mut json, "warnings", &self.warnings);
         write_json_array_field(&mut json, "errors", &self.errors);

@@ -1,5 +1,5 @@
 use crate::postgres::inspect::{
-    ColumnInfo, EnumInfo, ExtensionInfo, IndexInfo, SequenceInfo, ViewInfo,
+    ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, IndexInfo, SequenceInfo, ViewInfo,
 };
 use std::fmt::Write as _;
 
@@ -193,6 +193,45 @@ pub fn render_view_sql(view: &ViewInfo) -> String {
     )
     .ok();
     writeln!(sql, "{};", view.definition.trim().trim_end_matches(';')).ok();
+    sql
+}
+
+pub fn render_constraint_sql(constraint: &ConstraintInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: constraint").ok();
+    writeln!(sql, "-- Constraint type: {}", constraint.constraint_type).ok();
+    writeln!(
+        sql,
+        "-- Object name: {}.{}.{}",
+        constraint.schema_name, constraint.table_name, constraint.constraint_name
+    )
+    .ok();
+    if let (Some(referenced_schema), Some(referenced_table)) =
+        (&constraint.referenced_schema, &constraint.referenced_table)
+    {
+        writeln!(
+            sql,
+            "-- References: {}.{}",
+            referenced_schema, referenced_table
+        )
+        .ok();
+    }
+    writeln!(sql).ok();
+    let definition = constraint.definition.trim().trim_end_matches(';');
+    writeln!(
+        sql,
+        "ALTER TABLE {}.{}",
+        quote_postgres_identifier(&constraint.schema_name),
+        quote_postgres_identifier(&constraint.table_name)
+    )
+    .ok();
+    writeln!(
+        sql,
+        "    ADD CONSTRAINT {} {definition};",
+        quote_postgres_identifier(&constraint.constraint_name)
+    )
+    .ok();
     sql
 }
 

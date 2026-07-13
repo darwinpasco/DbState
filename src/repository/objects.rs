@@ -9,6 +9,7 @@ pub(crate) enum RepositoryObjectType {
     Sequence,
     Index,
     View,
+    Constraint,
 }
 
 #[derive(Debug, Clone)]
@@ -54,6 +55,11 @@ pub(crate) enum ObjectRef {
     View {
         schema: String,
         view: String,
+    },
+    Constraint {
+        schema: String,
+        table: String,
+        constraint: String,
     },
 }
 
@@ -125,8 +131,24 @@ impl ObjectRef {
                 let (schema, view) = parse_two_part_object_ref(value, identity, "view")?;
                 Ok(Self::View { schema, view })
             }
+            "constraint" => {
+                let parts: Vec<&str> = identity.split('.').collect();
+                if parts.len() != 3 || parts.iter().any(|part| part.trim().is_empty()) {
+                    return Err(format!(
+                        "Invalid constraint object reference '{value}'. Use constraint:<schema>.<table>.<constraint>."
+                    ));
+                }
+                safe_file_component(parts[0])?;
+                safe_file_component(parts[1])?;
+                safe_file_component(parts[2])?;
+                Ok(Self::Constraint {
+                    schema: parts[0].to_string(),
+                    table: parts[1].to_string(),
+                    constraint: parts[2].to_string(),
+                })
+            }
             _ => Err(format!(
-                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, or view:<schema>.<name>."
+                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, or constraint:<schema>.<table>.<name>."
             )),
         }
     }
@@ -144,6 +166,13 @@ impl ObjectRef {
                 index,
             } => format!("index:{schema}.{table}.{index}"),
             Self::View { schema, view } => format!("view:{schema}.{view}"),
+            Self::Constraint {
+                schema,
+                table,
+                constraint,
+            } => {
+                format!("constraint:{schema}.{table}.{constraint}")
+            }
         }
     }
 
@@ -156,6 +185,7 @@ impl ObjectRef {
             Self::Sequence { .. } => "sequence",
             Self::Index { .. } => "index",
             Self::View { .. } => "view",
+            Self::Constraint { .. } => "constraint",
         }
     }
 
@@ -166,7 +196,9 @@ impl ObjectRef {
             Self::Enum { schema, .. }
             | Self::Sequence { schema, .. }
             | Self::View { schema, .. } => Some(Self::Schema(schema.clone())),
-            Self::Index { schema, .. } => Some(Self::Schema(schema.clone())),
+            Self::Index { schema, .. } | Self::Constraint { schema, .. } => {
+                Some(Self::Schema(schema.clone()))
+            }
         }
     }
 }
@@ -253,6 +285,26 @@ pub(crate) fn object_ref_from_relative_path(relative_path: &str) -> Result<Objec
         };
         return Ok(ObjectRef::View { schema, view });
     }
+    for folder in [
+        "primary-keys",
+        "unique-constraints",
+        "foreign-keys",
+        "check-constraints",
+    ] {
+        let prefix = format!("database/objects/constraints/{folder}/");
+        if let Some(file_name) = relative_path.strip_prefix(&prefix) {
+            let Some((schema, table, constraint)) = three_part_name_from_file(file_name) else {
+                return Err(format!(
+                    "Invalid constraint desired-state file path: {relative_path}"
+                ));
+            };
+            return Ok(ObjectRef::Constraint {
+                schema,
+                table,
+                constraint,
+            });
+        }
+    }
     Err(format!(
         "Unsupported desired-state file path: {relative_path}"
     ))
@@ -313,6 +365,34 @@ pub(crate) fn view_file_path(schema: &str, view: &str) -> Result<String, String>
     ))
 }
 
+pub(crate) fn constraint_file_path(
+    constraint_type: &str,
+    schema: &str,
+    table: &str,
+    constraint: &str,
+) -> Result<String, String> {
+    let folder = constraint_folder(constraint_type)?;
+    Ok(format!(
+        "database/objects/constraints/{}/{}.{}.{}.sql",
+        folder,
+        safe_file_component(schema)?,
+        safe_file_component(table)?,
+        safe_file_component(constraint)?
+    ))
+}
+
+pub(crate) fn constraint_folder(constraint_type: &str) -> Result<&'static str, String> {
+    match constraint_type {
+        "primaryKey" => Ok("primary-keys"),
+        "uniqueConstraint" => Ok("unique-constraints"),
+        "foreignKey" => Ok("foreign-keys"),
+        "checkConstraint" => Ok("check-constraints"),
+        _ => Err(format!(
+            "Unsupported PostgreSQL constraint type for desired-state path: {constraint_type}"
+        )),
+    }
+}
+
 pub(crate) fn safe_file_component(value: &str) -> Result<String, String> {
     let trimmed = value.trim();
     if trimmed.is_empty()
@@ -356,6 +436,11 @@ pub(crate) fn object_key(object: &DesiredStateObject) -> String {
             &object.object_name,
         ),
         RepositoryObjectType::View => view_key(&object.schema_name, &object.object_name),
+        RepositoryObjectType::Constraint => constraint_key(
+            &object.schema_name,
+            object.parent_name.as_deref().unwrap_or(""),
+            &object.object_name,
+        ),
     }
 }
 
@@ -385,6 +470,10 @@ pub(crate) fn index_key(schema: &str, table: &str, index: &str) -> String {
 
 pub(crate) fn view_key(schema: &str, view: &str) -> String {
     format!("view:{schema}.{view}")
+}
+
+pub(crate) fn constraint_key(schema: &str, table: &str, constraint: &str) -> String {
+    format!("constraint:{schema}.{table}.{constraint}")
 }
 
 pub(crate) fn schema_name_from_file(file_name: &str) -> Option<String> {

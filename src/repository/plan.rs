@@ -343,7 +343,8 @@ pub fn plan_postgres_with_inventory(
                 | ObjectRef::Enum { .. }
                 | ObjectRef::Sequence { .. }
                 | ObjectRef::Index { .. }
-                | ObjectRef::View { .. } => String::new(),
+                | ObjectRef::View { .. }
+                | ObjectRef::Constraint { .. } => String::new(),
             };
             if !required_schema_path.is_empty() && !root.join(&required_schema_path).is_file() {
                 let warning = DependencyWarning {
@@ -488,6 +489,22 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
     }
 
     if input.classification == "repoOnly" && input.intent == "createInDatabaseLater" {
+        if matches!(input.object_ref, ObjectRef::Constraint { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "createConstraintReviewSql".to_string(),
+                operation_label: "Add Constraint".to_string(),
+                safety_badge: "Review SQL".to_string(),
+                safety_level: "reviewOnly".to_string(),
+                operation_explanation:
+                    "DbState can generate review-only ADD CONSTRAINT SQL for this new repository constraint. DbState does not execute SQL."
+                        .to_string(),
+                operation_reasons: vec![
+                    "Constraint exists in repository desired state and is missing from the target database."
+                        .to_string(),
+                    "DbState does not generate DROP CONSTRAINT.".to_string(),
+                ],
+            };
+        }
         return PlanOperationMetadata {
             operation_kind: "createReviewSql".to_string(),
             operation_label: "Review SQL".to_string(),
@@ -504,6 +521,20 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
     }
 
     if input.classification == "databaseOnly" || input.intent == "reviewDatabaseOnly" {
+        if matches!(input.object_ref, ObjectRef::Constraint { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "databaseOnlyReview".to_string(),
+                operation_label: "Database Only".to_string(),
+                safety_badge: "Database Only".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Constraint exists only in the target database. DbState will not generate destructive SQL to remove database-only constraints."
+                        .to_string(),
+                operation_reasons: vec![
+                    "DROP CONSTRAINT generation is not available in Private Beta.".to_string(),
+                ],
+            };
+        }
         return PlanOperationMetadata {
             operation_kind: "databaseOnlyReview".to_string(),
             operation_label: "Database Only".to_string(),
@@ -527,6 +558,21 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                 table,
                 input.relative_path,
             );
+        }
+        if matches!(input.object_ref, ObjectRef::Constraint { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "manualReviewRequired".to_string(),
+                operation_label: "Manual Review".to_string(),
+                safety_badge: "Manual Review".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Constraint differs, but changed constraints are manual-review only in this version."
+                        .to_string(),
+                operation_reasons: vec![
+                    "DbState does not generate DROP CONSTRAINT, ALTER CONSTRAINT, or replacement constraint SQL."
+                        .to_string(),
+                ],
+            };
         }
         return PlanOperationMetadata {
             operation_kind: "manualReviewRequired".to_string(),

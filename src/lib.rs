@@ -2,10 +2,6 @@ use std::fmt::Write as _;
 use std::path::Path;
 
 const DEFERRED_OBJECT_TYPES: &[&str] = &[
-    "primaryKeys",
-    "foreignKeys",
-    "uniqueConstraints",
-    "checkConstraints",
     "materializedViews",
     "functions",
     "triggers",
@@ -103,10 +99,10 @@ pub use crate::redaction::{redact_message, redact_postgres_url};
 
 pub use crate::postgres::{
     inspect_postgres, inspect_postgres_command, is_user_schema, normalize_desired_state_text,
-    quote_postgres_identifier, render_enum_sql, render_extension_sql, render_index_sql,
-    render_schema_sql, render_sequence_sql, render_table_sql, render_view_sql, ColumnInfo,
-    EnumInfo, ExtensionInfo, IndexInfo, InspectionCounts, InspectionReport, PostgresInventory,
-    SchemaInfo, SequenceInfo, TableInfo, ViewInfo,
+    quote_postgres_identifier, render_constraint_sql, render_enum_sql, render_extension_sql,
+    render_index_sql, render_schema_sql, render_sequence_sql, render_table_sql, render_view_sql,
+    ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, IndexInfo, InspectionCounts,
+    InspectionReport, PostgresInventory, SchemaInfo, SequenceInfo, TableInfo, ViewInfo,
 };
 pub use crate::reference_data::{
     compare_reference_data_table, data_compare_postgres_with_connection,
@@ -602,11 +598,40 @@ fn write_view_array_field(json: &mut String, name: &str, values: &[ViewInfo]) {
     json.push(']');
 }
 
+fn write_constraint_array_field(json: &mut String, name: &str, values: &[ConstraintInfo]) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schemaName", &value.schema_name, true);
+        write_json_string_field(json, "tableName", &value.table_name, false);
+        write_json_string_field(json, "constraintName", &value.constraint_name, false);
+        write_json_string_field(json, "constraintType", &value.constraint_type, false);
+        write_json_array_field(json, "columns", &value.columns);
+        write_json_optional_string_field(
+            json,
+            "referencedSchema",
+            value.referenced_schema.as_deref(),
+        );
+        write_json_optional_string_field(
+            json,
+            "referencedTable",
+            value.referenced_table.as_deref(),
+        );
+        write_json_array_field(json, "referencedColumns", &value.referenced_columns);
+        json.push('}');
+    }
+    json.push(']');
+}
+
 fn write_counts_field(json: &mut String, name: &str, counts: &InspectionCounts) {
     json.push(',');
     write!(
         json,
-        "\"{}\":{{\"schemas\":{},\"tables\":{},\"columns\":{},\"extensions\":{},\"enums\":{},\"sequences\":{},\"indexes\":{},\"views\":{}}}",
+        "\"{}\":{{\"schemas\":{},\"tables\":{},\"columns\":{},\"extensions\":{},\"enums\":{},\"sequences\":{},\"indexes\":{},\"views\":{},\"constraints\":{}}}",
         escape_json(name),
         counts.schemas,
         counts.tables,
@@ -615,7 +640,8 @@ fn write_counts_field(json: &mut String, name: &str, counts: &InspectionCounts) 
         counts.enums,
         counts.sequences,
         counts.indexes,
-        counts.views
+        counts.views,
+        counts.constraints
     )
     .ok();
 }

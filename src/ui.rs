@@ -2146,6 +2146,17 @@ const UI_JS: &str = r#"(function () {
         };
       }
     }
+    if (normalized.indexOf("database/objects/constraints/") >= 0) {
+      const parts = fileBase.split(".");
+      if (parts.length >= 3) {
+        return {
+          objectType: "constraint",
+          schema: parts[0],
+          name: parts.slice(2).join("."),
+          parentName: parts[1]
+        };
+      }
+    }
     return null;
   }
 
@@ -2190,6 +2201,13 @@ const UI_JS: &str = r#"(function () {
       const identity = splitIdentity(text);
       return { objectType: "view", schema: identity.schema, name: identity.name };
     }
+    if (text.indexOf("constraint:") === 0) {
+      const identity = text.slice("constraint:".length);
+      const parts = identity.split(".");
+      if (parts.length >= 3) {
+        return { objectType: "constraint", schema: parts[0], name: parts.slice(2).join("."), parentName: parts[1] };
+      }
+    }
     return null;
   }
 
@@ -2210,7 +2228,7 @@ const UI_JS: &str = r#"(function () {
     if (text === "reference table") {
       return "referenceDataTable";
     }
-    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
+    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "constraint", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
       return text;
     }
     return text || "unknown";
@@ -2391,6 +2409,23 @@ const UI_JS: &str = r#"(function () {
             objectType: "view",
             schema: item.schemaName,
             name: item.viewName,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: item
+          });
+        });
+      }
+      if (Array.isArray(data.constraints)) {
+        data.constraints.forEach(function (item) {
+          rows.push({
+            objectRef: "constraint:" + item.schemaName + "." + item.tableName + "." + item.constraintName,
+            objectType: "constraint",
+            schema: item.schemaName,
+            name: item.constraintName,
+            parentName: item.tableName,
             status: "inspected",
             operation: "",
             warnings: [],
@@ -3085,6 +3120,12 @@ const UI_JS: &str = r#"(function () {
   function objectDdlRequest(row) {
     let objectName = row.name || "";
     if (row.objectType === "index") {
+      const tableName = row.parentName || (row.raw && row.raw.tableName) || "";
+      if (tableName && objectName.indexOf(".") < 0) {
+        objectName = tableName + "." + objectName;
+      }
+    }
+    if (row.objectType === "constraint") {
       const tableName = row.parentName || (row.raw && row.raw.tableName) || "";
       if (tableName && objectName.indexOf(".") < 0) {
         objectName = tableName + "." + objectName;
