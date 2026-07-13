@@ -11,6 +11,7 @@ pub(crate) enum RepositoryObjectType {
     View,
     Constraint,
     Function,
+    Trigger,
 }
 
 #[derive(Debug, Clone)]
@@ -67,13 +68,18 @@ pub(crate) enum ObjectRef {
         function: String,
         signature: String,
     },
+    Trigger {
+        schema: String,
+        relation: String,
+        trigger: String,
+    },
 }
 
 impl ObjectRef {
     pub(crate) fn parse(value: &str) -> Result<Self, String> {
         let Some((object_type, identity)) = value.split_once(':') else {
             return Err(format!(
-                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, or view:<schema>.<name>."
+                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, or trigger:<schema>.<relation>.<trigger>."
             ));
         };
         match object_type {
@@ -169,8 +175,24 @@ impl ObjectRef {
                     signature: parts[2].to_string(),
                 })
             }
+            "trigger" => {
+                let parts: Vec<&str> = identity.split('.').collect();
+                if parts.len() != 3 || parts.iter().any(|part| part.trim().is_empty()) {
+                    return Err(format!(
+                        "Invalid trigger object reference '{value}'. Use trigger:<schema>.<relation>.<trigger>."
+                    ));
+                }
+                safe_file_component(parts[0])?;
+                safe_file_component(parts[1])?;
+                safe_file_component(parts[2])?;
+                Ok(Self::Trigger {
+                    schema: parts[0].to_string(),
+                    relation: parts[1].to_string(),
+                    trigger: parts[2].to_string(),
+                })
+            }
             _ => Err(format!(
-                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, constraint:<schema>.<table>.<name>, or function:<schema>.<function>.<signature>."
+                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, or trigger:<schema>.<relation>.<trigger>."
             )),
         }
     }
@@ -200,6 +222,11 @@ impl ObjectRef {
                 function,
                 signature,
             } => format!("function:{schema}.{function}.{signature}"),
+            Self::Trigger {
+                schema,
+                relation,
+                trigger,
+            } => format!("trigger:{schema}.{relation}.{trigger}"),
         }
     }
 
@@ -214,6 +241,7 @@ impl ObjectRef {
             Self::View { .. } => "view",
             Self::Constraint { .. } => "constraint",
             Self::Function { .. } => "function",
+            Self::Trigger { .. } => "trigger",
         }
     }
 
@@ -224,7 +252,8 @@ impl ObjectRef {
             Self::Enum { schema, .. }
             | Self::Sequence { schema, .. }
             | Self::View { schema, .. }
-            | Self::Function { schema, .. } => Some(Self::Schema(schema.clone())),
+            | Self::Function { schema, .. }
+            | Self::Trigger { schema, .. } => Some(Self::Schema(schema.clone())),
             Self::Index { schema, .. } | Self::Constraint { schema, .. } => {
                 Some(Self::Schema(schema.clone()))
             }
@@ -326,6 +355,18 @@ pub(crate) fn object_ref_from_relative_path(relative_path: &str) -> Result<Objec
             signature,
         });
     }
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/triggers/") {
+        let Some((schema, relation, trigger)) = three_part_name_from_file(file_name) else {
+            return Err(format!(
+                "Invalid trigger desired-state file path: {relative_path}"
+            ));
+        };
+        return Ok(ObjectRef::Trigger {
+            schema,
+            relation,
+            trigger,
+        });
+    }
     for folder in [
         "primary-keys",
         "unique-constraints",
@@ -416,6 +457,19 @@ pub(crate) fn function_file_path(
         safe_file_component(schema)?,
         safe_file_component(function)?,
         function_identity_slug(identity_arguments)?
+    ))
+}
+
+pub(crate) fn trigger_file_path(
+    schema: &str,
+    relation: &str,
+    trigger: &str,
+) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/triggers/{}.{}.{}.sql",
+        safe_file_component(schema)?,
+        safe_file_component(relation)?,
+        safe_file_component(trigger)?
     ))
 }
 
@@ -521,6 +575,11 @@ pub(crate) fn object_key(object: &DesiredStateObject) -> String {
             &object.object_name,
         ),
         RepositoryObjectType::Function => function_key(&object.schema_name, &object.object_name),
+        RepositoryObjectType::Trigger => trigger_key(
+            &object.schema_name,
+            object.parent_name.as_deref().unwrap_or(""),
+            &object.object_name,
+        ),
     }
 }
 
@@ -558,6 +617,10 @@ pub(crate) fn constraint_key(schema: &str, table: &str, constraint: &str) -> Str
 
 pub(crate) fn function_key(schema: &str, object_name: &str) -> String {
     format!("function:{schema}.{object_name}")
+}
+
+pub(crate) fn trigger_key(schema: &str, relation: &str, trigger: &str) -> String {
+    format!("trigger:{schema}.{relation}.{trigger}")
 }
 
 pub(crate) fn schema_name_from_file(file_name: &str) -> Option<String> {

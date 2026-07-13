@@ -21,6 +21,7 @@ pub(crate) fn discover_repository_objects(root: &Path) -> Result<RepositoryImpor
     discover_index_files(root, &mut import)?;
     discover_view_files(root, &mut import)?;
     discover_function_files(root, &mut import)?;
+    discover_trigger_files(root, &mut import)?;
     discover_constraint_files(root, &mut import)?;
     import.skipped.sort();
     import.skipped.dedup();
@@ -178,6 +179,47 @@ fn discover_function_files(root: &Path, import: &mut RepositoryImport) -> Result
                 table_name: None,
                 object_name,
                 parent_name: None,
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn discover_trigger_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    let dir = root.join("database/objects/triggers");
+    for entry in fs::read_dir(&dir)
+        .map_err(|error| format!("Could not read database/objects/triggers: {error}"))?
+    {
+        let entry = entry.map_err(|error| format!("Could not read trigger file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("database/objects/triggers/{file_name}");
+        let Some((schema, relation, trigger)) = three_part_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&schema).is_err()
+            || safe_file_component(&relation).is_err()
+            || safe_file_component(&trigger).is_err()
+        {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        import.objects.insert(
+            trigger_key(&schema, &relation, &trigger),
+            DesiredStateObject {
+                object_type: RepositoryObjectType::Trigger,
+                schema_name: schema,
+                table_name: Some(relation.clone()),
+                object_name: trigger,
+                parent_name: Some(relation),
                 relative_path,
                 content,
             },
@@ -407,6 +449,7 @@ pub(crate) fn render_database_objects_for_selection(
     let mut view_names = Vec::new();
     let mut constraint_names = Vec::new();
     let mut function_names = Vec::new();
+    let mut trigger_names = Vec::new();
     match selection {
         ExportSelection::All => {
             include_extensions = true;
@@ -455,6 +498,13 @@ pub(crate) fn render_database_objects_for_selection(
                     item.schema_name.clone(),
                     item.function_name.clone(),
                     item.identity_arguments.clone(),
+                )
+            }));
+            trigger_names.extend(inventory.triggers.iter().map(|item| {
+                (
+                    item.schema_name.clone(),
+                    item.relation_name.clone(),
+                    item.trigger_name.clone(),
                 )
             }));
         }
@@ -535,6 +585,19 @@ pub(crate) fn render_database_objects_for_selection(
                         )
                     }),
             );
+            trigger_names.extend(
+                inventory
+                    .triggers
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.relation_name.clone(),
+                            item.trigger_name.clone(),
+                        )
+                    }),
+            );
         }
         ExportSelection::Table { schema, table } => {
             if inventory.tables.iter().any(|candidate| {
@@ -570,6 +633,19 @@ pub(crate) fn render_database_objects_for_selection(
                         )
                     }),
             );
+            trigger_names.extend(
+                inventory
+                    .triggers
+                    .iter()
+                    .filter(|item| item.schema_name == *schema && item.relation_name == *table)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.relation_name.clone(),
+                            item.trigger_name.clone(),
+                        )
+                    }),
+            );
         }
     }
 
@@ -589,6 +665,8 @@ pub(crate) fn render_database_objects_for_selection(
     constraint_names.dedup();
     function_names.sort();
     function_names.dedup();
+    trigger_names.sort();
+    trigger_names.dedup();
 
     for schema in schema_names {
         let relative_path = schema_file_path(&schema)?;
@@ -738,6 +816,26 @@ pub(crate) fn render_database_objects_for_selection(
         };
         objects.insert(object_key(&object), object);
     }
+    for (schema, relation, trigger_name) in trigger_names {
+        let Some(trigger) = inventory.triggers.iter().find(|item| {
+            item.schema_name == schema
+                && item.relation_name == relation
+                && item.trigger_name == trigger_name
+        }) else {
+            continue;
+        };
+        let relative_path = trigger_file_path(&schema, &relation, &trigger_name)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Trigger,
+            schema_name: schema.clone(),
+            table_name: Some(relation.clone()),
+            object_name: trigger_name.clone(),
+            parent_name: Some(relation),
+            relative_path,
+            content: render_trigger_sql(trigger),
+        };
+        objects.insert(object_key(&object), object);
+    }
     for (schema, table, constraint_name) in constraint_names {
         let Some(constraint) = inventory.constraints.iter().find(|item| {
             item.schema_name == schema
@@ -782,6 +880,8 @@ pub(crate) fn select_repository_objects(
                         || object.object_type == RepositoryObjectType::Index
                             && object.parent_name.as_deref() == Some(table.as_str())
                         || object.object_type == RepositoryObjectType::Constraint
+                            && object.parent_name.as_deref() == Some(table.as_str())
+                        || object.object_type == RepositoryObjectType::Trigger
                             && object.parent_name.as_deref() == Some(table.as_str()))
             }
         };

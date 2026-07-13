@@ -1,6 +1,6 @@
 use crate::postgres::inspect::{
     ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, IndexInfo, SequenceInfo,
-    ViewInfo,
+    TriggerInfo, ViewInfo,
 };
 use std::fmt::Write as _;
 
@@ -277,6 +277,41 @@ pub fn render_function_sql(function: &FunctionInfo) -> String {
     .ok();
     writeln!(sql).ok();
     let definition = function.definition.trim().trim_end_matches(';');
+    writeln!(sql, "{definition};").ok();
+    sql
+}
+
+pub fn render_trigger_sql(trigger: &TriggerInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: trigger").ok();
+    writeln!(
+        sql,
+        "-- Object name: {}.{}.{}",
+        trigger.schema_name, trigger.relation_name, trigger.trigger_name
+    )
+    .ok();
+    if let (Some(function_schema), Some(function_name)) = (
+        &trigger.trigger_function_schema,
+        &trigger.trigger_function_name,
+    ) {
+        writeln!(
+            sql,
+            "-- Trigger function: {function_schema}.{function_name}"
+        )
+        .ok();
+    }
+    if let Some(timing) = &trigger.timing {
+        writeln!(sql, "-- Timing: {timing}").ok();
+    }
+    if !trigger.events.is_empty() {
+        writeln!(sql, "-- Events: {}", trigger.events.join(", ")).ok();
+    }
+    if let Some(orientation) = &trigger.orientation {
+        writeln!(sql, "-- Orientation: {orientation}").ok();
+    }
+    writeln!(sql).ok();
+    let definition = trigger.definition.trim().trim_end_matches(';');
     writeln!(sql, "{definition};").ok();
     sql
 }

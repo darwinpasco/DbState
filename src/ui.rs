@@ -250,7 +250,7 @@ const UI_HTML: &str = r#"<!doctype html>
           <label><input type="checkbox" disabled> indexes future</label>
           <label><input type="checkbox" disabled> views future</label>
           <label><input type="checkbox" checked disabled> functions</label>
-          <label><input type="checkbox" disabled> triggers future</label>
+          <label><input type="checkbox" checked disabled> triggers</label>
           <label><input type="checkbox" disabled> grants future</label>
         </div>
         <div class="button-row">
@@ -2104,7 +2104,7 @@ const UI_JS: &str = r#"(function () {
     select.options[0].value = "all";
     appendOption(select, "schema", "Schema");
     appendOption(select, "table", "Table");
-    ["extension", "enum", "sequence", "index", "view", "constraint", "function"].forEach(function (type) {
+    ["extension", "enum", "sequence", "index", "view", "constraint", "function", "trigger"].forEach(function (type) {
       if (rows.some(function (row) { return row.objectType === type; })) {
         appendOption(select, type, type.charAt(0).toUpperCase() + type.slice(1));
       }
@@ -2299,6 +2299,17 @@ const UI_JS: &str = r#"(function () {
         };
       }
     }
+    if (normalized.indexOf("database/objects/triggers/") >= 0) {
+      const parts = fileBase.split(".");
+      if (parts.length >= 3) {
+        return {
+          objectType: "trigger",
+          schema: parts[0],
+          name: parts.slice(1).join("."),
+          parentName: parts[1]
+        };
+      }
+    }
     if (normalized.indexOf("database/objects/constraints/") >= 0) {
       const parts = fileBase.split(".");
       if (parts.length >= 3) {
@@ -2368,6 +2379,13 @@ const UI_JS: &str = r#"(function () {
         return { objectType: "function", schema: parts[0], name: parts.slice(1).join(".") };
       }
     }
+    if (text.indexOf("trigger:") === 0) {
+      const identity = text.slice("trigger:".length);
+      const parts = identity.split(".");
+      if (parts.length >= 3) {
+        return { objectType: "trigger", schema: parts[0], name: parts.slice(1).join("."), parentName: parts[1] };
+      }
+    }
     return null;
   }
 
@@ -2388,7 +2406,7 @@ const UI_JS: &str = r#"(function () {
     if (text === "reference table") {
       return "referenceDataTable";
     }
-    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "constraint", "function", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
+    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "constraint", "function", "trigger", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
       return text;
     }
     return text || "unknown";
@@ -2603,6 +2621,23 @@ const UI_JS: &str = r#"(function () {
             objectType: "function",
             schema: item.schemaName,
             name: item.functionName + "." + signature,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: item
+          });
+        });
+      }
+      if (Array.isArray(data.triggers)) {
+        data.triggers.forEach(function (item) {
+          rows.push({
+            objectRef: "trigger:" + item.schemaName + "." + item.relationName + "." + item.triggerName,
+            objectType: "trigger",
+            schema: item.schemaName,
+            name: item.relationName + "." + item.triggerName,
+            parentName: item.relationName,
             status: "inspected",
             operation: "",
             warnings: [],

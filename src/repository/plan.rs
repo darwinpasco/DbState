@@ -345,7 +345,8 @@ pub fn plan_postgres_with_inventory(
                 | ObjectRef::Index { .. }
                 | ObjectRef::View { .. }
                 | ObjectRef::Constraint { .. }
-                | ObjectRef::Function { .. } => String::new(),
+                | ObjectRef::Function { .. }
+                | ObjectRef::Trigger { .. } => String::new(),
             };
             if !required_schema_path.is_empty() && !root.join(&required_schema_path).is_file() {
                 let warning = DependencyWarning {
@@ -522,6 +523,22 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                 ],
             };
         }
+        if matches!(input.object_ref, ObjectRef::Trigger { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "createTriggerReviewSql".to_string(),
+                operation_label: "Create Trigger".to_string(),
+                safety_badge: "Review SQL".to_string(),
+                safety_level: "reviewOnly".to_string(),
+                operation_explanation:
+                    "DbState can generate review-only CREATE TRIGGER SQL for this new repository trigger. DbState does not execute SQL."
+                        .to_string(),
+                operation_reasons: vec![
+                    "Trigger exists in repository desired state and is missing from the target database."
+                        .to_string(),
+                    "DbState does not generate DROP TRIGGER.".to_string(),
+                ],
+            };
+        }
         return PlanOperationMetadata {
             operation_kind: "createReviewSql".to_string(),
             operation_label: "Review SQL".to_string(),
@@ -563,6 +580,20 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                         .to_string(),
                 operation_reasons: vec![
                     "DROP FUNCTION generation is not available in Private Beta.".to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::Trigger { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "databaseOnlyReview".to_string(),
+                operation_label: "Database Only".to_string(),
+                safety_badge: "Database Only".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Trigger exists only in the target database. DbState will not generate destructive SQL to remove database-only triggers."
+                        .to_string(),
+                operation_reasons: vec![
+                    "DROP TRIGGER generation is not available in Private Beta.".to_string(),
                 ],
             };
         }
@@ -616,6 +647,21 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                         .to_string(),
                 operation_reasons: vec![
                     "DbState does not generate DROP FUNCTION or replacement CREATE OR REPLACE FUNCTION SQL for changed functions."
+                        .to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::Trigger { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "manualReviewRequired".to_string(),
+                operation_label: "Manual Review".to_string(),
+                safety_badge: "Manual Review".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Trigger differs, but changed triggers are manual-review only in this version."
+                        .to_string(),
+                operation_reasons: vec![
+                    "DbState does not generate DROP TRIGGER, ALTER TRIGGER, or replacement trigger SQL for changed triggers."
                         .to_string(),
                 ],
             };

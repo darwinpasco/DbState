@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-const DEFERRED_OBJECT_TYPES: &[&str] = &["materializedViews", "triggers", "grants", "rlsPolicies"];
+const DEFERRED_OBJECT_TYPES: &[&str] = &["materializedViews", "grants", "rlsPolicies"];
 
 const PROFILE_FILE_NAME: &str = "connection-profiles.json";
 const PROFILE_FILE_VERSION: i32 = 1;
@@ -95,9 +95,9 @@ pub use crate::postgres::{
     inspect_postgres, inspect_postgres_command, is_user_schema, normalize_desired_state_text,
     quote_postgres_identifier, render_constraint_sql, render_enum_sql, render_extension_sql,
     render_function_sql, render_index_sql, render_schema_sql, render_sequence_sql,
-    render_table_sql, render_view_sql, ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo,
-    FunctionInfo, IndexInfo, InspectionCounts, InspectionReport, PostgresInventory, SchemaInfo,
-    SequenceInfo, TableInfo, ViewInfo,
+    render_table_sql, render_trigger_sql, render_view_sql, ColumnInfo, ConstraintInfo, EnumInfo,
+    ExtensionInfo, FunctionInfo, IndexInfo, InspectionCounts, InspectionReport, PostgresInventory,
+    SchemaInfo, SequenceInfo, TableInfo, TriggerInfo, ViewInfo,
 };
 pub use crate::reference_data::{
     compare_reference_data_table, data_compare_postgres_with_connection,
@@ -643,11 +643,40 @@ fn write_function_array_field(json: &mut String, name: &str, values: &[FunctionI
     json.push(']');
 }
 
+fn write_trigger_array_field(json: &mut String, name: &str, values: &[TriggerInfo]) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schemaName", &value.schema_name, true);
+        write_json_string_field(json, "relationName", &value.relation_name, false);
+        write_json_string_field(json, "triggerName", &value.trigger_name, false);
+        write_json_optional_string_field(
+            json,
+            "triggerFunctionSchema",
+            value.trigger_function_schema.as_deref(),
+        );
+        write_json_optional_string_field(
+            json,
+            "triggerFunctionName",
+            value.trigger_function_name.as_deref(),
+        );
+        write_json_optional_string_field(json, "timing", value.timing.as_deref());
+        write_json_array_field(json, "events", &value.events);
+        write_json_optional_string_field(json, "orientation", value.orientation.as_deref());
+        json.push('}');
+    }
+    json.push(']');
+}
+
 fn write_counts_field(json: &mut String, name: &str, counts: &InspectionCounts) {
     json.push(',');
     write!(
         json,
-        "\"{}\":{{\"schemas\":{},\"tables\":{},\"columns\":{},\"extensions\":{},\"enums\":{},\"sequences\":{},\"indexes\":{},\"views\":{},\"constraints\":{},\"functions\":{}}}",
+        "\"{}\":{{\"schemas\":{},\"tables\":{},\"columns\":{},\"extensions\":{},\"enums\":{},\"sequences\":{},\"indexes\":{},\"views\":{},\"constraints\":{},\"functions\":{},\"triggers\":{}}}",
         escape_json(name),
         counts.schemas,
         counts.tables,
@@ -658,7 +687,8 @@ fn write_counts_field(json: &mut String, name: &str, counts: &InspectionCounts) 
         counts.indexes,
         counts.views,
         counts.constraints,
-        counts.functions
+        counts.functions,
+        counts.triggers
     )
     .ok();
 }

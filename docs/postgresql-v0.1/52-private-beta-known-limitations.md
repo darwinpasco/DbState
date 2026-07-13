@@ -59,10 +59,12 @@ Supported beta object types:
 - foreign key constraints
 - check constraints
 - regular PostgreSQL functions
+- regular table and view triggers
 
 Deferred object types and details:
 
-- triggers
+- event triggers
+- internal or constraint-generated triggers
 - grants
 - policies
 - roles

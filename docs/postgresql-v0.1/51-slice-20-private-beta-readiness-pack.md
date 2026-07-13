@@ -108,7 +108,8 @@ Release artifacts remain review-only.
 - MySQL, SQL Server, SQLite, Db2, or Access support
 - full PostgreSQL object coverage
 - procedures, aggregates, and window functions
-- triggers
+- event triggers
+- internal or constraint-generated triggers
 - grants
 - policies
 - roles
