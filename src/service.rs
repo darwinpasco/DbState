@@ -323,6 +323,9 @@ pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> Ser
         ("POST", "/api/v1/postgres/release/write") => {
             service_release_endpoint("release write", body, cwd, false)
         }
+        ("POST", "/api/v1/releases/artifact-preview") => {
+            service_release_artifact_preview_endpoint(body, cwd)
+        }
         _ if method == "PUT" && path.starts_with("/api/v1/connections/profiles/") => {
             service_connection_profile_update(path, body)
         }
@@ -374,6 +377,7 @@ pub fn service_route_definitions() -> Vec<(&'static str, &'static str)> {
         ("POST", "/api/v1/postgres/repository-sync/write"),
         ("POST", "/api/v1/postgres/release/preview"),
         ("POST", "/api/v1/postgres/release/write"),
+        ("POST", "/api/v1/releases/artifact-preview"),
     ]
 }
 
@@ -945,6 +949,238 @@ fn service_release_endpoint(
     }
     args.extend(["--format".to_string(), "json".to_string()]);
     service_run_cli(command, &workspace, args)
+}
+
+const MAX_RELEASE_ARTIFACT_PREVIEW_BYTES: usize = 1024 * 1024;
+
+fn service_release_artifact_preview_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
+    let command = "release artifact preview";
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, command, &error);
+    }
+    let repository_path = match request_string(&request, "repositoryPath") {
+        Some(value) if !value.trim().is_empty() => value,
+        _ => {
+            return service_error_response(
+                400,
+                command,
+                "repositoryPath is required for release artifact preview.",
+            )
+        }
+    };
+    let workspace = match resolve_service_workspace(Some(repository_path.as_str()), cwd) {
+        Ok(workspace) => workspace,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    let project = status_report(&workspace, CommandKind::RepoStatus);
+    if !project.is_git_repository {
+        return service_error_response(
+            400,
+            command,
+            "Selected repositoryPath is not inside a Git repository.",
+        );
+    }
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+        return service_error_response(
+            409,
+            command,
+            "Selected repositoryPath does not contain complete DbState project structure.",
+        );
+    }
+    let artifact_path = match request_string(&request, "artifactPath") {
+        Some(value) if !value.trim().is_empty() => value,
+        _ => {
+            return service_error_response(
+                400,
+                command,
+                "artifactPath is required for release artifact preview.",
+            )
+        }
+    };
+    let artifact_path = match normalize_release_artifact_preview_path(&artifact_path) {
+        Ok(value) => value,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    let artifact_type = match release_artifact_preview_type(&artifact_path) {
+        Some(value) => value,
+        None => {
+            return service_error_response(
+                400,
+                command,
+                "Release artifact preview supports only .sql, .summary.md, .risk.json, and .manifest.json files.",
+            )
+        }
+    };
+
+    let releases_dir = workspace.join("database").join("releases");
+    let artifact_file = workspace.join(Path::new(&artifact_path));
+    let releases_canonical = match fs::canonicalize(&releases_dir) {
+        Ok(value) => value,
+        Err(_) => {
+            return service_error_response(
+                400,
+                command,
+                "database/releases does not exist in the selected repository.",
+            )
+        }
+    };
+    let metadata = match fs::symlink_metadata(&artifact_file) {
+        Ok(value) => value,
+        Err(_) => {
+            return service_error_response(
+                404,
+                command,
+                "Release artifact was not found under database/releases.",
+            )
+        }
+    };
+    if metadata.file_type().is_symlink() {
+        return service_error_response(
+            400,
+            command,
+            "Release artifact preview does not follow symlinks.",
+        );
+    }
+    if metadata.is_dir() {
+        return service_error_response(
+            400,
+            command,
+            "Release artifact preview requires a file, not a directory.",
+        );
+    }
+    if !metadata.is_file() {
+        return service_error_response(400, command, "Release artifact is not a regular file.");
+    }
+    let artifact_canonical = match fs::canonicalize(&artifact_file) {
+        Ok(value) => value,
+        Err(_) => {
+            return service_error_response(
+                404,
+                command,
+                "Release artifact was not found under database/releases.",
+            )
+        }
+    };
+    if !artifact_canonical.starts_with(&releases_canonical) {
+        return service_error_response(
+            400,
+            command,
+            "Release artifact path must stay under database/releases.",
+        );
+    }
+
+    let mut file = match fs::File::open(&artifact_canonical) {
+        Ok(value) => value,
+        Err(_) => {
+            return service_error_response(
+                400,
+                command,
+                "Release artifact could not be opened for read-only preview.",
+            )
+        }
+    };
+    let mut bytes = Vec::new();
+    let read_limit = MAX_RELEASE_ARTIFACT_PREVIEW_BYTES + 1;
+    if let Err(error) = Read::by_ref(&mut file)
+        .take(read_limit as u64)
+        .read_to_end(&mut bytes)
+    {
+        return service_error_response(
+            400,
+            command,
+            &format!("Release artifact could not be read for preview: {error}"),
+        );
+    }
+    let truncated = bytes.len() > MAX_RELEASE_ARTIFACT_PREVIEW_BYTES;
+    if truncated {
+        bytes.truncate(MAX_RELEASE_ARTIFACT_PREVIEW_BYTES);
+    }
+    let content = String::from_utf8_lossy(&bytes).to_string();
+    let warnings = if truncated {
+        vec!["Release artifact preview was truncated at 1 MiB.".to_string()]
+    } else {
+        Vec::new()
+    };
+    service_release_artifact_preview_json(
+        &artifact_path,
+        artifact_type,
+        &content,
+        truncated,
+        &warnings,
+    )
+}
+
+fn normalize_release_artifact_preview_path(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err("artifactPath is required for release artifact preview.".to_string());
+    }
+    if trimmed.contains('\0') {
+        return Err("artifactPath contains an invalid null byte.".to_string());
+    }
+    if trimmed.contains(':') || trimmed.starts_with('/') || trimmed.starts_with('\\') {
+        return Err("artifactPath must be a relative path under database/releases.".to_string());
+    }
+    if trimmed.to_ascii_lowercase().contains("%2e") {
+        return Err("artifactPath must not contain encoded traversal segments.".to_string());
+    }
+    let normalized = trimmed.replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').collect();
+    if parts
+        .iter()
+        .any(|part| part.is_empty() || *part == "." || *part == "..")
+    {
+        return Err("artifactPath must not contain traversal segments.".to_string());
+    }
+    if parts.len() < 3 || parts[0] != "database" || parts[1] != "releases" {
+        return Err("artifactPath must stay under database/releases.".to_string());
+    }
+    Ok(parts.join("/"))
+}
+
+fn release_artifact_preview_type(path: &str) -> Option<&'static str> {
+    if path.ends_with(".summary.md") {
+        Some("summary")
+    } else if path.ends_with(".risk.json") {
+        Some("risk")
+    } else if path.ends_with(".manifest.json") {
+        Some("manifest")
+    } else if path.ends_with(".sql") {
+        Some("sql")
+    } else {
+        None
+    }
+}
+
+fn service_release_artifact_preview_json(
+    artifact_path: &str,
+    artifact_type: &str,
+    content: &str,
+    truncated: bool,
+    warnings: &[String],
+) -> ServiceHttpResponse {
+    let file_name = artifact_path.rsplit('/').next().unwrap_or(artifact_path);
+    let mut body = String::new();
+    body.push('{');
+    write_json_string_field(&mut body, "command", "release artifact preview", true);
+    write_json_bool_field(&mut body, "success", true);
+    write_json_string_field(&mut body, "artifactPath", artifact_path, false);
+    write_json_string_field(&mut body, "fileName", file_name, false);
+    write_json_string_field(&mut body, "artifactType", artifact_type, false);
+    write_json_string_field(&mut body, "content", content, false);
+    write_json_bool_field(&mut body, "truncated", truncated);
+    write_json_array_field(&mut body, "warnings", warnings);
+    write_json_array_field(&mut body, "errors", &[]);
+    body.push('}');
+    ServiceHttpResponse {
+        status_code: 200,
+        content_type: "application/json; charset=utf-8".to_string(),
+        body,
+    }
 }
 
 fn service_repository_sync_endpoint(

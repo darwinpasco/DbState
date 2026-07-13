@@ -448,6 +448,11 @@ const UI_HTML: &str = r#"<!doctype html>
             <h3>Dry-run / Generated Artifacts</h3>
             <div id="release-artifact-result" data-testid="generated-artifacts">No release artifact dry-run has been run yet.</div>
           </div>
+          <div class="release-card" data-testid="release-artifact-preview">
+            <h3>Artifact Preview</h3>
+            <div id="release-artifact-preview-meta" class="note">Preview is available after Generate Release Artifact writes review files.</div>
+            <pre id="release-artifact-preview-content" data-testid="release-artifact-preview-content">No artifact selected.</pre>
+          </div>
           <div class="subsection">
             <h3>Reviewer Checklist</h3>
             <ol>
@@ -1228,6 +1233,7 @@ const UI_JS: &str = r#"(function () {
     repositorySyncWrite: "/api/v1/postgres/repository-sync/write",
     releasePreview: "/api/v1/postgres/release/preview",
     releaseWrite: "/api/v1/postgres/release/write",
+    releaseArtifactPreview: "/api/v1/releases/artifact-preview",
     workspaceRoots: "/api/v1/workspace/roots",
     workspaceListDirectories: "/api/v1/workspace/list-directories",
     workspaceValidate: "/api/v1/workspace/validate",
@@ -3294,9 +3300,9 @@ const UI_JS: &str = r#"(function () {
     target.innerHTML = "";
     const summary = document.createElement("dl");
     summary.className = "summary-list compact";
-    const artifacts = Array.isArray(data.createdArtifacts) && data.createdArtifacts.length
-      ? data.createdArtifacts
-      : Array.isArray(data.plannedArtifacts) ? data.plannedArtifacts : [];
+    const createdArtifacts = Array.isArray(data.createdArtifacts) ? data.createdArtifacts : [];
+    const plannedArtifacts = Array.isArray(data.plannedArtifacts) ? data.plannedArtifacts : [];
+    const artifacts = createdArtifacts.length ? createdArtifacts : plannedArtifacts;
     updateSummaryElement(summary, {
       success: data.success,
       releaseName: data.releaseName || releaseName(),
@@ -3332,11 +3338,57 @@ const UI_JS: &str = r#"(function () {
       const list = document.createElement("ul");
       artifacts.forEach(function (artifact) {
         const item = document.createElement("li");
-        item.textContent = textOrEmpty(artifact);
+        const path = textOrEmpty(artifact);
+        const pathSpan = document.createElement("span");
+        pathSpan.textContent = path;
+        item.appendChild(pathSpan);
+        if (createdArtifacts.length) {
+          item.appendChild(document.createTextNode(" "));
+          const preview = document.createElement("button");
+          preview.type = "button";
+          preview.textContent = "Preview";
+          preview.setAttribute("data-action", "release-artifact-preview");
+          preview.setAttribute("data-artifact-path", path);
+          item.appendChild(preview);
+        }
         list.appendChild(item);
       });
       target.appendChild(list);
+      if (!createdArtifacts.length) {
+        const note = document.createElement("p");
+        note.className = "note";
+        note.textContent = "Preview is available after Generate Release Artifact writes review files.";
+        target.appendChild(note);
+      }
     }
+  }
+
+  async function previewReleaseArtifact(artifactPath) {
+    const meta = byId("release-artifact-preview-meta");
+    const content = byId("release-artifact-preview-content");
+    if (!artifactPath) {
+      throw new Error("Artifact path is required.");
+    }
+    meta.textContent = "Loading " + artifactPath + "...";
+    content.textContent = "";
+    const data = await requestJson(approvedEndpoints.releaseArtifactPreview, {
+      repositoryPath: workspacePath(),
+      artifactPath: artifactPath
+    });
+    state.lastResponse = data;
+    state.lastOperation = "Release artifact preview";
+    responseSummary.textContent = "Release artifact preview: " + summarize(data);
+    jsonViewer.textContent = redactedJson(data);
+    updateStatus("Release artifact preview", data);
+    renderErrorSummary(data);
+    renderWarnings(data);
+    meta.textContent = [
+      "File: " + textOrEmpty(data.fileName),
+      "Type: " + textOrEmpty(data.artifactType),
+      "Path: " + textOrEmpty(data.artifactPath),
+      data.truncated ? "Preview truncated at 1 MiB." : ""
+    ].filter(Boolean).join(" | ");
+    content.textContent = textOrEmpty(data.content);
   }
 
   function appendReleaseMessageList(target, title, values, kind) {
@@ -3812,6 +3864,21 @@ const UI_JS: &str = r#"(function () {
       run("Generate Release Artifact", approvedEndpoints.releaseWrite, releaseBody(true), { step: "release-plan", releaseResult: true });
     } catch (error) {
       responseSummary.textContent = "Generate Release Artifact: " + error.message;
+    }
+  });
+
+  byId("release-artifact-result").addEventListener("click", function (event) {
+    const button = event.target.closest("[data-action='release-artifact-preview']");
+    if (!button) {
+      return;
+    }
+    try {
+      const artifactPath = button.getAttribute("data-artifact-path") || "";
+      previewReleaseArtifact(artifactPath).catch(function (error) {
+        responseSummary.textContent = "Release artifact preview: " + error.message;
+      });
+    } catch (error) {
+      responseSummary.textContent = "Release artifact preview: " + error.message;
     }
   });
 
