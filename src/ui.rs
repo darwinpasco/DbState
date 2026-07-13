@@ -434,13 +434,19 @@ const UI_HTML: &str = r#"<!doctype html>
           <div class="release-card">
             <h3>Release Candidates</h3>
             <p class="note">Release operation badges can include Review SQL, Additive ADD COLUMN, Manual Review, Blocked, Database Only, and Deferred. Generated SQL remains review-only; DbState does not execute SQL.</p>
+            <div class="release-selection-controls" data-testid="release-candidate-selection-controls">
+              <span id="release-selected-count" data-testid="release-selected-count">0 selected</span>
+              <button type="button" data-action="release-select-all-eligible" data-testid="release-select-all-eligible">Select all eligible</button>
+              <button type="button" data-action="release-clear-selection" data-testid="release-clear-selection">Clear selection</button>
+              <span class="note">Selected candidates only are included in release artifact dry-run or generation.</span>
+            </div>
             <div class="table-wrap">
               <table class="results-grid" aria-label="Release candidates" data-testid="release-candidates">
                 <thead>
-                  <tr><th>Object type</th><th>Schema</th><th>Object name</th><th>Status</th><th>Planned operation</th><th>Operation / safety</th><th>Explanation</th><th>Reasons</th><th>Warnings</th></tr>
+                  <tr><th>Select</th><th>Object type</th><th>Schema</th><th>Object name</th><th>Status</th><th>Planned operation</th><th>Operation / safety</th><th>Explanation</th><th>Reasons</th><th>Warnings</th></tr>
                 </thead>
                 <tbody id="release-candidates-body">
-                  <tr><td colspan="6">No selected result rows yet.</td></tr>
+                  <tr><td colspan="10">No selected result rows yet.</td></tr>
                 </tbody>
               </table>
             </div>
@@ -1028,6 +1034,14 @@ button:hover {
   margin-top: 0;
 }
 
+.release-selection-controls {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 8px 0 10px;
+}
+
 .release-operation-badge {
   display: inline-block;
   padding: 2px 6px;
@@ -1292,6 +1306,8 @@ const UI_JS: &str = r#"(function () {
       gitRoot: ""
     },
     included: new Set(),
+    releaseSelectedRefs: new Set(),
+    releaseCandidateSignature: "",
     selectedIndex: -1,
     selectedObjectDdl: null,
     objectDiffMode: "fullContext",
@@ -3314,15 +3330,25 @@ const UI_JS: &str = r#"(function () {
 
   function updateReleaseWriteButton() {
     const button = document.querySelector("[data-action='release-write']");
+    const preview = document.querySelector("[data-action='release-preview']");
+    const selectedCount = selectedReleaseObjectRefs().length;
+    if (preview) {
+      preview.disabled = currentWorkflowMode() !== "compare" || !releaseName() || selectedCount === 0;
+    }
     if (button) {
-      button.disabled = currentWorkflowMode() !== "compare" || !releaseName() || !releaseConfirmed();
+      button.disabled = currentWorkflowMode() !== "compare" || !releaseName() || !releaseConfirmed() || selectedCount === 0;
     }
   }
 
   function releaseBody(write) {
     const body = attachWorkspacePath(attachConnection(buildScope()));
     body.releaseName = releaseName();
-    body.include = [];
+    const selected = selectedReleaseObjectRefs();
+    if (!selected.length) {
+      throw new Error("Select at least one release candidate.");
+    }
+    body.selectedObjectRefs = selected;
+    body.include = selected.slice();
     body.exclude = [];
     if (write) {
       body.confirmReleaseArtifacts = true;
@@ -3473,15 +3499,19 @@ const UI_JS: &str = r#"(function () {
       values.forEach(function (item) {
         const identity = splitIdentity(item.objectRef);
         rows.push({
+          objectRef: item.objectRef || "",
           objectType: item.objectType || "",
           schema: identity.schema,
           name: identity.name,
           status: item.compareClassification || fallbackStatus,
           operation: item.planIntent || "",
+          operationKind: item.operationKind || "",
+          operationLabel: item.operationLabel || "",
           safetyBadge: item.safetyBadge || item.operationLabel || "",
           safetyLevel: item.safetyLevel || "",
           operationExplanation: item.operationExplanation || "",
           operationReasons: Array.isArray(item.operationReasons) ? item.operationReasons : [],
+          blocked: item.blocked || fallbackStatus === "blocked",
           warnings: item.warnings || []
         });
       });
@@ -3489,6 +3519,68 @@ const UI_JS: &str = r#"(function () {
     append(data.planItems, "planned");
     append(data.blockedItems, "blocked");
     return rows;
+  }
+
+  function releaseCandidateObjectRef(row, index) {
+    return textOrEmpty(row.objectRef);
+  }
+
+  function releaseCandidateEligible(row) {
+    return !!row.objectRef && !row.blocked && row.operation !== "blocked" && row.safetyLevel !== "blocked";
+  }
+
+  function releaseCandidateRows() {
+    const metadata = {};
+    releaseCandidateRowsFromResponse(state.releaseResponse).forEach(function (row) {
+      if (row.objectRef) {
+        metadata[row.objectRef] = row;
+      }
+    });
+    const baseRows = state.rows.filter(function (row, index) {
+      return state.included.has(rowRef(row, index));
+    }).map(function (row, index) {
+      const objectRef = releaseCandidateObjectRef(row, index);
+      const enriched = Object.assign({}, row, { objectRef: objectRef }, metadata[objectRef] || {});
+      if (metadata[objectRef]) {
+        enriched.schema = metadata[objectRef].schema || row.schema;
+        enriched.name = metadata[objectRef].name || row.name;
+        enriched.objectType = metadata[objectRef].objectType || row.objectType;
+      }
+      return enriched;
+    });
+    if (baseRows.length) {
+      return baseRows;
+    }
+    return releaseCandidateRowsFromResponse(state.releaseResponse);
+  }
+
+  function syncReleaseSelectionWithCandidates(rows) {
+    const signature = rows.map(function (row, index) {
+      return releaseCandidateObjectRef(row, index);
+    }).sort().join("|");
+    if (signature !== state.releaseCandidateSignature) {
+      state.releaseCandidateSignature = signature;
+      state.releaseSelectedRefs = new Set();
+      rows.forEach(function (row, index) {
+        const ref = releaseCandidateObjectRef(row, index);
+        if (ref && releaseCandidateEligible(row)) {
+          state.releaseSelectedRefs.add(ref);
+        }
+      });
+    }
+  }
+
+  function selectedReleaseObjectRefs() {
+    return Array.from(state.releaseSelectedRefs).sort();
+  }
+
+  function updateReleaseSelectionSummary(rows) {
+    const selected = selectedReleaseObjectRefs().length;
+    const eligible = rows.filter(releaseCandidateEligible).length;
+    const target = byId("release-selected-count");
+    if (target) {
+      target.textContent = selected + " selected of " + eligible + " eligible";
+    }
   }
 
   function renderReleasePlan() {
@@ -3505,10 +3597,9 @@ const UI_JS: &str = r#"(function () {
     }
     content.hidden = false;
     notApplicable.hidden = true;
-    const responseCandidateRows = releaseCandidateRowsFromResponse(state.releaseResponse);
-    const includedRows = responseCandidateRows.length ? responseCandidateRows : state.rows.filter(function (row, index) {
-      return state.included.has(rowRef(row, index));
-    });
+    const includedRows = releaseCandidateRows();
+    syncReleaseSelectionWithCandidates(includedRows);
+    updateReleaseSelectionSummary(includedRows);
     updateSummary("release-context", {
       workflowMode: "Repository to Database Compare",
       source: "Repository desired state",
@@ -3543,13 +3634,25 @@ const UI_JS: &str = r#"(function () {
     if (!includedRows.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 9;
+      td.colSpan = 10;
       td.textContent = "No selected result rows yet. Run Repository to Database Compare or Plan, then check rows in Results.";
       tr.appendChild(td);
       body.appendChild(tr);
     } else {
-      includedRows.slice(0, 200).forEach(function (row) {
+      includedRows.slice(0, 200).forEach(function (row, index) {
         const tr = document.createElement("tr");
+        const objectRef = releaseCandidateObjectRef(row, index);
+        const eligible = releaseCandidateEligible(row);
+        const selectCell = document.createElement("td");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.setAttribute("data-action", "release-candidate-select");
+        checkbox.setAttribute("data-object-ref", objectRef);
+        checkbox.setAttribute("data-testid", "release-candidate-checkbox");
+        checkbox.checked = eligible && state.releaseSelectedRefs.has(objectRef);
+        checkbox.disabled = !eligible;
+        selectCell.appendChild(checkbox);
+        tr.appendChild(selectCell);
         const values = [
           row.objectType,
           row.schema,
@@ -3584,7 +3687,7 @@ const UI_JS: &str = r#"(function () {
       if (includedRows.length > 200) {
         const tr = document.createElement("tr");
         const td = document.createElement("td");
-        td.colSpan = 9;
+        td.colSpan = 10;
         td.textContent = "Additional in-sync rows summarized only: " + (includedRows.length - 200);
         tr.appendChild(td);
         body.appendChild(tr);
@@ -3953,6 +4056,41 @@ const UI_JS: &str = r#"(function () {
     } catch (error) {
       responseSummary.textContent = "Generate Release Artifact: " + error.message;
     }
+  });
+
+  byId("release-candidates-body").addEventListener("change", function (event) {
+    const checkbox = event.target.closest("[data-action='release-candidate-select']");
+    if (!checkbox) {
+      return;
+    }
+    const objectRef = checkbox.getAttribute("data-object-ref") || "";
+    if (!objectRef) {
+      return;
+    }
+    if (checkbox.checked) {
+      state.releaseSelectedRefs.add(objectRef);
+    } else {
+      state.releaseSelectedRefs.delete(objectRef);
+    }
+    updateReleaseSelectionSummary(releaseCandidateRows());
+    updateReleaseWriteButton();
+  });
+
+  document.querySelector("[data-action='release-select-all-eligible']").addEventListener("click", function () {
+    const rows = releaseCandidateRows();
+    rows.forEach(function (row, index) {
+      const objectRef = releaseCandidateObjectRef(row, index);
+      if (releaseCandidateEligible(row)) {
+        state.releaseSelectedRefs.add(objectRef);
+      }
+    });
+    renderReleasePlan();
+  });
+
+  document.querySelector("[data-action='release-clear-selection']").addEventListener("click", function () {
+    state.releaseSelectedRefs = new Set();
+    renderReleasePlan();
+    responseSummary.textContent = "Select at least one release candidate.";
   });
 
   byId("release-artifact-result").addEventListener("click", function (event) {

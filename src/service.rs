@@ -914,6 +914,11 @@ fn service_release_endpoint(
             )
         }
     };
+    let selected_object_refs = request_string_array(&request, "selectedObjectRefs");
+    let explicit_selected_object_refs = mapping_get(&request, "selectedObjectRefs").is_some();
+    if explicit_selected_object_refs && selected_object_refs.is_empty() {
+        return service_error_response(400, command, "Select at least one release candidate.");
+    }
 
     let mut args = vec!["release".to_string(), "postgres".to_string()];
     match resolve_service_postgres_connection(&request) {
@@ -936,9 +941,14 @@ fn service_release_endpoint(
     }
     args.push("--name".to_string());
     args.push(release_name);
-    for include in request_string_array(&request, "include") {
+    let includes = if explicit_selected_object_refs {
+        selected_object_refs
+    } else {
+        request_string_array(&request, "include")
+    };
+    for selected in includes {
         args.push("--include".to_string());
-        args.push(include);
+        args.push(selected);
     }
     for exclude in request_string_array(&request, "exclude") {
         args.push("--exclude".to_string());
