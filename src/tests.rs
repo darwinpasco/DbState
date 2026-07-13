@@ -1934,10 +1934,21 @@ fn release_blocks_when_selected_plan_items_are_blocked() {
 }
 
 #[test]
-fn changed_table_release_uses_review_only_comment_not_alter() {
-    let dir = create_temp_dir("release-changed-table");
+fn additive_nullable_column_release_generates_review_only_add_column_sql() {
+    let dir = create_temp_dir("release-add-column-nullable");
     init_git_repo(&dir);
     create_complete_structure(&dir);
+    let mut repository_columns = sample_inventory().columns;
+    repository_columns.push(ColumnInfo {
+        schema_name: "dbstate_slice2".to_string(),
+        table_name: "sample_accounts".to_string(),
+        column_name: "notes".to_string(),
+        ordinal_position: 5,
+        data_type: "text".to_string(),
+        is_nullable: true,
+        has_default: false,
+        default_expression: None,
+    });
     fs::write(
         dir.join("database/objects/schemas/dbstate_slice2.sql"),
         render_schema_sql("dbstate_slice2"),
@@ -1945,10 +1956,10 @@ fn changed_table_release_uses_review_only_comment_not_alter() {
     .expect("write schema");
     fs::write(
         dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
-        "-- local drift\n",
+        render_table_sql("dbstate_slice2", "sample_accounts", &repository_columns),
     )
-    .expect("write changed table");
-    commit_all(&dir, "changed table");
+    .expect("write additive table");
+    commit_all(&dir, "additive table");
 
     let report = release_postgres_with_inventory(
         &dir,
@@ -1958,14 +1969,124 @@ fn changed_table_release_uses_review_only_comment_not_alter() {
             table: "sample_accounts".to_string(),
         },
         &PlanSelection::include_all(),
-        "slice7",
+        "slice24_nullable",
         false,
     );
 
     assert!(report.success, "{:?}", report.errors);
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice7.sql")).expect("read sql");
-    assert!(sql.contains("REVIEW REQUIRED: object differs"));
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice24_nullable.sql"))
+        .expect("read sql");
+    assert!(sql.contains("-- Review-only additive column suggestion."));
+    assert!(sql.contains("-- DbState does not execute this SQL."));
+    assert!(sql.contains("-- Review before applying manually outside DbState."));
+    assert!(sql.contains(
+        "ALTER TABLE \"dbstate_slice2\".\"sample_accounts\"\n    ADD COLUMN \"notes\" text;"
+    ));
+    for forbidden in [
+        "DROP TABLE",
+        "DROP SCHEMA",
+        "DROP COLUMN",
+        "ALTER TABLE DROP",
+        "TRUNCATE",
+        "DELETE FROM",
+        "UPDATE ",
+        "INSERT INTO",
+        "MERGE",
+    ] {
+        assert!(!sql.contains(forbidden), "forbidden SQL found: {forbidden}");
+    }
+}
+
+#[test]
+fn not_null_column_without_default_release_stays_manual_review_only() {
+    let dir = create_temp_dir("release-add-column-not-null-no-default");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let mut repository_columns = sample_inventory().columns;
+    repository_columns.push(ColumnInfo {
+        schema_name: "dbstate_slice2".to_string(),
+        table_name: "sample_accounts".to_string(),
+        column_name: "required_code".to_string(),
+        ordinal_position: 5,
+        data_type: "text".to_string(),
+        is_nullable: false,
+        has_default: false,
+        default_expression: None,
+    });
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
+        render_table_sql("dbstate_slice2", "sample_accounts", &repository_columns),
+    )
+    .expect("write unsafe additive table");
+    commit_all(&dir, "unsafe additive table");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::Table {
+            schema: "dbstate_slice2".to_string(),
+            table: "sample_accounts".to_string(),
+        },
+        &PlanSelection::include_all(),
+        "slice24_required",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice24_required.sql"))
+        .expect("read sql");
+    assert!(sql.contains("NOT NULL with no default"));
+    assert!(sql.contains("manual"));
+    assert!(!sql.contains("ADD COLUMN \"required_code\""));
+}
+
+#[test]
+fn changed_existing_column_release_stays_manual_review_only() {
+    let dir = create_temp_dir("release-changed-existing-column");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let mut repository_columns = sample_inventory().columns;
+    let display_name = repository_columns
+        .iter_mut()
+        .find(|column| column.column_name == "display_name")
+        .expect("display_name column");
+    display_name.data_type = "integer".to_string();
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql"),
+        render_table_sql("dbstate_slice2", "sample_accounts", &repository_columns),
+    )
+    .expect("write changed table");
+    commit_all(&dir, "changed existing column");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::Table {
+            schema: "dbstate_slice2".to_string(),
+            table: "sample_accounts".to_string(),
+        },
+        &PlanSelection::include_all(),
+        "slice24_changed",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice24_changed.sql"))
+        .expect("read sql");
+    assert!(sql.contains("difference is not clearly additive"));
+    assert!(sql.contains("existing column \"display_name\" differs"));
     assert!(!sql.contains("\nALTER TABLE "));
+    assert!(!sql.contains("ALTER COLUMN"));
 }
 
 #[test]
