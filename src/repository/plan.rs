@@ -8,6 +8,7 @@ use crate::repository::sync::ExportSelection;
 use crate::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
+use std::fs;
 use std::path::Path;
 
 #[derive(Debug, Clone)]
@@ -42,9 +43,56 @@ pub struct PlanItem {
     pub relative_path: String,
     pub compare_classification: String,
     pub plan_intent: String,
+    pub operation_kind: String,
+    pub operation_label: String,
+    pub safety_badge: String,
+    pub safety_level: String,
+    pub operation_explanation: String,
+    pub operation_reasons: Vec<String>,
     pub selected: bool,
     pub blocked: bool,
     pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct PlanOperationMetadata {
+    pub(crate) operation_kind: String,
+    pub(crate) operation_label: String,
+    pub(crate) safety_badge: String,
+    pub(crate) safety_level: String,
+    pub(crate) operation_explanation: String,
+    pub(crate) operation_reasons: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PlanColumn {
+    pub(crate) name: String,
+    pub(crate) data_type: String,
+    pub(crate) is_nullable: bool,
+    pub(crate) has_default: bool,
+    pub(crate) default_expression: Option<String>,
+}
+
+impl From<&ColumnInfo> for PlanColumn {
+    fn from(column: &ColumnInfo) -> Self {
+        Self {
+            name: column.column_name.clone(),
+            data_type: column.data_type.clone(),
+            is_nullable: column.is_nullable,
+            has_default: column.has_default,
+            default_expression: column.default_expression.clone(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum TableDifferenceAnalysis {
+    Additive {
+        safe_adds: Vec<PlanColumn>,
+        unsafe_adds: Vec<PlanColumn>,
+    },
+    NotClearlyAdditive(Vec<String>),
+    NoSafeSuggestion,
 }
 
 #[derive(Debug, Clone)]
@@ -342,6 +390,16 @@ pub fn plan_postgres_with_inventory(
             }
         }
 
+        let operation = classify_plan_operation(PlanOperationInput {
+            root: &root,
+            inventory,
+            object_ref,
+            relative_path,
+            classification,
+            intent: if blocked { "blocked" } else { intent },
+            blocked,
+            warnings: &item_warnings,
+        });
         let item = PlanItem {
             object_ref: object_ref.as_str(),
             object_type: object_ref.object_type().to_string(),
@@ -352,6 +410,12 @@ pub fn plan_postgres_with_inventory(
             } else {
                 intent.to_string()
             },
+            operation_kind: operation.operation_kind,
+            operation_label: operation.operation_label,
+            safety_badge: operation.safety_badge,
+            safety_level: operation.safety_level,
+            operation_explanation: operation.operation_explanation,
+            operation_reasons: operation.operation_reasons,
             selected: true,
             blocked,
             warnings: item_warnings,
@@ -392,6 +456,396 @@ pub(crate) fn add_plan_candidates(
             candidates.insert(object_ref, (path.clone(), classification, intent));
         }
     }
+}
+
+struct PlanOperationInput<'a> {
+    root: &'a Path,
+    inventory: &'a PostgresInventory,
+    object_ref: &'a ObjectRef,
+    relative_path: &'a str,
+    classification: &'a str,
+    intent: &'a str,
+    blocked: bool,
+    warnings: &'a [String],
+}
+
+fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetadata {
+    if input.blocked || input.intent == "blocked" {
+        return PlanOperationMetadata {
+            operation_kind: "blocked".to_string(),
+            operation_label: "Blocked".to_string(),
+            safety_badge: "Blocked".to_string(),
+            safety_level: "blocked".to_string(),
+            operation_explanation:
+                "Release artifact generation is blocked for this item until dependency warnings are resolved."
+                    .to_string(),
+            operation_reasons: if input.warnings.is_empty() {
+                vec!["Selected plan item is blocked by dependency warnings.".to_string()]
+            } else {
+                input.warnings.to_vec()
+            },
+        };
+    }
+
+    if input.classification == "repoOnly" && input.intent == "createInDatabaseLater" {
+        return PlanOperationMetadata {
+            operation_kind: "createReviewSql".to_string(),
+            operation_label: "Review SQL".to_string(),
+            safety_badge: "Review SQL".to_string(),
+            safety_level: "reviewOnly".to_string(),
+            operation_explanation:
+                "DbState can generate review-only SQL for this new repository object. DbState does not execute SQL."
+                    .to_string(),
+            operation_reasons: vec![
+                "Object exists in repository desired state and is missing from the target database."
+                    .to_string(),
+            ],
+        };
+    }
+
+    if input.classification == "databaseOnly" || input.intent == "reviewDatabaseOnly" {
+        return PlanOperationMetadata {
+            operation_kind: "databaseOnlyReview".to_string(),
+            operation_label: "Database Only".to_string(),
+            safety_badge: "Database Only".to_string(),
+            safety_level: "manualReview".to_string(),
+            operation_explanation:
+                "Object exists only in the target database. DbState will not generate destructive SQL to remove database-only objects."
+                    .to_string(),
+            operation_reasons: vec![
+                "DROP generation is not available in Private Beta.".to_string(),
+            ],
+        };
+    }
+
+    if input.classification == "repoDifferent" && input.intent == "updateDatabaseLater" {
+        if let ObjectRef::Table { schema, table } = input.object_ref {
+            return classify_table_difference_operation(
+                input.root,
+                input.inventory,
+                schema,
+                table,
+                input.relative_path,
+            );
+        }
+        return PlanOperationMetadata {
+            operation_kind: "manualReviewRequired".to_string(),
+            operation_label: "Manual Review".to_string(),
+            safety_badge: "Manual Review".to_string(),
+            safety_level: "manualReview".to_string(),
+            operation_explanation:
+                "Object differs, but DbState does not generate automatic update SQL for this object type in Private Beta."
+                    .to_string(),
+            operation_reasons: vec![
+                "Only clearly additive table column differences can produce review SQL in Private Beta."
+                    .to_string(),
+            ],
+        };
+    }
+
+    PlanOperationMetadata {
+        operation_kind: "unsupportedOrDeferred".to_string(),
+        operation_label: "Deferred".to_string(),
+        safety_badge: "Deferred".to_string(),
+        safety_level: "informational".to_string(),
+        operation_explanation: "This object type or operation is not generated in Private Beta."
+            .to_string(),
+        operation_reasons: vec!["Unsupported or deferred release operation.".to_string()],
+    }
+}
+
+fn classify_table_difference_operation(
+    root: &Path,
+    inventory: &PostgresInventory,
+    schema: &str,
+    table: &str,
+    relative_path: &str,
+) -> PlanOperationMetadata {
+    let analysis = match table_difference_analysis_for_file(root, inventory, schema, table, relative_path)
+    {
+        Ok(analysis) => analysis,
+        Err(reason) => {
+            return PlanOperationMetadata {
+                operation_kind: "manualReviewRequired".to_string(),
+                operation_label: "Manual Review".to_string(),
+                safety_badge: "Manual Review".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Table differs, but DbState cannot safely generate review SQL for this difference in Private Beta."
+                        .to_string(),
+                operation_reasons: vec![reason],
+            }
+        }
+    };
+    match analysis {
+        TableDifferenceAnalysis::Additive {
+            safe_adds,
+            unsafe_adds,
+        } if !safe_adds.is_empty() => {
+            let mut reasons: Vec<String> = safe_adds
+                .iter()
+                .map(|column| {
+                    format!(
+                        "Column {} is missing from the target database and is eligible for review-only ADD COLUMN SQL.",
+                        quote_postgres_identifier(&column.name)
+                    )
+                })
+                .collect();
+            reasons.extend(unsafe_adds.iter().map(|column| {
+                format!(
+                    "Column {} is NOT NULL with no default and remains manual-review only because applying it to a populated table can fail.",
+                    quote_postgres_identifier(&column.name)
+                )
+            }));
+            PlanOperationMetadata {
+                operation_kind: "additiveAddColumnReviewSql".to_string(),
+                operation_label: "Additive ADD COLUMN".to_string(),
+                safety_badge: "Additive ADD COLUMN".to_string(),
+                safety_level: "reviewOnly".to_string(),
+                operation_explanation:
+                    "DbState can generate review-only ADD COLUMN SQL for eligible additive nullable/defaulted columns. Unsafe or ambiguous differences may still require manual review."
+                        .to_string(),
+                operation_reasons: reasons,
+            }
+        }
+        TableDifferenceAnalysis::Additive { unsafe_adds, .. } if !unsafe_adds.is_empty() => {
+            PlanOperationMetadata {
+                operation_kind: "manualReviewRequired".to_string(),
+                operation_label: "Manual Review".to_string(),
+                safety_badge: "Manual Review".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Table differs, but DbState cannot safely generate review SQL for this difference in Private Beta."
+                        .to_string(),
+                operation_reasons: unsafe_adds
+                    .iter()
+                    .map(|column| {
+                        format!(
+                            "Column {} is NOT NULL with no default; manual review is required because applying it to a populated table can fail.",
+                            quote_postgres_identifier(&column.name)
+                        )
+                    })
+                    .collect(),
+            }
+        }
+        TableDifferenceAnalysis::NotClearlyAdditive(reasons) => PlanOperationMetadata {
+            operation_kind: "manualReviewRequired".to_string(),
+            operation_label: "Manual Review".to_string(),
+            safety_badge: "Manual Review".to_string(),
+            safety_level: "manualReview".to_string(),
+            operation_explanation:
+                "Table differs, but DbState cannot safely generate review SQL for this difference in Private Beta."
+                    .to_string(),
+            operation_reasons: reasons,
+        },
+        TableDifferenceAnalysis::NoSafeSuggestion => PlanOperationMetadata {
+            operation_kind: "manualReviewRequired".to_string(),
+            operation_label: "Manual Review".to_string(),
+            safety_badge: "Manual Review".to_string(),
+            safety_level: "manualReview".to_string(),
+            operation_explanation:
+                "Table differs, but DbState cannot safely generate review SQL for this difference in Private Beta."
+                    .to_string(),
+            operation_reasons: vec!["No safe additive column suggestion was identified.".to_string()],
+        },
+        TableDifferenceAnalysis::Additive { .. } => PlanOperationMetadata {
+            operation_kind: "manualReviewRequired".to_string(),
+            operation_label: "Manual Review".to_string(),
+            safety_badge: "Manual Review".to_string(),
+            safety_level: "manualReview".to_string(),
+            operation_explanation:
+                "Table differs, but DbState cannot safely generate review SQL for this difference in Private Beta."
+                    .to_string(),
+            operation_reasons: vec!["No safe additive column suggestion was identified.".to_string()],
+        },
+    }
+}
+
+pub(crate) fn table_difference_analysis_for_file(
+    root: &Path,
+    inventory: &PostgresInventory,
+    schema: &str,
+    table: &str,
+    relative_path: &str,
+) -> Result<TableDifferenceAnalysis, String> {
+    ensure_database_object_path(relative_path)?;
+    let content = fs::read_to_string(root.join(relative_path))
+        .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+    let Some(repository_columns) = parse_repository_table_columns(&content) else {
+        return Err(format!(
+            "Repository table DDL for {schema}.{table} is not in the supported additive-column review shape."
+        ));
+    };
+    let database_columns: Vec<PlanColumn> = inventory
+        .columns
+        .iter()
+        .filter(|column| column.schema_name == schema && column.table_name == table)
+        .map(PlanColumn::from)
+        .collect();
+    if database_columns.is_empty() {
+        return Err(format!(
+            "Target database column model for {schema}.{table} was not available."
+        ));
+    }
+    Ok(analyze_table_difference(
+        &repository_columns,
+        &database_columns,
+    ))
+}
+
+pub(crate) fn analyze_table_difference(
+    repository_columns: &[PlanColumn],
+    database_columns: &[PlanColumn],
+) -> TableDifferenceAnalysis {
+    let repository_by_name: BTreeMap<&str, &PlanColumn> = repository_columns
+        .iter()
+        .map(|column| (column.name.as_str(), column))
+        .collect();
+    let database_by_name: BTreeMap<&str, &PlanColumn> = database_columns
+        .iter()
+        .map(|column| (column.name.as_str(), column))
+        .collect();
+
+    let mut manual_reasons = Vec::new();
+    for database_column in database_columns {
+        match repository_by_name.get(database_column.name.as_str()) {
+            Some(repository_column)
+                if existing_columns_match(repository_column, database_column) => {}
+            Some(_) => manual_reasons.push(format!(
+                "existing column {} differs between repository and target database; existing-column changes are manual-review only in Private Beta",
+                quote_postgres_identifier(&database_column.name)
+            )),
+            None => manual_reasons.push(format!(
+                "Target database column {} is not present in repository desired state",
+                quote_postgres_identifier(&database_column.name)
+            )),
+        }
+    }
+
+    if !manual_reasons.is_empty() {
+        return TableDifferenceAnalysis::NotClearlyAdditive(manual_reasons);
+    }
+
+    let mut safe_adds = Vec::new();
+    let mut unsafe_adds = Vec::new();
+    for repository_column in repository_columns {
+        if database_by_name.contains_key(repository_column.name.as_str()) {
+            continue;
+        }
+        if !repository_column.is_nullable && repository_column.default_expression.is_none() {
+            unsafe_adds.push(repository_column.clone());
+        } else {
+            safe_adds.push(repository_column.clone());
+        }
+    }
+
+    if safe_adds.is_empty() && unsafe_adds.is_empty() {
+        TableDifferenceAnalysis::NoSafeSuggestion
+    } else {
+        TableDifferenceAnalysis::Additive {
+            safe_adds,
+            unsafe_adds,
+        }
+    }
+}
+
+fn existing_columns_match(repository_column: &PlanColumn, database_column: &PlanColumn) -> bool {
+    repository_column
+        .data_type
+        .trim()
+        .eq_ignore_ascii_case(database_column.data_type.trim())
+        && repository_column.is_nullable == database_column.is_nullable
+        && repository_column.has_default == database_column.has_default
+        && normalize_default_expression(repository_column.default_expression.as_deref())
+            == normalize_default_expression(database_column.default_expression.as_deref())
+}
+
+fn normalize_default_expression(value: Option<&str>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+pub(crate) fn parse_repository_table_columns(content: &str) -> Option<Vec<PlanColumn>> {
+    let mut in_create_table = false;
+    let mut columns = Vec::new();
+    for raw_line in content.lines() {
+        let line = raw_line.trim();
+        if line.starts_with("CREATE TABLE ") {
+            in_create_table = true;
+            continue;
+        }
+        if !in_create_table {
+            continue;
+        }
+        if line == ");" {
+            break;
+        }
+        if line.is_empty() || line.starts_with("--") {
+            continue;
+        }
+        columns.push(parse_repository_column_line(
+            line.trim_end_matches(',').trim(),
+        )?);
+    }
+    if columns.is_empty() {
+        None
+    } else {
+        Some(columns)
+    }
+}
+
+fn parse_repository_column_line(line: &str) -> Option<PlanColumn> {
+    let (name, remainder) = parse_quoted_identifier(line)?;
+    let mut definition = remainder.trim();
+    let is_nullable = if let Some(without_not_null) = definition.strip_suffix(" NOT NULL") {
+        definition = without_not_null.trim_end();
+        false
+    } else {
+        true
+    };
+    let (data_type, default_expression) =
+        if let Some((data_type, default_expression)) = definition.split_once(" DEFAULT ") {
+            (
+                data_type.trim(),
+                Some(default_expression.trim().to_string()),
+            )
+        } else {
+            (definition.trim(), None)
+        };
+    if data_type.is_empty() {
+        return None;
+    }
+    Some(PlanColumn {
+        name,
+        data_type: data_type.to_string(),
+        is_nullable,
+        has_default: default_expression.is_some(),
+        default_expression,
+    })
+}
+
+fn parse_quoted_identifier(value: &str) -> Option<(String, &str)> {
+    if !value.starts_with('"') {
+        return None;
+    }
+    let mut index = 1;
+    let mut identifier = String::new();
+    while index < value.len() {
+        let remaining = &value[index..];
+        if remaining.starts_with("\"\"") {
+            identifier.push('"');
+            index += 2;
+            continue;
+        }
+        if remaining.starts_with('"') {
+            return Some((identifier, &value[index + 1..]));
+        }
+        let character = remaining.chars().next()?;
+        identifier.push(character);
+        index += character.len_utf8();
+    }
+    None
 }
 
 pub(crate) fn empty_plan_report() -> PlanReport {
