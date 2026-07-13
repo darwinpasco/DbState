@@ -1,8 +1,9 @@
 use crate::git::git_root;
 use crate::postgres::{
-    inspect_postgres, invalid_postgres_url_message, is_postgres_connection_url, render_enum_sql,
-    render_extension_sql, render_index_sql, render_schema_sql, render_sequence_sql,
-    render_table_sql, render_view_sql, ColumnInfo, IndexInfo,
+    inspect_postgres, invalid_postgres_url_message, is_postgres_connection_url,
+    render_constraint_sql, render_enum_sql, render_extension_sql, render_index_sql,
+    render_schema_sql, render_sequence_sql, render_table_sql, render_view_sql, ColumnInfo,
+    ConstraintInfo, IndexInfo,
 };
 use crate::repository::{
     enum_file_path, extension_file_path, index_file_path, safe_file_component, schema_file_path,
@@ -41,7 +42,7 @@ pub(crate) fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttp
         .unwrap_or_default();
     if !matches!(
         object_type.as_str(),
-        "schema" | "table" | "extension" | "enum" | "sequence" | "index" | "view"
+        "schema" | "table" | "extension" | "enum" | "sequence" | "index" | "view" | "constraint"
     ) {
         return service_json_response(
             200,
@@ -181,6 +182,9 @@ fn default_object_relative_path(
             }
         }
         "view" => view_file_path(schema, object_name),
+        "constraint" => {
+            Err("Constraint DDL detail requires a release/result relativePath.".to_string())
+        }
         _ => Err("Unsupported object type for DDL detail.".to_string()),
     }
 }
@@ -225,6 +229,7 @@ fn repository_full_context_ddl(
     }
 
     let index_files = repository_index_files_for_table(root, schema, object_name)?;
+    let constraint_files = repository_constraint_files_for_table(root, schema, object_name)?;
     if index_files.is_empty() {
         related.push(RelatedObjectSummary::new(
             "Indexes",
@@ -250,11 +255,25 @@ fn repository_full_context_ddl(
             ));
         }
     }
-    related.push(RelatedObjectSummary::new(
-        "Constraints",
-        "Not available in Private Beta",
-        "Durable constraint object coverage is deferred.",
-    ));
+    if constraint_files.is_empty() {
+        related.push(RelatedObjectSummary::new(
+            "Constraints",
+            "No related repository constraint files found.",
+            "Not available in repository context",
+        ));
+    } else {
+        for (relative_path, constraint_name, content) in constraint_files {
+            related.push(RelatedObjectSummary::new(
+                "Constraints",
+                &constraint_name,
+                &relative_path,
+            ));
+            ddl_parts.push(format!(
+                "-- Related repository constraint object: {relative_path}\n{}",
+                content.trim()
+            ));
+        }
+    }
     related.push(RelatedObjectSummary::new(
         "Comments",
         "Not available in Private Beta",
@@ -262,6 +281,48 @@ fn repository_full_context_ddl(
     ));
 
     Ok((join_ddl_parts(ddl_parts), related, notes))
+}
+
+fn repository_constraint_files_for_table(
+    root: &Path,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<(String, String, String)>, String> {
+    let schema = safe_file_component(schema)?;
+    let table = safe_file_component(table)?;
+    let mut files = Vec::new();
+    for folder in [
+        "primary-keys",
+        "unique-constraints",
+        "foreign-keys",
+        "check-constraints",
+    ] {
+        let dir = root.join("database/objects/constraints").join(folder);
+        if !dir.exists() {
+            continue;
+        }
+        let prefix = format!("{schema}.{table}.");
+        for entry in fs::read_dir(&dir)
+            .map_err(|error| format!("Could not read repository constraints folder: {error}"))?
+        {
+            let entry = entry
+                .map_err(|error| format!("Could not read repository constraint entry: {error}"))?;
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            if !file_name.starts_with(&prefix) || !file_name.ends_with(".sql") {
+                continue;
+            }
+            let constraint_name = file_name
+                .trim_start_matches(&prefix)
+                .trim_end_matches(".sql")
+                .to_string();
+            let relative_path = format!("database/objects/constraints/{folder}/{file_name}");
+            if let Some(content) = read_repository_object_ddl(root, &relative_path)? {
+                files.push((relative_path, constraint_name, content));
+            }
+        }
+    }
+    files.sort_by(|left, right| left.0.cmp(&right.0));
+    Ok(files)
 }
 
 fn repository_index_files_for_table(
@@ -356,11 +417,31 @@ fn database_full_context_ddl(
             ddl_parts.push(render_index_sql(&index));
         }
     }
-    related.push(RelatedObjectSummary::new(
-        "Constraints",
-        "Not available in Private Beta",
-        "Constraint rendering in full context is deferred.",
-    ));
+    let mut constraints: Vec<ConstraintInfo> = inventory
+        .constraints
+        .iter()
+        .filter(|constraint| {
+            constraint.schema_name == schema && constraint.table_name == object_name
+        })
+        .cloned()
+        .collect();
+    constraints.sort_by(|left, right| left.constraint_name.cmp(&right.constraint_name));
+    if constraints.is_empty() {
+        related.push(RelatedObjectSummary::new(
+            "Constraints",
+            "No related database constraints found.",
+            "Not available in database context",
+        ));
+    } else {
+        for constraint in constraints {
+            related.push(RelatedObjectSummary::new(
+                "Constraints",
+                &constraint.constraint_name,
+                &constraint.definition,
+            ));
+            ddl_parts.push(render_constraint_sql(&constraint));
+        }
+    }
     related.push(RelatedObjectSummary::new(
         "Comments",
         "Not available in Private Beta",
@@ -400,6 +481,10 @@ fn validate_repository_object_relative_path(relative_path: &str) -> Result<(), S
         || relative_path.starts_with("database/objects/sequences/")
         || relative_path.starts_with("database/objects/indexes/")
         || relative_path.starts_with("database/objects/views/")
+        || relative_path.starts_with("database/objects/constraints/primary-keys/")
+        || relative_path.starts_with("database/objects/constraints/unique-constraints/")
+        || relative_path.starts_with("database/objects/constraints/foreign-keys/")
+        || relative_path.starts_with("database/objects/constraints/check-constraints/")
     {
         Ok(())
     } else {
@@ -485,6 +570,19 @@ fn database_object_ddl(
             .iter()
             .find(|candidate| candidate.schema_name == schema && candidate.view_name == object_name)
             .map(render_view_sql)),
+        "constraint" => {
+            let constraint_name = object_name
+                .rsplit_once('.')
+                .map(|(_, name)| name)
+                .unwrap_or(object_name);
+            Ok(inventory
+                .constraints
+                .iter()
+                .find(|candidate| {
+                    candidate.schema_name == schema && candidate.constraint_name == constraint_name
+                })
+                .map(render_constraint_sql))
+        }
         _ => Ok(None),
     }
 }

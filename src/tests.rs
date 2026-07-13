@@ -9,6 +9,7 @@ use crate::reference_data::{
 use crate::release::empty_release_report;
 use crate::release::release_postgres_command;
 use crate::repository::discovery::discover_repository_objects;
+use crate::repository::objects::constraint_file_path;
 use crate::repository::{
     compare_postgres_command, ensure_database_object_path, enum_file_path, export_postgres_command,
     extension_file_path, index_file_path, plan_postgres_command, schema_file_path,
@@ -183,6 +184,54 @@ fn sample_inventory() -> PostgresInventory {
                     " SELECT sample_accounts.account_id,\n    sample_accounts.account_code\n   FROM dbstate_slice2.sample_accounts"
                         .to_string(),
             }],
+            constraints: vec![
+                ConstraintInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    table_name: "sample_accounts".to_string(),
+                    constraint_name: "sample_accounts_pkey".to_string(),
+                    constraint_type: "primaryKey".to_string(),
+                    definition: "PRIMARY KEY (account_id)".to_string(),
+                    columns: vec!["account_id".to_string()],
+                    referenced_schema: None,
+                    referenced_table: None,
+                    referenced_columns: Vec::new(),
+                },
+                ConstraintInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    table_name: "sample_accounts".to_string(),
+                    constraint_name: "sample_accounts_code_key".to_string(),
+                    constraint_type: "uniqueConstraint".to_string(),
+                    definition: "UNIQUE (account_code)".to_string(),
+                    columns: vec!["account_code".to_string()],
+                    referenced_schema: None,
+                    referenced_table: None,
+                    referenced_columns: Vec::new(),
+                },
+                ConstraintInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    table_name: "sample_accounts".to_string(),
+                    constraint_name: "sample_accounts_parent_fkey".to_string(),
+                    constraint_type: "foreignKey".to_string(),
+                    definition:
+                        "FOREIGN KEY (account_id) REFERENCES dbstate_slice2.sample_accounts(account_id) ON UPDATE CASCADE ON DELETE RESTRICT"
+                            .to_string(),
+                    columns: vec!["account_id".to_string()],
+                    referenced_schema: Some("dbstate_slice2".to_string()),
+                    referenced_table: Some("sample_accounts".to_string()),
+                    referenced_columns: vec!["account_id".to_string()],
+                },
+                ConstraintInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    table_name: "sample_accounts".to_string(),
+                    constraint_name: "sample_accounts_code_check".to_string(),
+                    constraint_type: "checkConstraint".to_string(),
+                    definition: "CHECK ((account_code <> ''::text))".to_string(),
+                    columns: vec!["account_code".to_string()],
+                    referenced_schema: None,
+                    referenced_table: None,
+                    referenced_columns: Vec::new(),
+                },
+            ],
         }
 }
 
@@ -587,6 +636,52 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
             view_name: "open_orders".to_string(),
             definition: " SELECT orders.id FROM app.orders".to_string(),
         }],
+        constraints: vec![
+            ConstraintInfo {
+                schema_name: "app".to_string(),
+                table_name: "orders".to_string(),
+                constraint_name: "orders_pkey".to_string(),
+                constraint_type: "primaryKey".to_string(),
+                definition: "PRIMARY KEY (id)".to_string(),
+                columns: vec!["id".to_string()],
+                referenced_schema: None,
+                referenced_table: None,
+                referenced_columns: Vec::new(),
+            },
+            ConstraintInfo {
+                schema_name: "app".to_string(),
+                table_name: "orders".to_string(),
+                constraint_name: "orders_number_key".to_string(),
+                constraint_type: "uniqueConstraint".to_string(),
+                definition: "UNIQUE (id)".to_string(),
+                columns: vec!["id".to_string()],
+                referenced_schema: None,
+                referenced_table: None,
+                referenced_columns: Vec::new(),
+            },
+            ConstraintInfo {
+                schema_name: "app".to_string(),
+                table_name: "orders".to_string(),
+                constraint_name: "orders_parent_fkey".to_string(),
+                constraint_type: "foreignKey".to_string(),
+                definition: "FOREIGN KEY (id) REFERENCES app.orders(id)".to_string(),
+                columns: vec!["id".to_string()],
+                referenced_schema: Some("app".to_string()),
+                referenced_table: Some("orders".to_string()),
+                referenced_columns: vec!["id".to_string()],
+            },
+            ConstraintInfo {
+                schema_name: "app".to_string(),
+                table_name: "orders".to_string(),
+                constraint_name: "orders_id_check".to_string(),
+                constraint_type: "checkConstraint".to_string(),
+                definition: "CHECK ((id > 0))".to_string(),
+                columns: vec!["id".to_string()],
+                referenced_schema: None,
+                referenced_table: None,
+                referenced_columns: Vec::new(),
+            },
+        ],
     };
 
     assert_eq!(inventory.schemas[0].name, "app");
@@ -597,6 +692,11 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
     assert_eq!(inventory.sequences[0].sequence_name, "orders_id_seq");
     assert_eq!(inventory.indexes[0].index_name, "orders_created_at_idx");
     assert_eq!(inventory.views[0].view_name, "open_orders");
+    assert_eq!(inventory.constraints.len(), 4);
+    assert_eq!(inventory.constraints[0].constraint_type, "primaryKey");
+    assert_eq!(inventory.constraints[1].constraint_type, "uniqueConstraint");
+    assert_eq!(inventory.constraints[2].constraint_type, "foreignKey");
+    assert_eq!(inventory.constraints[3].constraint_type, "checkConstraint");
 }
 
 #[test]
@@ -614,6 +714,18 @@ fn deferred_object_types_are_explicit() {
         .deferred_object_types
         .contains(&"indexes".to_string()));
     assert!(!report.deferred_object_types.contains(&"views".to_string()));
+    assert!(!report
+        .deferred_object_types
+        .contains(&"primaryKeys".to_string()));
+    assert!(!report
+        .deferred_object_types
+        .contains(&"uniqueConstraints".to_string()));
+    assert!(!report
+        .deferred_object_types
+        .contains(&"foreignKeys".to_string()));
+    assert!(!report
+        .deferred_object_types
+        .contains(&"checkConstraints".to_string()));
     assert!(report
         .deferred_object_types
         .contains(&"functions".to_string()));
@@ -655,6 +767,31 @@ fn export_paths_stay_under_database_objects() {
     assert_eq!(
         view_file_path("core", "active_payments").expect("view path"),
         "database/objects/views/core.active_payments.sql"
+    );
+    assert_eq!(
+        constraint_file_path("primaryKey", "core", "payments", "payments_pkey")
+            .expect("primary key path"),
+        "database/objects/constraints/primary-keys/core.payments.payments_pkey.sql"
+    );
+    assert_eq!(
+        constraint_file_path("uniqueConstraint", "core", "payments", "payments_code_key")
+            .expect("unique constraint path"),
+        "database/objects/constraints/unique-constraints/core.payments.payments_code_key.sql"
+    );
+    assert_eq!(
+        constraint_file_path("foreignKey", "core", "payments", "payments_customer_fkey")
+            .expect("foreign key path"),
+        "database/objects/constraints/foreign-keys/core.payments.payments_customer_fkey.sql"
+    );
+    assert_eq!(
+        constraint_file_path(
+            "checkConstraint",
+            "core",
+            "payments",
+            "payments_amount_check"
+        )
+        .expect("check constraint path"),
+        "database/objects/constraints/check-constraints/core.payments.payments_amount_check.sql"
     );
     assert!(schema_file_path("../evil").is_err());
     assert!(table_file_path("core", "bad/name").is_err());
@@ -703,6 +840,16 @@ fn generated_slice16_object_sql_is_deterministic() {
         .contains("CREATE UNIQUE INDEX sample_accounts_account_code_idx"));
     assert!(render_view_sql(&inventory.views[0])
         .contains("CREATE VIEW \"dbstate_slice2\".\"active_accounts\" AS"));
+    assert!(render_constraint_sql(&inventory.constraints[0]).contains(
+        "ALTER TABLE \"dbstate_slice2\".\"sample_accounts\"\n    ADD CONSTRAINT \"sample_accounts_pkey\" PRIMARY KEY (account_id);"
+    ));
+    assert!(render_constraint_sql(&inventory.constraints[1])
+        .contains("ADD CONSTRAINT \"sample_accounts_code_key\" UNIQUE"));
+    assert!(render_constraint_sql(&inventory.constraints[2])
+        .contains("ADD CONSTRAINT \"sample_accounts_parent_fkey\" FOREIGN KEY"));
+    assert!(render_constraint_sql(&inventory.constraints[3])
+        .contains("ADD CONSTRAINT \"sample_accounts_code_check\" CHECK"));
+    assert!(!render_constraint_sql(&inventory.constraints[0]).contains("DROP"));
 }
 
 #[test]
@@ -858,6 +1005,18 @@ fn actual_export_creates_schema_and_table_files() {
     assert!(dir
         .join("database/objects/tables/dbstate_slice2.sample_accounts.sql")
         .is_file());
+    assert!(dir
+        .join("database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql")
+        .is_file());
+    assert!(dir
+        .join("database/objects/constraints/unique-constraints/dbstate_slice2.sample_accounts.sample_accounts_code_key.sql")
+        .is_file());
+    assert!(dir
+        .join("database/objects/constraints/foreign-keys/dbstate_slice2.sample_accounts.sample_accounts_parent_fkey.sql")
+        .is_file());
+    assert!(dir
+        .join("database/objects/constraints/check-constraints/dbstate_slice2.sample_accounts.sample_accounts_code_check.sql")
+        .is_file());
 }
 
 #[test]
@@ -874,6 +1033,10 @@ fn sync_dry_run_creates_or_updates_no_files() {
     assert!(report
         .planned_creates
         .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+    assert!(report.planned_creates.contains(
+        &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
+            .to_string()
+    ));
     assert!(report.created_files.is_empty());
     assert!(report.updated_files.is_empty());
     assert!(!dir
@@ -1121,6 +1284,20 @@ fn repository_schema_and_table_files_are_discovered() {
         ),
     )
     .expect("write table");
+    fs::write(
+        dir.join(
+            "database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql",
+        ),
+        render_constraint_sql(&sample_inventory().constraints[0]),
+    )
+    .expect("write primary key constraint");
+    fs::write(
+        dir.join(
+            "database/objects/constraints/unique-constraints/dbstate_slice2.sample_accounts.sample_accounts_code_key.sql",
+        ),
+        render_constraint_sql(&sample_inventory().constraints[1]),
+    )
+    .expect("write unique constraint");
 
     let import = discover_repository_objects(&dir).expect("discover objects");
 
@@ -1128,6 +1305,12 @@ fn repository_schema_and_table_files_are_discovered() {
     assert!(import
         .objects
         .contains_key("table:dbstate_slice2.sample_accounts"));
+    assert!(import
+        .objects
+        .contains_key("constraint:dbstate_slice2.sample_accounts.sample_accounts_pkey"));
+    assert!(import
+        .objects
+        .contains_key("constraint:dbstate_slice2.sample_accounts.sample_accounts_code_key"));
     assert!(import.skipped.is_empty());
 }
 
@@ -1140,6 +1323,11 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
         .expect("write bad table file");
     fs::write(dir.join("database/objects/tables/a.b.c.sql"), "-- bad\n")
         .expect("write bad table file");
+    fs::write(
+        dir.join("database/objects/constraints/primary-keys/a.b.sql"),
+        "-- bad\n",
+    )
+    .expect("write bad constraint file");
 
     let import = discover_repository_objects(&dir).expect("discover objects");
 
@@ -1149,6 +1337,9 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
     assert!(import
         .skipped
         .contains(&"database/objects/tables/a.b.c.sql".to_string()));
+    assert!(import
+        .skipped
+        .contains(&"database/objects/constraints/primary-keys/a.b.sql".to_string()));
 }
 
 #[test]
@@ -1179,6 +1370,13 @@ fn compare_classifies_in_sync_objects() {
         ),
     )
     .expect("write table");
+    fs::write(
+        dir.join(
+            "database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql",
+        ),
+        render_constraint_sql(&sample_inventory().constraints[0]),
+    )
+    .expect("write constraint");
     commit_all(&dir, "desired state files");
 
     let report = compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
@@ -1190,6 +1388,10 @@ fn compare_classifies_in_sync_objects() {
     assert!(report
         .in_sync
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert!(report.in_sync.contains(
+        &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
+            .to_string()
+    ));
 }
 
 #[test]
@@ -1202,6 +1404,13 @@ fn compare_classifies_repo_different_objects() {
         "-- stale table\n",
     )
     .expect("write stale table");
+    fs::write(
+        dir.join(
+            "database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql",
+        ),
+        "-- stale constraint\n",
+    )
+    .expect("write stale constraint");
     commit_all(&dir, "stale desired state");
 
     let report = compare_postgres_with_inventory(
@@ -1217,6 +1426,10 @@ fn compare_classifies_repo_different_objects() {
     assert!(report
         .repo_different
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert!(report.repo_different.contains(
+        &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
+            .to_string()
+    ));
 }
 
 #[test]
@@ -1229,6 +1442,13 @@ fn compare_classifies_repo_only_objects() {
         "-- local only\n",
     )
     .expect("write local only table");
+    fs::write(
+        dir.join(
+            "database/objects/constraints/check-constraints/dbstate_slice2.sample_accounts.local_only_check.sql",
+        ),
+        "-- local only constraint\n",
+    )
+    .expect("write local only constraint");
     commit_all(&dir, "local only desired state");
 
     let report = compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
@@ -1237,6 +1457,10 @@ fn compare_classifies_repo_only_objects() {
     assert!(report
         .repo_only
         .contains(&"database/objects/tables/dbstate_slice2.local_only.sql".to_string()));
+    assert!(report.repo_only.contains(
+        &"database/objects/constraints/check-constraints/dbstate_slice2.sample_accounts.local_only_check.sql"
+            .to_string()
+    ));
 }
 
 #[test]
@@ -1255,6 +1479,10 @@ fn compare_classifies_database_only_objects() {
     assert!(report
         .database_only
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert!(report.database_only.contains(
+        &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
+            .to_string()
+    ));
 }
 
 #[test]
@@ -1863,6 +2091,218 @@ fn release_generates_sql_summary_and_risk_json_under_releases() {
     assert!(!summary.contains("postgres://"));
     assert!(!risk.contains("postgres://"));
     assert!(!manifest.contains("postgres://"));
+}
+
+#[test]
+fn repo_only_constraint_release_generates_review_only_add_constraint_sql() {
+    let dir = create_temp_dir("release-constraint-add");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    let constraint = ConstraintInfo {
+        schema_name: "dbstate_slice2".to_string(),
+        table_name: "sample_accounts".to_string(),
+        constraint_name: "sample_accounts_extra_check".to_string(),
+        constraint_type: "checkConstraint".to_string(),
+        definition: "CHECK ((account_code <> 'blocked'::text))".to_string(),
+        columns: vec!["account_code".to_string()],
+        referenced_schema: None,
+        referenced_table: None,
+        referenced_columns: Vec::new(),
+    };
+    fs::write(
+        dir.join(
+            "database/objects/constraints/check-constraints/dbstate_slice2.sample_accounts.sample_accounts_extra_check.sql",
+        ),
+        render_constraint_sql(&constraint),
+    )
+    .expect("write repo-only constraint");
+    commit_all(&dir, "repo-only constraint");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec![
+                "constraint:dbstate_slice2.sample_accounts.sample_accounts_extra_check".to_string(),
+            ],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice28_constraint",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.plan_items[0].operation_kind,
+        "createConstraintReviewSql"
+    );
+    assert_eq!(report.plan_items[0].operation_label, "Add Constraint");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice28_constraint.sql")).expect("sql");
+    assert!(sql.contains("-- Review-only constraint suggestion."));
+    assert!(sql.contains("-- DbState does not execute this SQL."));
+    assert!(sql.contains("ALTER TABLE \"dbstate_slice2\".\"sample_accounts\""));
+    assert!(sql.contains(
+        "ADD CONSTRAINT \"sample_accounts_extra_check\" CHECK ((account_code <> 'blocked'::text));"
+    ));
+    assert!(!sql.contains("DROP CONSTRAINT"));
+    assert!(!sql.contains("DELETE FROM"));
+    assert!(!sql.contains("INSERT INTO"));
+}
+
+#[test]
+fn changed_constraint_release_remains_manual_review_only() {
+    let dir = create_temp_dir("release-constraint-changed");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    let mut changed = sample_inventory().constraints[0].clone();
+    changed.definition = "PRIMARY KEY (account_code)".to_string();
+    fs::write(
+        dir.join(
+            "database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql",
+        ),
+        render_constraint_sql(&changed),
+    )
+    .expect("write changed constraint");
+    commit_all(&dir, "changed constraint");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["constraint:dbstate_slice2.sample_accounts.sample_accounts_pkey".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice28_changed_constraint",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].operation_kind, "manualReviewRequired");
+    assert!(report.plan_items[0]
+        .operation_explanation
+        .contains("changed constraints are manual-review only"));
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice28_changed_constraint.sql"))
+        .expect("sql");
+    assert!(sql.contains("changed constraints are manual-review only"));
+    assert!(!sql.contains("DROP CONSTRAINT"));
+    assert!(!sql.contains("ADD CONSTRAINT \"sample_accounts_pkey\""));
+}
+
+#[test]
+fn database_only_constraint_release_does_not_generate_drop_constraint() {
+    let dir = create_temp_dir("release-constraint-db-only");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    commit_all(&dir, "complete structure");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["constraint:dbstate_slice2.sample_accounts.sample_accounts_pkey".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice28_database_only_constraint",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].compare_classification, "databaseOnly");
+    assert_eq!(report.plan_items[0].operation_kind, "databaseOnlyReview");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice28_database_only_constraint.sql"))
+            .expect("sql");
+    assert!(sql.contains("object exists only in target database"));
+    assert!(!sql.contains("DROP CONSTRAINT"));
+}
+
+#[test]
+fn release_candidate_selection_respects_selected_constraint_refs() {
+    let dir = create_temp_dir("release-constraint-selection");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    let selected = ConstraintInfo {
+        schema_name: "dbstate_slice2".to_string(),
+        table_name: "sample_accounts".to_string(),
+        constraint_name: "selected_constraint_check".to_string(),
+        constraint_type: "checkConstraint".to_string(),
+        definition: "CHECK ((account_code <> 'selected'::text))".to_string(),
+        columns: vec!["account_code".to_string()],
+        referenced_schema: None,
+        referenced_table: None,
+        referenced_columns: Vec::new(),
+    };
+    let unselected = ConstraintInfo {
+        constraint_name: "unselected_constraint_check".to_string(),
+        definition: "CHECK ((account_code <> 'unselected'::text))".to_string(),
+        ..selected.clone()
+    };
+    fs::write(
+        dir.join(
+            "database/objects/constraints/check-constraints/dbstate_slice2.sample_accounts.selected_constraint_check.sql",
+        ),
+        render_constraint_sql(&selected),
+    )
+    .expect("write selected constraint");
+    fs::write(
+        dir.join(
+            "database/objects/constraints/check-constraints/dbstate_slice2.sample_accounts.unselected_constraint_check.sql",
+        ),
+        render_constraint_sql(&unselected),
+    )
+    .expect("write unselected constraint");
+    commit_all(&dir, "repo-only constraints");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["constraint:dbstate_slice2.sample_accounts.selected_constraint_check".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice28_constraint_selection",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.included_objects,
+        vec!["constraint:dbstate_slice2.sample_accounts.selected_constraint_check".to_string()]
+    );
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice28_constraint_selection.sql"))
+            .expect("sql");
+    assert!(sql.contains("selected_constraint_check"));
+    assert!(!sql.contains("unselected_constraint_check"));
 }
 
 #[test]
@@ -3327,6 +3767,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "database/objects/sequences/",
         "database/objects/indexes/",
         "database/objects/views/",
+        "database/objects/constraints/",
         "objectType: \"schema\"",
         "objectType: \"table\"",
         "objectType: \"extension\"",
@@ -3334,6 +3775,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "objectType: \"sequence\"",
         "objectType: \"index\"",
         "objectType: \"view\"",
+        "objectType: \"constraint\"",
         "referenceDataRow",
         "rowMatchesFilter",
         "rowMatchesStatusFilter",
@@ -3348,6 +3790,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "data.sequences",
         "data.indexes",
         "data.views",
+        "data.constraints",
         "updateCompareOptionLists",
         "updateTableOptions",
         "updateReferenceDataOptions",
@@ -3463,7 +3906,18 @@ fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
         "CREATE INDEX \"accounts_code_idx\" ON \"core\".\"accounts\" (\"account_code\");\n",
     )
     .expect("write index ddl");
-    commit_all(&dir, "complete structure with table and index");
+    let constraint_path = dir
+        .join("database")
+        .join("objects")
+        .join("constraints")
+        .join("primary-keys")
+        .join("core.accounts.accounts_pkey.sql");
+    fs::write(
+        &constraint_path,
+        "ALTER TABLE \"core\".\"accounts\"\n    ADD CONSTRAINT \"accounts_pkey\" PRIMARY KEY (\"account_id\");\n",
+    )
+    .expect("write constraint ddl");
+    commit_all(&dir, "complete structure with table index and constraint");
 
     let body = r#"{ "scope": "all", "objectType": "table", "schema": "core", "objectName": "accounts", "relativePath": "database/objects/tables/core.accounts.sql" }"#;
     let response = service_response("POST", "/api/v1/postgres/object-ddl", body, &dir);
@@ -3475,9 +3929,13 @@ fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
     assert!(response.body.contains("\"relatedObjects\""));
     assert!(response.body.contains("CREATE TABLE"));
     assert!(response.body.contains("accounts_code_idx"));
+    assert!(response.body.contains("accounts_pkey"));
     assert!(response
         .body
         .contains("database/objects/indexes/core.accounts.accounts_code_idx.sql"));
+    assert!(response
+        .body
+        .contains("database/objects/constraints/primary-keys/core.accounts.accounts_pkey.sql"));
     assert!(response.body.contains("\"group\":\"Indexes\""));
     assert!(response.body.contains("\"group\":\"Constraints\""));
     assert!(response.body.contains("\"group\":\"Comments\""));
@@ -3485,6 +3943,21 @@ fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
         .body
         .contains("Object Only DDL is the normalized durable object"));
     assert!(!response.body.contains("postgres://"));
+
+    let constraint_body = r#"{ "scope": "all", "objectType": "constraint", "schema": "core", "objectName": "accounts.accounts_pkey", "relativePath": "database/objects/constraints/primary-keys/core.accounts.accounts_pkey.sql" }"#;
+    let constraint_response =
+        service_response("POST", "/api/v1/postgres/object-ddl", constraint_body, &dir);
+
+    assert_eq!(
+        constraint_response.status_code, 200,
+        "{}",
+        constraint_response.body
+    );
+    assert!(constraint_response
+        .body
+        .contains("\"objectType\":\"constraint\""));
+    assert!(constraint_response.body.contains("ADD CONSTRAINT"));
+    assert!(constraint_response.body.contains("accounts_pkey"));
 }
 
 #[test]
