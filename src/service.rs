@@ -284,7 +284,6 @@ pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> Ser
             cwd,
             &["inspect", "postgres"],
             ScopeRequirement::Optional,
-            EndpointScopeKind::SchemaTable,
         ),
         ("POST", "/api/v1/postgres/compare") => service_postgres_endpoint(
             "compare postgres",
@@ -292,7 +291,6 @@ pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> Ser
             cwd,
             &["compare", "postgres"],
             ScopeRequirement::Required,
-            EndpointScopeKind::SchemaTable,
         ),
         ("POST", "/api/v1/postgres/plan") => service_postgres_endpoint(
             "plan postgres",
@@ -300,16 +298,13 @@ pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> Ser
             cwd,
             &["plan", "postgres"],
             ScopeRequirement::Required,
-            EndpointScopeKind::SchemaTable,
         ),
-        ("POST", "/api/v1/postgres/data-compare") => service_postgres_endpoint(
-            "data-compare postgres",
-            body,
-            cwd,
-            &["data-compare", "postgres"],
-            ScopeRequirement::Required,
-            EndpointScopeKind::DataCompare,
-        ),
+        ("POST", "/api/v1/reference-data/status") => {
+            service_reference_data_status_endpoint(body, cwd)
+        }
+        ("POST", "/api/v1/postgres/data-compare") => {
+            service_reference_data_compare_endpoint(body, cwd)
+        }
         ("POST", "/api/v1/postgres/object-ddl") => service_object_ddl_endpoint(body, cwd),
         ("POST", "/api/v1/postgres/repository-sync/preview") => {
             service_repository_sync_endpoint("repository-sync preview", body, cwd, true)
@@ -342,12 +337,6 @@ enum ScopeRequirement {
     Optional,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum EndpointScopeKind {
-    SchemaTable,
-    DataCompare,
-}
-
 pub fn service_route_definitions() -> Vec<(&'static str, &'static str)> {
     vec![
         ("GET", "/"),
@@ -371,6 +360,7 @@ pub fn service_route_definitions() -> Vec<(&'static str, &'static str)> {
         ("POST", "/api/v1/postgres/inspect"),
         ("POST", "/api/v1/postgres/compare"),
         ("POST", "/api/v1/postgres/plan"),
+        ("POST", "/api/v1/reference-data/status"),
         ("POST", "/api/v1/postgres/data-compare"),
         ("POST", "/api/v1/postgres/object-ddl"),
         ("POST", "/api/v1/postgres/repository-sync/preview"),
@@ -823,7 +813,6 @@ fn service_postgres_endpoint(
     cwd: &Path,
     base_args: &[&str],
     scope_requirement: ScopeRequirement,
-    scope_kind: EndpointScopeKind,
 ) -> ServiceHttpResponse {
     let request = match parse_service_request(body) {
         Ok(request) => request,
@@ -851,7 +840,7 @@ fn service_postgres_endpoint(
         Err(error) => return service_error_response(400, command, &error),
     }
 
-    match service_scope_args(&request, scope_requirement, scope_kind) {
+    match service_scope_args(&request, scope_requirement) {
         Ok(scope_args) => args.extend(scope_args),
         Err(error) => return service_error_response(400, command, &error),
     }
@@ -867,6 +856,117 @@ fn service_postgres_endpoint(
 
     args.extend(["--format".to_string(), "json".to_string()]);
     service_run_cli(command, &workspace, args)
+}
+
+fn service_reference_data_status_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, "reference-data status", &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, "reference-data status", &error);
+    }
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, "reference-data status", &error),
+        };
+    service_json_response(200, &reference_data_status(&workspace).to_json())
+}
+
+fn service_reference_data_compare_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
+    let command = "data-compare postgres";
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, command, &error);
+    }
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, command, &error),
+        };
+    let connection = match resolve_service_postgres_connection(&request) {
+        Ok(Some(connection)) => connection,
+        Ok(None) => {
+            return service_error_response(
+                400,
+                command,
+                "Missing PostgreSQL connection URL. Provide a session URL, saved profile, or DBSTATE_POSTGRES_URL.",
+            )
+        }
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    if !is_postgres_connection_url(&connection.url) {
+        return service_error_response(400, command, &invalid_postgres_url_message());
+    }
+    let selection = match reference_data_selection_from_request(&request) {
+        Ok(selection) => selection,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    match data_compare_postgres_with_connection(&workspace, &connection.url, &selection) {
+        Ok(report) => service_json_response(200, &report.to_json()),
+        Err(error) => {
+            service_error_response(400, command, &redact_message(&error, &connection.url))
+        }
+    }
+}
+
+fn reference_data_selection_from_request(
+    request: &Value,
+) -> Result<ReferenceDataSelection, String> {
+    if let Some(Value::Sequence(values)) = mapping_get(request, "selectedTables") {
+        let mut tables = Vec::new();
+        for value in values {
+            match value {
+                Value::String(table) if !table.trim().is_empty() => tables.push(table.clone()),
+                _ => {
+                    return Err(
+                        "selectedTables must contain configured reference-data table names."
+                            .to_string(),
+                    )
+                }
+            }
+        }
+        tables.sort();
+        tables.dedup();
+        if tables.is_empty() {
+            return Err("Select at least one configured reference-data table.".to_string());
+        }
+        return Ok(ReferenceDataSelection::Tables(tables));
+    }
+
+    let scope = request_string(request, "scope");
+    let table = request_string(request, "table")
+        .or_else(|| request_string_array(request, "tables").into_iter().next());
+    match scope.as_deref() {
+        Some("all") => Ok(ReferenceDataSelection::All),
+        Some("table") => {
+            let table = table.ok_or_else(|| "table scope requires a table value.".to_string())?;
+            Ok(ReferenceDataSelection::Table(table))
+        }
+        Some("schema") => Err(
+            "schema scope is not supported for data-compare. Use scope \"all\" or selectedTables."
+                .to_string(),
+        ),
+        Some(other) => Err(format!(
+            "Invalid scope '{other}'. Supported data-compare scopes are all and table."
+        )),
+        None => {
+            if let Some(table) = table {
+                Ok(ReferenceDataSelection::Table(table))
+            } else {
+                Err(
+                    "Missing scope selection. Select at least one configured reference-data table."
+                        .to_string(),
+                )
+            }
+        }
+    }
 }
 
 fn service_release_endpoint(
@@ -931,11 +1031,7 @@ fn service_release_endpoint(
         Ok(None) => {}
         Err(error) => return service_error_response(400, command, &error),
     }
-    match service_scope_args(
-        &request,
-        ScopeRequirement::Required,
-        EndpointScopeKind::SchemaTable,
-    ) {
+    match service_scope_args(&request, ScopeRequirement::Required) {
         Ok(scope_args) => args.extend(scope_args),
         Err(error) => return service_error_response(400, command, &error),
     }
@@ -1239,11 +1335,7 @@ fn service_repository_sync_endpoint(
         Err(error) => return service_error_response(400, command, &error),
     }
 
-    match service_scope_args(
-        &request,
-        ScopeRequirement::Required,
-        EndpointScopeKind::SchemaTable,
-    ) {
+    match service_scope_args(&request, ScopeRequirement::Required) {
         Ok(scope_args) => args.extend(scope_args),
         Err(error) => return service_error_response(400, command, &error),
     }
@@ -1675,7 +1767,6 @@ fn percent_encode_url_component(value: &str) -> String {
 fn service_scope_args(
     request: &Value,
     requirement: ScopeRequirement,
-    kind: EndpointScopeKind,
 ) -> Result<Vec<String>, String> {
     let scope = request_string(request, "scope");
     let schema = request_string(request, "schema")
@@ -1696,9 +1787,6 @@ fn service_scope_args(
         match scope.as_str() {
             "all" => return Ok(vec!["--all".to_string()]),
             "schema" => {
-                if kind == EndpointScopeKind::DataCompare {
-                    return Err("schema scope is not supported for data-compare. Use scope \"all\" or table.".to_string());
-                }
                 let schema =
                     schema.ok_or_else(|| "schema scope requires a schema value.".to_string())?;
                 return Ok(vec!["--schema".to_string(), schema]);
@@ -1719,14 +1807,7 @@ fn service_scope_args(
     if let Some(table) = table {
         Ok(vec!["--table".to_string(), table])
     } else if let Some(schema) = schema {
-        if kind == EndpointScopeKind::DataCompare {
-            Err(
-                "schema scope is not supported for data-compare. Use scope \"all\" or table."
-                    .to_string(),
-            )
-        } else {
-            Ok(vec!["--schema".to_string(), schema])
-        }
+        Ok(vec!["--schema".to_string(), schema])
     } else {
         Ok(Vec::new())
     }

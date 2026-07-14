@@ -17,12 +17,17 @@ PostgreSQL Inspect Only is the default workflow.
 
 If the selected local repository path is not a Git repository, Workspace actions show a `Not a Git Repository` modal instead of leaving testers with raw service JSON. DbState still allows a Git repository that has not yet been initialized as a DbState project to use Init Plan and Initialize DbState Project.
 
-Reference-Data Compare remains visible as a future capability, but it is out of scope for the current beta UI. Selecting it shows an out-of-scope modal and returns to the previous valid workflow mode.
+Reference-Data Compare was intentionally guarded in Slice 22. Slice 34 removes that guardrail and enables the UI workflow for configured reference-data compare. The workflow remains read-only, registry-bound, and does not generate DML or apply data changes.
 
-The following controls are disabled in the current beta UI:
+The following controls remain disabled in the current beta UI:
 
 - Include refs
 - Exclude refs
+
+The following Reference-Data Compare controls are enabled as of Slice 34:
+
+- Reference-data registry status
+- Configured table selection
 - Reference-data scope
 - Reference-data table
 - Run Reference Data Compare

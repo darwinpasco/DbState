@@ -108,6 +108,7 @@ pub(crate) fn data_compare_postgres_command(
 pub enum ReferenceDataSelection {
     All,
     Table(String),
+    Tables(Vec<String>),
 }
 
 impl ReferenceDataSelection {
@@ -133,6 +134,7 @@ impl ReferenceDataSelection {
         match self {
             Self::All => "all".to_string(),
             Self::Table(table) => format!("table:{table}"),
+            Self::Tables(tables) => format!("tables:{}", tables.join(",")),
         }
     }
 
@@ -140,6 +142,7 @@ impl ReferenceDataSelection {
         match self {
             Self::All => Vec::new(),
             Self::Table(table) => vec![table.clone()],
+            Self::Tables(tables) => tables.clone(),
         }
     }
 
@@ -147,8 +150,40 @@ impl ReferenceDataSelection {
         match self {
             Self::All => true,
             Self::Table(selected) => selected == table_name,
+            Self::Tables(selected) => selected.iter().any(|table| table == table_name),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceDataStatusReport {
+    pub command: String,
+    pub success: bool,
+    pub repository_path: String,
+    pub git_root: Option<String>,
+    pub repository_path_used: String,
+    pub is_git_repository: bool,
+    pub branch: Option<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
+    pub dbstate_project_status: DbStateProjectStatus,
+    pub registry_path: String,
+    pub registry_exists: bool,
+    pub status: String,
+    pub configured_tables: Vec<ReferenceDataConfiguredTableStatus>,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceDataConfiguredTableStatus {
+    pub schema: String,
+    pub name: String,
+    pub table_name: String,
+    pub file: String,
+    pub key_columns: Vec<String>,
+    pub ignored_columns: Vec<String>,
+    pub masked_columns: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -165,6 +200,98 @@ pub struct ReferenceDataTableConfig {
     pub(crate) ignore_columns: Vec<String>,
     pub(crate) masked_columns: Vec<String>,
     pub(crate) allow_deletes: bool,
+}
+
+pub fn reference_data_status(cwd: &Path) -> ReferenceDataStatusReport {
+    let project = status_report(cwd, CommandKind::RepoStatus);
+    let repository_path_used = project
+        .git_root
+        .clone()
+        .unwrap_or_else(|| project.repository_path.clone());
+    let mut report = ReferenceDataStatusReport {
+        command: "reference-data status".to_string(),
+        success: project.is_git_repository,
+        repository_path: project.repository_path.clone(),
+        git_root: project.git_root.clone(),
+        repository_path_used,
+        is_git_repository: project.is_git_repository,
+        branch: project.branch.clone(),
+        working_tree_status: project.working_tree_status,
+        is_dirty: project.is_dirty,
+        dbstate_project_status: project.dbstate_project_status,
+        registry_path: "database/reference-data/dbstate.reference-data.yml".to_string(),
+        registry_exists: false,
+        status: if project.is_git_repository {
+            "checking".to_string()
+        } else {
+            "notGitRepository".to_string()
+        },
+        configured_tables: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+    };
+
+    if !project.is_git_repository {
+        report
+            .errors
+            .push("Selected path is not inside a Git repository.".to_string());
+        return report;
+    }
+
+    let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
+    let registry_path = root.join("database/reference-data/dbstate.reference-data.yml");
+    report.registry_exists = registry_path.is_file();
+    if !report.registry_exists {
+        report.success = true;
+        report.status = "missingRegistry".to_string();
+        report.warnings.push(
+            "Reference-data registry was not found at database/reference-data/dbstate.reference-data.yml under the selected repository. DbState will not infer reference-data tables automatically."
+                .to_string(),
+        );
+        return report;
+    }
+
+    match read_reference_data_registry(&root) {
+        Ok(registry) => {
+            report.configured_tables = registry
+                .tables
+                .iter()
+                .map(reference_data_config_status)
+                .collect();
+            if report.configured_tables.is_empty() {
+                report.status = "emptyRegistry".to_string();
+                report.warnings.push(
+                    "No configured reference-data tables. DbState will not infer reference-data tables automatically."
+                        .to_string(),
+                );
+            } else {
+                report.status = "ready".to_string();
+            }
+        }
+        Err(error) => {
+            report.success = false;
+            report.status = "invalidRegistry".to_string();
+            report.errors.push(error);
+        }
+    }
+
+    report
+}
+
+fn reference_data_config_status(
+    config: &ReferenceDataTableConfig,
+) -> ReferenceDataConfiguredTableStatus {
+    let (schema, name) = split_schema_qualified_name(&config.name)
+        .unwrap_or_else(|_| ("".to_string(), config.name.clone()));
+    ReferenceDataConfiguredTableStatus {
+        schema,
+        name,
+        table_name: config.name.clone(),
+        file: config.file.clone(),
+        key_columns: config.key_columns.clone(),
+        ignored_columns: config.ignore_columns.clone(),
+        masked_columns: config.masked_columns.clone(),
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +360,24 @@ pub fn data_compare_postgres_with_connection(
         );
         return Ok(report);
     }
+    if let ReferenceDataSelection::Tables(selected) = selection {
+        let configured: BTreeSet<String> = selected_configs
+            .iter()
+            .map(|config| config.name.clone())
+            .collect();
+        let missing: Vec<String> = selected
+            .iter()
+            .filter(|table| !configured.contains(*table))
+            .cloned()
+            .collect();
+        if !missing.is_empty() {
+            report.errors.push(format!(
+                "Selected reference-data table is not configured in database/reference-data/dbstate.reference-data.yml: {}.",
+                missing.join(", ")
+            ));
+            return Ok(report);
+        }
+    }
     report.selected_tables = selected_configs
         .iter()
         .map(|config| config.name.clone())
@@ -285,7 +430,7 @@ pub(crate) fn parse_reference_data_registry(
     let value: Value = serde_yaml::from_str(content)
         .map_err(|error| format!("Invalid reference-data registry YAML: {error}"))?;
     let mapping = expect_mapping(&value, "reference-data registry")?;
-    let version = required_i64(mapping, "version", "reference-data registry")?;
+    let version = optional_i64(mapping, "version", "reference-data registry")?.unwrap_or(1);
     let tables_value = required_value(mapping, "tables", "reference-data registry")?;
     let table_values = match tables_value {
         Value::Sequence(values) => values,
@@ -295,20 +440,26 @@ pub(crate) fn parse_reference_data_registry(
     let mut tables = Vec::new();
     for table_value in table_values {
         let table_mapping = expect_mapping(table_value, "reference-data registry table")?;
-        let name = required_string(table_mapping, "name", "reference-data registry table")?;
+        let name = reference_data_table_name(table_mapping)?;
         validate_schema_qualified_name(&name)?;
-        let file = required_string(table_mapping, "file", "reference-data registry table")?;
+        let file = optional_string(table_mapping, "file", "reference-data registry table")?
+            .unwrap_or_else(|| format!("tables/{name}.yml"));
         ensure_reference_data_relative_path(&file)?;
-        let key_columns =
-            required_string_list(table_mapping, "key", "reference-data registry table")?;
+        let key_columns = required_alias_string_list(
+            table_mapping,
+            "key",
+            "keyColumns",
+            "reference-data registry table",
+        )?;
         if key_columns.is_empty() {
             return Err(format!(
                 "Reference-data table '{name}' must define at least one key column."
             ));
         }
-        let ignore_columns = optional_string_list(
+        let ignore_columns = optional_alias_string_list(
             table_mapping,
             "ignoreColumns",
+            "ignoredColumns",
             "reference-data registry table",
         )?;
         let masked_columns = optional_string_list(
@@ -367,43 +518,44 @@ pub(crate) fn parse_reference_data_table_state(
 ) -> Result<ReferenceDataTableState, String> {
     let value: Value = serde_yaml::from_str(content)
         .map_err(|error| format!("Invalid reference-data table YAML: {error}"))?;
-    let mapping = expect_mapping(&value, "reference-data table file")?;
-    let table_name = required_string(mapping, "table", "reference-data table file")?;
+    let file_label = reference_data_table_file_label(config);
+    let mapping = expect_mapping(&value, &file_label)?;
+    let table_name = required_string(mapping, "table", &file_label).map_err(|error| {
+        format!(
+            "{file_label}: {error}. Expected top-level field 'table: {}'.",
+            config.name
+        )
+    })?;
     if table_name != config.name {
         return Err(format!(
-            "Reference-data table file declares '{table_name}' but registry expects '{}'.",
+            "{file_label} declares table '{table_name}' but registry expects '{}'.",
             config.name
         ));
     }
-    let key_columns = required_string_list(mapping, "key", "reference-data table file")?;
+    let key_columns = optional_reference_table_key_columns(mapping, config)?;
     if key_columns != config.key_columns {
         return Err(format!(
-            "Reference-data table file key for '{}' does not match registry key.",
+            "{file_label} key for '{}' does not match registry key.",
             config.name
         ));
     }
-    let rows_value = required_value(mapping, "rows", "reference-data table file")?;
+    let rows_value = required_value(mapping, "rows", &file_label)?;
     let row_values = match rows_value {
         Value::Sequence(values) => values,
-        _ => return Err("reference-data table rows must be a list.".to_string()),
+        _ => return Err(format!("{file_label}: rows must be a list.")),
     };
 
     let mut rows = Vec::new();
     let mut keys = BTreeSet::new();
-    for row_value in row_values {
-        let row_mapping = expect_mapping(row_value, "reference-data row")?;
-        let mut values = BTreeMap::new();
-        for (key, value) in row_mapping {
-            let Some(column) = key.as_str() else {
-                return Err("Reference-data row column names must be strings.".to_string());
-            };
-            values.insert(column.to_string(), yaml_value_to_reference_string(value)?);
-        }
+    for (row_index, row_value) in row_values.iter().enumerate() {
+        let row_number = row_index + 1;
+        let values = reference_table_row_values(row_value, config, &file_label, row_number)?;
         let row = ReferenceDataRow { values };
-        let row_key = reference_row_key(&row, &config.key_columns)?;
+        let row_key = reference_row_key(&row, &config.key_columns)
+            .map_err(|error| format!("{file_label} row {row_number}: {error}"))?;
         if !keys.insert(row_key.clone()) {
             return Err(format!(
-                "Reference-data table '{}' has duplicate row key '{}'.",
+                "{file_label} row {row_number}: Reference-data table '{}' has duplicate row key '{}'.",
                 config.name, row_key
             ));
         }
@@ -415,6 +567,147 @@ pub(crate) fn parse_reference_data_table_state(
         key_columns,
         rows,
     })
+}
+
+fn reference_data_table_file_label(config: &ReferenceDataTableConfig) -> String {
+    format!("database/reference-data/{}", config.file)
+}
+
+fn optional_reference_table_key_columns(
+    mapping: &Mapping,
+    config: &ReferenceDataTableConfig,
+) -> Result<Vec<String>, String> {
+    if mapping.get(Value::String("key".to_string())).is_some() {
+        return required_string_list(mapping, "key", &reference_data_table_file_label(config));
+    }
+    if mapping
+        .get(Value::String("keyColumns".to_string()))
+        .is_some()
+    {
+        return required_string_list(
+            mapping,
+            "keyColumns",
+            &reference_data_table_file_label(config),
+        );
+    }
+    Ok(config.key_columns.clone())
+}
+
+fn reference_table_row_values(
+    row_value: &Value,
+    config: &ReferenceDataTableConfig,
+    file_label: &str,
+    row_number: usize,
+) -> Result<BTreeMap<String, Option<String>>, String> {
+    let row_mapping = expect_mapping(row_value, "reference-data row").map_err(|error| {
+        format!("{file_label} row {row_number}: {error}. Expected row format: key + values.")
+    })?;
+    if row_mapping
+        .get(Value::String("values".to_string()))
+        .is_some()
+    {
+        return canonical_reference_row_values(row_mapping, config, file_label, row_number);
+    }
+    if row_mapping.get(Value::String("key".to_string())).is_some()
+        && !config.key_columns.iter().any(|column| column == "key")
+    {
+        return Err(format!(
+            "{file_label} row {row_number} is missing required field 'values'. Expected row format: key + values."
+        ));
+    }
+    flat_reference_row_values(row_mapping, file_label, row_number)
+}
+
+fn canonical_reference_row_values(
+    row_mapping: &Mapping,
+    config: &ReferenceDataTableConfig,
+    file_label: &str,
+    row_number: usize,
+) -> Result<BTreeMap<String, Option<String>>, String> {
+    let Some(key_value) = row_mapping.get(Value::String("key".to_string())) else {
+        return Err(format!(
+            "{file_label} row {row_number} is missing required field 'key'. Expected row format: key + values."
+        ));
+    };
+    let key_values = reference_row_key_values(key_value, config, file_label, row_number)?;
+    let values_value = row_mapping
+        .get(Value::String("values".to_string()))
+        .expect("values field exists");
+    let values_mapping = expect_mapping(values_value, "reference-data row values").map_err(|error| {
+        format!("{file_label} row {row_number}: {error}. Expected 'values' to be a mapping of column names to scalar values.")
+    })?;
+    let mut values = flat_reference_row_values(values_mapping, file_label, row_number)?;
+    for (column, key_value) in key_values {
+        match values.get(&column) {
+            Some(existing) if existing != &key_value => {
+                return Err(format!(
+                    "{file_label} row {row_number}: key column '{column}' value does not match values.{column}."
+                ))
+            }
+            Some(_) => {}
+            None => {
+                values.insert(column, key_value);
+            }
+        }
+    }
+    Ok(values)
+}
+
+fn reference_row_key_values(
+    key_value: &Value,
+    config: &ReferenceDataTableConfig,
+    file_label: &str,
+    row_number: usize,
+) -> Result<BTreeMap<String, Option<String>>, String> {
+    match key_value {
+        Value::Mapping(mapping) => {
+            let values = flat_reference_row_values(mapping, file_label, row_number)?;
+            for key_column in &config.key_columns {
+                if !values.contains_key(key_column) {
+                    return Err(format!(
+                        "{file_label} row {row_number}: key is missing configured key column '{key_column}'. Expected key mapping to include all registry keyColumns."
+                    ));
+                }
+            }
+            Ok(values)
+        }
+        _ if config.key_columns.len() == 1 => {
+            let mut values = BTreeMap::new();
+            values.insert(
+                config.key_columns[0].clone(),
+                yaml_value_to_reference_string(key_value).map_err(|error| {
+                    format!(
+                        "{file_label} row {row_number}: {error}. Expected scalar key value."
+                    )
+                })?,
+            );
+            Ok(values)
+        }
+        _ => Err(format!(
+            "{file_label} row {row_number}: scalar key is supported only for a single key column. Expected key mapping with all registry keyColumns."
+        )),
+    }
+}
+
+fn flat_reference_row_values(
+    row_mapping: &Mapping,
+    file_label: &str,
+    row_number: usize,
+) -> Result<BTreeMap<String, Option<String>>, String> {
+    let mut values = BTreeMap::new();
+    for (key, value) in row_mapping {
+        let Some(column) = key.as_str() else {
+            return Err(format!(
+                "{file_label} row {row_number}: Reference-data row column names must be strings."
+            ));
+        };
+        values.insert(
+            column.to_string(),
+            yaml_value_to_reference_string(value)
+                .map_err(|error| format!("{file_label} row {row_number}: {error}"))?,
+        );
+    }
+    Ok(values)
 }
 
 fn read_reference_data_rows_from_postgres(
@@ -784,12 +1077,24 @@ fn required_string(mapping: &Mapping, key: &str, context: &str) -> Result<String
     }
 }
 
-fn required_i64(mapping: &Mapping, key: &str, context: &str) -> Result<i64, String> {
-    match required_value(mapping, key, context)? {
-        Value::Number(value) => value
+fn optional_string(mapping: &Mapping, key: &str, context: &str) -> Result<Option<String>, String> {
+    match mapping.get(Value::String(key.to_string())) {
+        Some(Value::String(value)) if !value.trim().is_empty() => Ok(Some(value.clone())),
+        Some(_) => Err(format!(
+            "{context} field '{key}' must be a non-empty string."
+        )),
+        None => Ok(None),
+    }
+}
+
+fn optional_i64(mapping: &Mapping, key: &str, context: &str) -> Result<Option<i64>, String> {
+    match mapping.get(Value::String(key.to_string())) {
+        Some(Value::Number(value)) => value
             .as_i64()
+            .map(Some)
             .ok_or_else(|| format!("{context} field '{key}' must be an integer.")),
-        _ => Err(format!("{context} field '{key}' must be an integer.")),
+        Some(_) => Err(format!("{context} field '{key}' must be an integer.")),
+        None => Ok(None),
     }
 }
 
@@ -806,6 +1111,29 @@ fn required_string_list(
     }
 }
 
+fn required_alias_string_list(
+    mapping: &Mapping,
+    primary_key: &str,
+    alias_key: &str,
+    context: &str,
+) -> Result<Vec<String>, String> {
+    if mapping
+        .get(Value::String(primary_key.to_string()))
+        .is_some()
+    {
+        return required_string_list(mapping, primary_key, context);
+    }
+    match mapping.get(Value::String(alias_key.to_string())) {
+        Some(Value::Sequence(values)) => yaml_sequence_to_strings(values, alias_key, context),
+        Some(_) => Err(format!(
+            "{context} field '{alias_key}' must be a list of strings."
+        )),
+        None => Err(format!(
+            "{context} is missing required field '{primary_key}'."
+        )),
+    }
+}
+
 fn optional_string_list(
     mapping: &Mapping,
     key: &str,
@@ -818,6 +1146,38 @@ fn optional_string_list(
         )),
         None => Ok(Vec::new()),
     }
+}
+
+fn optional_alias_string_list(
+    mapping: &Mapping,
+    primary_key: &str,
+    alias_key: &str,
+    context: &str,
+) -> Result<Vec<String>, String> {
+    if mapping
+        .get(Value::String(primary_key.to_string()))
+        .is_some()
+    {
+        return optional_string_list(mapping, primary_key, context);
+    }
+    match mapping.get(Value::String(alias_key.to_string())) {
+        Some(Value::Sequence(values)) => yaml_sequence_to_strings(values, alias_key, context),
+        Some(_) => Err(format!(
+            "{context} field '{alias_key}' must be a list of strings."
+        )),
+        None => Ok(Vec::new()),
+    }
+}
+
+fn reference_data_table_name(mapping: &Mapping) -> Result<String, String> {
+    let name = required_string(mapping, "name", "reference-data registry table")?;
+    if name.contains('.') {
+        return Ok(name);
+    }
+    let Some(schema) = optional_string(mapping, "schema", "reference-data registry table")? else {
+        return Ok(name);
+    };
+    Ok(format!("{schema}.{name}"))
 }
 
 fn yaml_sequence_to_strings(
@@ -872,6 +1232,72 @@ pub(crate) fn empty_reference_data_compare_report() -> ReferenceDataCompareRepor
         warnings: Vec::new(),
         errors: Vec::new(),
     }
+}
+
+impl ReferenceDataStatusReport {
+    pub fn to_json(&self) -> String {
+        let mut json = String::new();
+        json.push('{');
+        write_json_string_field(&mut json, "command", &self.command, true);
+        write_json_bool_field(&mut json, "success", self.success);
+        write_repository_context_fields(
+            &mut json,
+            &self.repository_path,
+            self.git_root.as_deref(),
+            self.is_git_repository,
+            self.branch.as_deref(),
+            self.working_tree_status,
+            self.is_dirty,
+        );
+        write_json_string_field(
+            &mut json,
+            "repositoryPathUsed",
+            &self.repository_path_used,
+            false,
+        );
+        write_json_string_field(
+            &mut json,
+            "dbstateProjectStatus",
+            self.dbstate_project_status.as_str(),
+            false,
+        );
+        write_json_string_field(&mut json, "registryPath", &self.registry_path, false);
+        write_json_bool_field(&mut json, "registryExists", self.registry_exists);
+        write_json_string_field(&mut json, "status", &self.status, false);
+        write_reference_data_configured_table_array_field(
+            &mut json,
+            "configuredTables",
+            &self.configured_tables,
+        );
+        write_json_array_field(&mut json, "warnings", &self.warnings);
+        write_json_array_field(&mut json, "errors", &self.errors);
+        json.push('}');
+        json
+    }
+}
+
+fn write_reference_data_configured_table_array_field(
+    json: &mut String,
+    name: &str,
+    values: &[ReferenceDataConfiguredTableStatus],
+) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schema", &value.schema, true);
+        write_json_string_field(json, "name", &value.name, false);
+        write_json_string_field(json, "tableName", &value.table_name, false);
+        write_json_string_field(json, "file", &value.file, false);
+        write_json_array_field(json, "keyColumns", &value.key_columns);
+        write_json_array_field(json, "ignoredColumns", &value.ignored_columns);
+        write_json_array_field(json, "maskedColumns", &value.masked_columns);
+        json.push('}');
+    }
+    json.push(']');
 }
 
 impl ReferenceDataCompareReport {

@@ -231,19 +231,19 @@ const UI_HTML: &str = r#"<!doctype html>
             <input id="plan-exclude" type="text" autocomplete="off" disabled>
           </label>
           <label for="data-scope">Reference-data scope
-            <select id="data-scope" disabled>
+            <select id="data-scope">
+              <option value="selected">Selected configured tables</option>
               <option value="all">All configured tables</option>
-              <option value="table">Table</option>
             </select>
           </label>
           <label for="data-table">Reference-data table
-            <select id="data-table" disabled>
-              <option value="">All</option>
+            <select id="data-table">
+              <option value="">No configured tables loaded</option>
             </select>
           </label>
         </div>
         <p class="note">Run Inspect first to populate schema and table lists.</p>
-        <p class="note beta-disabled-note">Disabled in current beta. Include/exclude filters and reference-data compare are out-of-scope for this beta version.</p>
+        <p class="note">Reference-data compare is read-only. DbState does not insert, update, delete, merge, or apply data changes. Only tables listed in <code>database/reference-data/dbstate.reference-data.yml</code> are reference-data tables. Masked columns remain masked in results.</p>
         <div class="object-filter-row" aria-label="Object type filters">
           <label><input type="checkbox" checked disabled> schemas</label>
           <label><input type="checkbox" checked disabled> tables</label>
@@ -259,8 +259,64 @@ const UI_HTML: &str = r#"<!doctype html>
           <button type="button" data-action="inspect" data-standard-operation-action>Inspect</button>
           <button type="button" data-action="compare" data-standard-operation-action>Run Compare</button>
           <button type="button" data-action="plan" data-standard-operation-action>Run Plan</button>
-          <button type="button" data-action="data-compare" data-standard-operation-action disabled>Run Reference Data Compare</button>
+          <button type="button" data-action="data-compare" data-standard-operation-action>Run Reference Data Compare</button>
         </div>
+        <section class="subsection reference-data-setup-panel" id="reference-data-panel" data-testid="reference-data-compare-panel">
+          <h3>Reference-Data Compare</h3>
+          <p class="note">The repository registry is the source of truth. DbState does not infer or enroll reference-data tables automatically.</p>
+          <div class="button-row">
+            <button type="button" data-action="reference-data-status" data-testid="reference-data-status">Load Registry Status</button>
+            <button type="button" data-action="reference-data-select-all" data-testid="reference-data-select-all">Select all</button>
+            <button type="button" data-action="reference-data-clear-selection" data-testid="reference-data-clear-selection">Clear selection</button>
+            <span id="reference-data-selected-count" data-testid="reference-data-selected-count">0 selected</span>
+          </div>
+          <dl class="summary-list compact" id="reference-data-registry-summary" data-testid="reference-data-registry-summary"></dl>
+          <div class="table-wrap">
+            <table class="results-grid" aria-label="Configured reference-data tables" data-testid="reference-data-configured-tables">
+              <thead>
+                <tr><th>Select</th><th>Schema</th><th>Table</th><th>Key columns</th><th>Ignored columns</th><th>Masked columns</th></tr>
+              </thead>
+              <tbody id="reference-data-configured-body">
+                <tr><td colspan="6">Load registry status to show configured reference-data tables.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <details open>
+            <summary>Setup guidance</summary>
+            <p class="note">The registry file defines which tables are reference data. The table file contains expected rows. <code>key</code> identifies the row and <code>values</code> contains expected column values. <code>ignoredColumns</code> do not drive differences. <code>maskedColumns</code> are not exposed.</p>
+            <p class="note">Registry file: <code>database/reference-data/dbstate.reference-data.yml</code></p>
+            <pre id="reference-data-example-yaml" data-testid="reference-data-example-yaml">version: 1
+tables:
+  - schema: public
+    name: country
+    keyColumns:
+      - country_id
+    ignoredColumns:
+      - last_update
+    maskedColumns: []
+</pre>
+            <p class="note">Table row file: <code>database/reference-data/tables/public.country.yml</code></p>
+            <p class="note"><strong>Canonical table file format</strong></p>
+            <pre id="reference-data-table-example-yaml" data-testid="reference-data-table-example-yaml">version: 1
+table: public.country
+rows:
+  - key:
+      country_id: 1
+    values:
+      country_id: 1
+      country: Afghanistan
+      last_update: "2006-02-15 09:44:00+00"
+</pre>
+            <p class="note"><strong>Simplified supported format</strong> derives row keys from registry <code>keyColumns</code>.</p>
+            <pre id="reference-data-table-flat-example-yaml" data-testid="reference-data-table-flat-example-yaml">version: 1
+table: public.country
+rows:
+  - country_id: 1
+    country: Afghanistan
+    last_update: "2006-02-15 09:44:00+00"
+</pre>
+          </details>
+        </section>
         <div id="repository-sync-controls" class="subsection" hidden>
           <h3>Database to Repository Compare</h3>
           <p class="note">Preview reads PostgreSQL and the selected repository without writing files. Write repository changes writes only under the selected repository's database/objects/ paths, requires a clean working tree, and never changes PostgreSQL.</p>
@@ -340,6 +396,11 @@ const UI_HTML: &str = r#"<!doctype html>
             </tbody>
           </table>
         </div>
+        <section class="subsection" id="reference-data-row-detail" data-testid="reference-data-row-detail">
+          <h3>Reference-Data Row Detail</h3>
+          <p class="note">Read-only row comparison detail. Masked values are displayed as [masked]. Ignored columns do not cause differences.</p>
+          <dl class="summary-list compact" id="reference-data-row-detail-summary"></dl>
+        </section>
       </section>
 
       <section class="workflow-panel" id="step-object-diff">
@@ -1411,6 +1472,7 @@ const UI_JS: &str = r#"(function () {
     inspect: "/api/v1/postgres/inspect",
     compare: "/api/v1/postgres/compare",
     plan: "/api/v1/postgres/plan",
+    referenceDataStatus: "/api/v1/reference-data/status",
     dataCompare: "/api/v1/postgres/data-compare",
     objectDdl: "/api/v1/postgres/object-ddl",
     repositorySyncPreview: "/api/v1/postgres/repository-sync/preview",
@@ -1433,6 +1495,8 @@ const UI_JS: &str = r#"(function () {
     inspectTables: [],
     inspectColumns: [],
     referenceDataTables: [],
+    referenceDataConfiguredTables: [],
+    referenceDataSelectedTables: new Set(),
     profiles: [],
     directoryRoots: [],
     directoryCurrentPath: "",
@@ -1612,15 +1676,14 @@ const UI_JS: &str = r#"(function () {
 
   function dataScope() {
     const scope = value("data-scope");
-    const body = { scope: scope };
-    if (scope === "table") {
-      const table = value("data-table");
-      if (!table) {
-        throw new Error("Reference-data table scope requires a configured table selection.");
-      }
-      body.table = table;
+    if (scope === "all") {
+      return { scope: "all" };
     }
-    return body;
+    const selected = Array.from(state.referenceDataSelectedTables).sort();
+    if (!selected.length) {
+      throw new Error("Select at least one configured reference-data table.");
+    }
+    return { selectedTables: selected };
   }
 
   function repositorySyncWriteConfirmed() {
@@ -1852,24 +1915,17 @@ const UI_JS: &str = r#"(function () {
   }
 
   function updateWorkflowModePanels() {
-    const select = byId("workflow-mode");
     const selectedMode = value("workflow-mode") || "inspect";
-    if (selectedMode === "data") {
-      showModal(
-        "Reference-Data Compare Is Out of Scope",
-        "Reference-data compare is out-of-scope of the current beta version.\n\nThis beta focuses on PostgreSQL schema/object workflows: inspect, database-to-repository capture, repository-to-database compare, Object Diff, and release artifact review."
-      );
-      select.value = state.previousWorkflowMode || "inspect";
-    }
-    const mode = value("workflow-mode") || "inspect";
+    const mode = selectedMode;
     state.previousWorkflowMode = mode;
     const layout = workflowLayout(mode);
     byId("repository-sync-controls").hidden = !isDatabaseToRepositoryMode(mode);
+    byId("reference-data-panel").hidden = mode !== "data";
     document.querySelectorAll("[data-standard-operation-action]").forEach(function (button) {
       const disabledForDbToRepo = isDatabaseToRepositoryMode(mode);
       const isDataCompare = button.dataset.action === "data-compare";
-      button.hidden = disabledForDbToRepo;
-      button.disabled = disabledForDbToRepo || isDataCompare;
+      button.hidden = disabledForDbToRepo || (mode === "data" ? !isDataCompare : isDataCompare);
+      button.disabled = disabledForDbToRepo;
     });
     byId("source-target-description").textContent = layout.description;
     byId("source-kind").textContent = layout.sourceKind;
@@ -2082,6 +2138,10 @@ const UI_JS: &str = r#"(function () {
   }
 
   function updateReferenceDataOptions(data) {
+    if (data && Array.isArray(data.configuredTables)) {
+      updateReferenceDataConfiguredTables(data);
+      return;
+    }
     if (!data || data.success === false || !Array.isArray(data.tableResults)) {
       return;
     }
@@ -2097,6 +2157,92 @@ const UI_JS: &str = r#"(function () {
     if (state.referenceDataTables.indexOf(selectedTable) >= 0) {
       tableSelect.value = selectedTable;
     }
+  }
+
+  function updateReferenceDataConfiguredTables(data) {
+    state.referenceDataConfiguredTables = Array.isArray(data.configuredTables)
+      ? data.configuredTables.slice().sort(function (left, right) {
+          return textOrEmpty(left.tableName).localeCompare(textOrEmpty(right.tableName));
+        })
+      : [];
+    state.referenceDataTables = state.referenceDataConfiguredTables.map(function (table) {
+      return table.tableName;
+    });
+    const configuredNames = new Set(state.referenceDataConfiguredTables.map(function (table) {
+      return table.tableName;
+    }));
+    state.referenceDataSelectedTables = new Set(Array.from(state.referenceDataSelectedTables).filter(function (table) {
+      return configuredNames.has(table);
+    }));
+    updateSummary("reference-data-registry-summary", {
+      repositoryPathUsed: data.repositoryPathUsed || data.gitRoot || data.repositoryPath || "",
+      registryPath: data.registryPath || "database/reference-data/dbstate.reference-data.yml",
+      registryExists: data.registryExists === true,
+      status: data.status || (data.success === false ? "invalid" : state.referenceDataConfiguredTables.length ? "ready" : "needs setup"),
+      configuredTables: state.referenceDataConfiguredTables.length,
+      warnings: Array.isArray(data.warnings) ? data.warnings.join("; ") : ""
+    });
+    renderReferenceDataConfiguredTables();
+  }
+
+  function renderReferenceDataConfiguredTables() {
+    const body = byId("reference-data-configured-body");
+    body.innerHTML = "";
+    const tableSelect = byId("data-table");
+    const selectedTable = tableSelect.value;
+    resetSelect(tableSelect, "No configured tables loaded");
+    if (!state.referenceDataConfiguredTables.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 6;
+      td.textContent = "No configured reference-data tables. Add tables to database/reference-data/dbstate.reference-data.yml.";
+      tr.appendChild(td);
+      body.appendChild(tr);
+      updateReferenceDataSelectedCount();
+      return;
+    }
+    state.referenceDataConfiguredTables.forEach(function (table) {
+      appendOption(tableSelect, table.tableName, table.tableName);
+      const tr = document.createElement("tr");
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.setAttribute("data-testid", "reference-data-table-checkbox");
+      checkbox.checked = state.referenceDataSelectedTables.has(table.tableName);
+      checkbox.addEventListener("change", function () {
+        if (checkbox.checked) {
+          state.referenceDataSelectedTables.add(table.tableName);
+        } else {
+          state.referenceDataSelectedTables.delete(table.tableName);
+        }
+        updateReferenceDataSelectedCount();
+      });
+      [
+        checkbox,
+        table.schema || "",
+        table.name || "",
+        textOrEmpty(table.keyColumns),
+        textOrEmpty(table.ignoredColumns),
+        textOrEmpty(table.maskedColumns) || "[none]"
+      ].forEach(function (value) {
+        const td = document.createElement("td");
+        if (value && value.nodeType) {
+          td.appendChild(value);
+        } else {
+          td.textContent = textOrEmpty(value);
+        }
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+    if (state.referenceDataTables.indexOf(selectedTable) >= 0) {
+      tableSelect.value = selectedTable;
+    }
+    updateReferenceDataSelectedCount();
+  }
+
+  function updateReferenceDataSelectedCount() {
+    const count = state.referenceDataSelectedTables.size;
+    byId("reference-data-selected-count").textContent = count + " selected";
   }
 
   function updateObjectTypeFilterOptions(rows, label) {
@@ -2540,6 +2686,23 @@ const UI_JS: &str = r#"(function () {
     });
   }
 
+  function referenceTableStatus(table) {
+    const counts = table && table.rowCounts ? table.rowCounts : {};
+    if ((counts.repoDifferent || 0) > 0) {
+      return "repoDifferent";
+    }
+    if ((counts.repoOnly || 0) > 0) {
+      return "repoOnly";
+    }
+    if ((counts.databaseOnly || 0) > 0) {
+      return "databaseOnly";
+    }
+    if ((counts.skipped || 0) > 0 || (Array.isArray(table.errors) && table.errors.length)) {
+      return "skipped";
+    }
+    return "inSync";
+  }
+
   function rowsFromResponse(data, label) {
     const rows = [];
     appendObjectList(rows, data, "inSync", "inSync", "unknown");
@@ -2789,8 +2952,8 @@ const UI_JS: &str = r#"(function () {
           objectType: "referenceDataTable",
           schema: tableIdentity.schema,
           name: tableIdentity.name,
-          status: "inspected",
-          operation: "compare only",
+          status: referenceTableStatus(table),
+          operation: "read-only compare",
           warnings: table.warnings || [],
           source: "repository reference-data",
           target: "postgresql",
@@ -2798,17 +2961,23 @@ const UI_JS: &str = r#"(function () {
         });
         if (Array.isArray(table.rowResults)) {
           table.rowResults.forEach(function (row) {
+            const rawRow = Object.assign({}, row, {
+              keyColumns: table.keyColumns || [],
+              ignoredColumns: table.ignoredColumns || [],
+              maskedColumns: row.maskedColumns || table.maskedColumns || [],
+              tableCounts: table.rowCounts || {}
+            });
             rows.push({
               objectRef: "referenceDataRow:" + table.tableName + ":" + textOrEmpty(row.rowKey),
               objectType: "referenceDataRow",
               schema: tableIdentity.schema,
               name: tableIdentity.name + " " + textOrEmpty(row.rowKey),
               status: row.classification || "row",
-              operation: "compare only",
+              operation: "read-only compare",
               warnings: row.warnings || [],
               source: "repository reference-data",
               target: "postgresql",
-              raw: row
+              raw: rawRow
             });
           });
         }
@@ -2947,7 +3116,7 @@ const UI_JS: &str = r#"(function () {
         state.selectedIndex = visibleIndex;
         renderResults(state.rows, true);
         renderSelectedObject();
-        showStep("object-diff");
+        showStep(row.objectType === "referenceDataRow" ? "results" : "object-diff");
       });
       body.appendChild(tr);
     });
@@ -3371,6 +3540,7 @@ const UI_JS: &str = r#"(function () {
   function renderSelectedObject() {
     const row = state.visibleRows[state.selectedIndex];
     const direction = directionForResultRow(row);
+    renderReferenceDataRowDetail(row);
     setObjectDiffDdlTestIds(direction);
     byId("source-type-label").textContent = direction.sourceType;
     byId("target-type-label").textContent = direction.targetType;
@@ -3409,6 +3579,35 @@ const UI_JS: &str = r#"(function () {
     updateDdlComparisonStatus(null, null);
     byId("selected-json").textContent = redactedJson(objectDiffDisplayPayload(row, direction));
     loadSelectedObjectDdl(row, direction);
+  }
+
+  function renderReferenceDataRowDetail(row) {
+    const target = byId("reference-data-row-detail-summary");
+    if (!target) {
+      return;
+    }
+    target.innerHTML = "";
+    if (!row || row.objectType !== "referenceDataRow") {
+      updateSummary("reference-data-row-detail-summary", {
+        selectedRow: "none",
+        guidance: "Select a reference-data row result to inspect read-only row metadata."
+      });
+      return;
+    }
+    const raw = row.raw || {};
+    const maskedColumns = Array.isArray(raw.maskedColumns) ? raw.maskedColumns : [];
+    const changedColumns = Array.isArray(raw.changedColumns) ? raw.changedColumns : [];
+    const ignoredColumns = Array.isArray(raw.ignoredColumns) ? raw.ignoredColumns : [];
+    updateSummary("reference-data-row-detail-summary", {
+      table: raw.tableName || row.schema + "." + row.name,
+      keyValues: raw.rowKey || "",
+      classification: raw.classification || row.status,
+      changedColumns: changedColumns.length ? changedColumns.join(", ") : "[none]",
+      repositoryValue: maskedColumns.length ? "[masked]" : "not exposed in UI response",
+      databaseValue: maskedColumns.length ? "[masked]" : "not exposed in UI response",
+      maskedColumns: maskedColumns.length ? maskedColumns.join(", ") : "[none]",
+      ignoredColumns: ignoredColumns.length ? ignoredColumns.join(", ") + " ignored for comparison" : "[none]"
+    });
   }
 
   function objectDiffDisplayPayload(row, direction) {
@@ -3609,6 +3808,18 @@ const UI_JS: &str = r#"(function () {
   }
 
   async function loadSelectedObjectDdl(row, direction) {
+    if (row.objectType === "referenceDataRow" || row.objectType === "referenceDataTable") {
+      state.selectedObjectDdl = {
+        repositoryDdl: "",
+        databaseDdl: "",
+        objectOnly: {},
+        fullContext: {},
+        relatedObjects: { repository: [], database: [] },
+        warnings: ["Reference-data compare rows are read-only data results, not DDL objects."]
+      };
+      renderLoadedObjectDiff();
+      return;
+    }
     let detail = {};
     try {
       detail = await requestJson(approvedEndpoints.objectDdl, objectDdlRequest(row));
@@ -4291,7 +4502,7 @@ const UI_JS: &str = r#"(function () {
       if (label === "Inspect") {
         updateCompareOptionLists(data);
       }
-      if (label === "Reference-data compare") {
+      if (label === "Reference-data compare" || label === "Reference-data status") {
         updateReferenceDataOptions(data);
       }
       const rows = rowsFromResponse(data, label);
@@ -4360,6 +4571,16 @@ const UI_JS: &str = r#"(function () {
 
   document.getElementById("compare-schema").addEventListener("change", function () {
     updateTableOptions();
+  });
+
+  document.getElementById("data-table").addEventListener("change", function () {
+    const table = value("data-table");
+    state.referenceDataSelectedTables = new Set();
+    if (table) {
+      state.referenceDataSelectedTables.add(table);
+      byId("data-scope").value = "selected";
+    }
+    renderReferenceDataConfiguredTables();
   });
 
   document.getElementById("workflow-mode").addEventListener("change", function () {
@@ -4514,10 +4735,31 @@ const UI_JS: &str = r#"(function () {
   });
 
   document.querySelector("[data-action='data-compare']").addEventListener("click", function () {
-    showModal(
-      "Reference-Data Compare Is Out of Scope",
-      "Reference-data compare is out-of-scope of the current beta version.\n\nThis beta focuses on PostgreSQL schema/object workflows: inspect, database-to-repository capture, repository-to-database compare, Object Diff, and release artifact review."
-    );
+    try {
+      if (!standardOperationAllowed("Reference-data compare")) {
+        return;
+      }
+      run("Reference-data compare", approvedEndpoints.dataCompare, attachWorkspacePath(attachConnection(dataScope())), { step: "results" });
+    } catch (error) {
+      responseSummary.textContent = "Reference-data compare: " + error.message;
+    }
+  });
+
+  document.querySelector("[data-action='reference-data-status']").addEventListener("click", function () {
+    run("Reference-data status", approvedEndpoints.referenceDataStatus, attachWorkspacePath({}), { step: "compare-options" });
+  });
+
+  document.querySelector("[data-action='reference-data-select-all']").addEventListener("click", function () {
+    state.referenceDataSelectedTables = new Set(state.referenceDataConfiguredTables.map(function (table) {
+      return table.tableName;
+    }));
+    byId("data-scope").value = "selected";
+    renderReferenceDataConfiguredTables();
+  });
+
+  document.querySelector("[data-action='reference-data-clear-selection']").addEventListener("click", function () {
+    state.referenceDataSelectedTables = new Set();
+    renderReferenceDataConfiguredTables();
   });
 
   document.querySelector("[data-action='repository-sync-preview']").addEventListener("click", function () {

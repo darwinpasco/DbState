@@ -23,8 +23,8 @@ C:\DbState\PrivateBetaDemo
 | Health endpoint | Run `Invoke-RestMethod http://127.0.0.1:4587/health`. | JSON health response succeeds. |  |  |
 | UI load | Open `http://127.0.0.1:4587/`. | UI loads with safety banner. |  |  |
 | Workflow mode order | Open Source & Target. | Workflow Mode order is PostgreSQL Inspect Only, Repository to Database Compare, Database to Repository Compare, Reference-Data Compare. Default is PostgreSQL Inspect Only. |  |  |
-| Reference-Data Compare guardrail | Select Reference-Data Compare. | Out-of-scope modal appears and UI returns to the previous valid workflow. |  |  |
-| Disabled beta controls | Open Compare Options. | Include refs, Exclude refs, Reference-data scope, Reference-data table, and Run Reference Data Compare are disabled. |  |  |
+| Reference-Data Compare workflow | Select Reference-Data Compare. | Registry status, configured table selection, setup guidance, and read-only compare controls appear. No out-of-scope modal appears. |  |  |
+| Disabled beta controls | Open Compare Options. | Include refs and Exclude refs remain disabled. Reference-data scope, configured table selection, and Run Reference Data Compare are enabled only for the reference-data workflow. |  |  |
 | Non-Git workspace guardrail | Select a non-Git folder and run workspace/repo/init actions. | Not a Git Repository modal appears instead of confusing raw output. |  |  |
 | Non-production database inspect | Follow walkthrough through Inspect against the selected non-production database. | Supported object types appear. Pagila should show table, index, view, constraint, regular-function, and trigger rows where present. Unsupported object types remain deferred review context. |  |  |
 | Results status filter | Run an operation and use the Status dropdown. | All is the default and status filtering works. repoDifferent rows are prioritized near the top when present. |  |  |
@@ -65,6 +65,7 @@ C:\DbState\PrivateBetaDemo
 | Release dry-run | Run `dbstate release postgres --all --name beta_review --dry-run --format json`. | Planned artifacts return and no files are written. |  |  |
 | Release write | Run `dbstate release postgres --all --name beta_review`. | Review artifacts are written under `database/releases/`. |  |  |
 | Data compare empty registry | Run configured reference-data compare against empty registry. | Valid empty result or clear configured-table guidance. |  |  |
+| Data compare configured table selection | Load reference-data registry status and select configured tables. | Only tables listed in `database/reference-data/dbstate.reference-data.yml` are selectable. Masked columns are shown as masked and no data write or DML action is offered. |  |  |
 
 ## Validation
 
