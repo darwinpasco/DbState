@@ -347,7 +347,8 @@ pub fn plan_postgres_with_inventory(
                 | ObjectRef::MaterializedView { .. }
                 | ObjectRef::Constraint { .. }
                 | ObjectRef::Function { .. }
-                | ObjectRef::Trigger { .. } => String::new(),
+                | ObjectRef::Trigger { .. }
+                | ObjectRef::Grant { .. } => String::new(),
             };
             if !required_schema_path.is_empty() && !root.join(&required_schema_path).is_file() {
                 let warning = DependencyWarning {
@@ -557,6 +558,22 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                 ],
             };
         }
+        if matches!(input.object_ref, ObjectRef::Grant { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "grantPrivilegesReviewSql".to_string(),
+                operation_label: "Grant Privileges".to_string(),
+                safety_badge: "Review SQL".to_string(),
+                safety_level: "reviewOnly".to_string(),
+                operation_explanation:
+                    "DbState can generate review-only GRANT SQL for this new repository grant. DbState does not execute SQL."
+                        .to_string(),
+                operation_reasons: vec![
+                    "Grant exists in repository desired state and is missing from the target database."
+                        .to_string(),
+                    "DbState does not generate REVOKE.".to_string(),
+                ],
+            };
+        }
         return PlanOperationMetadata {
             operation_kind: "createReviewSql".to_string(),
             operation_label: "Review SQL".to_string(),
@@ -628,6 +645,22 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                     "DROP MATERIALIZED VIEW generation is not available in Private Beta."
                         .to_string(),
                     "REFRESH MATERIALIZED VIEW is not available in DbState.".to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::Grant { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "databaseOnlyReview".to_string(),
+                operation_label: "Database Only".to_string(),
+                safety_badge: "Database Only".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Grant exists only in the target database. DbState does not generate destructive privilege changes or REVOKE SQL."
+                        .to_string(),
+                operation_reasons: vec![
+                    "Database-only grants are informational/manual-review only in this version."
+                        .to_string(),
+                    "DbState does not generate REVOKE.".to_string(),
                 ],
             };
         }
@@ -711,6 +744,21 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                         .to_string(),
                 operation_reasons: vec![
                     "DbState does not generate DROP MATERIALIZED VIEW, replacement materialized view SQL, or REFRESH MATERIALIZED VIEW for changed materialized views."
+                        .to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::Grant { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "manualReviewRequired".to_string(),
+                operation_label: "Manual Review".to_string(),
+                safety_badge: "Manual Review".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Grant differs, but changed grants are manual-review only in this version."
+                        .to_string(),
+                operation_reasons: vec![
+                    "DbState does not generate REVOKE or grant-delta SQL for changed grants."
                         .to_string(),
                 ],
             };

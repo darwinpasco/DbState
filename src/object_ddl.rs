@@ -2,14 +2,15 @@ use crate::git::git_root;
 use crate::postgres::{
     inspect_postgres, invalid_postgres_url_message, is_postgres_connection_url,
     render_constraint_sql, render_enum_sql, render_extension_sql, render_function_sql,
-    render_index_sql, render_materialized_view_sql, render_schema_sql, render_sequence_sql,
-    render_table_sql, render_trigger_sql, render_view_sql, ColumnInfo, ConstraintInfo,
-    FunctionInfo, IndexInfo, TriggerInfo,
+    render_grant_sql, render_index_sql, render_materialized_view_sql, render_schema_sql,
+    render_sequence_sql, render_table_sql, render_trigger_sql, render_view_sql, ColumnInfo,
+    ConstraintInfo, FunctionInfo, GrantInfo, IndexInfo, TriggerInfo,
 };
 use crate::repository::{
     enum_file_path, extension_file_path, function_identity_slug, index_file_path,
-    materialized_view_file_path, safe_file_component, schema_file_path, sequence_file_path,
-    table_file_path, trigger_file_path, view_file_path,
+    materialized_view_file_path, object_ref_from_relative_path, safe_file_component,
+    schema_file_path, sequence_file_path, table_file_path, trigger_file_path, view_file_path,
+    ObjectRef,
 };
 use crate::service::{
     parse_service_request, request_string, resolve_service_postgres_connection,
@@ -55,6 +56,7 @@ pub(crate) fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttp
             | "constraint"
             | "function"
             | "trigger"
+            | "grant"
     ) {
         return service_json_response(
             200,
@@ -223,6 +225,7 @@ fn default_object_relative_path(
         "constraint" => {
             Err("Constraint DDL detail requires a release/result relativePath.".to_string())
         }
+        "grant" => Err("Grant DDL detail requires a release/result relativePath.".to_string()),
         "trigger" => {
             let parts: Vec<&str> = object_name.split('.').collect();
             if parts.len() == 2 {
@@ -349,6 +352,35 @@ fn repository_full_context_ddl(
                 "Not available in Private Beta",
                 "Materialized view comment rendering is deferred.",
             ));
+        }
+        if object_type == "grant" {
+            related.push(RelatedObjectSummary::new(
+                "Schema",
+                schema,
+                "Grant target schema",
+            ));
+            if let Some(ddl) = object_only_ddl {
+                if let Some(target_kind) = ddl
+                    .lines()
+                    .find_map(|line| line.strip_prefix("-- Grant target kind: ").map(str::trim))
+                {
+                    related.push(RelatedObjectSummary::new(
+                        "Target Object",
+                        target_kind,
+                        "Grant target kind",
+                    ));
+                }
+                if let Some(grantee) = ddl
+                    .lines()
+                    .find_map(|line| line.strip_prefix("-- Grantee: ").map(str::trim))
+                {
+                    related.push(RelatedObjectSummary::new(
+                        "Grantee Role",
+                        grantee,
+                        "Informational role dependency",
+                    ));
+                }
+            }
         }
         notes.push("Full context is the same as object-only DDL for this object type.".to_string());
         return Ok((object_only_ddl.map(ToOwned::to_owned), related, notes));
@@ -577,6 +609,7 @@ fn database_full_context_ddl(
             "materializedView" => {
                 database_materialized_view_related_objects(connection_url, schema, object_name)?
             }
+            "grant" => database_grant_related_objects(connection_url, relative_path)?,
             _ => Vec::new(),
         };
         return Ok((
@@ -718,6 +751,12 @@ fn validate_repository_object_relative_path(relative_path: &str) -> Result<(), S
         || relative_path.starts_with("database/objects/materialized-views/")
         || relative_path.starts_with("database/objects/functions/")
         || relative_path.starts_with("database/objects/triggers/")
+        || relative_path.starts_with("database/objects/grants/schemas/")
+        || relative_path.starts_with("database/objects/grants/tables/")
+        || relative_path.starts_with("database/objects/grants/views/")
+        || relative_path.starts_with("database/objects/grants/materialized-views/")
+        || relative_path.starts_with("database/objects/grants/sequences/")
+        || relative_path.starts_with("database/objects/grants/functions/")
         || relative_path.starts_with("database/objects/constraints/primary-keys/")
         || relative_path.starts_with("database/objects/constraints/unique-constraints/")
         || relative_path.starts_with("database/objects/constraints/foreign-keys/")
@@ -827,6 +866,9 @@ fn database_object_ddl(
                     .map(render_trigger_sql),
             )
         }
+        "grant" => {
+            Ok(find_grant_for_object(&inventory.grants, relative_path).map(render_grant_sql))
+        }
         "constraint" => {
             let constraint_name = object_name
                 .rsplit_once('.')
@@ -842,6 +884,40 @@ fn database_object_ddl(
         }
         _ => Ok(None),
     }
+}
+
+fn find_grant_for_object<'a>(
+    grants: &'a [GrantInfo],
+    relative_path: Option<&str>,
+) -> Option<&'a GrantInfo> {
+    let object_ref = object_ref_from_relative_path(relative_path?).ok()?;
+    let ObjectRef::Grant {
+        target_kind,
+        schema,
+        object,
+        signature,
+        grantee,
+    } = object_ref
+    else {
+        return None;
+    };
+    grants.iter().find(|candidate| {
+        let candidate_signature = candidate
+            .identity_arguments
+            .as_deref()
+            .map(function_identity_slug)
+            .transpose()
+            .ok()
+            .flatten();
+        candidate.target_kind == target_kind
+            && candidate.schema_name == schema
+            && candidate.object_name == object
+            && candidate_signature == signature
+            && crate::repository::grant_grantee_file_token(&candidate.grantee)
+                .ok()
+                .as_deref()
+                == Some(grantee.as_str())
+    })
 }
 
 fn find_trigger_for_object<'a>(
@@ -1040,6 +1116,51 @@ fn database_materialized_view_related_objects(
         "Materialized view comment rendering is deferred.",
     ));
     Ok(related)
+}
+
+fn database_grant_related_objects(
+    connection_url: &str,
+    relative_path: Option<&str>,
+) -> Result<Vec<RelatedObjectSummary>, String> {
+    if !is_postgres_connection_url(connection_url) {
+        return Err(invalid_postgres_url_message());
+    }
+    let inventory =
+        inspect_postgres(connection_url).map_err(|error| redact_message(&error, connection_url))?;
+    let Some(grant) = find_grant_for_object(&inventory.grants, relative_path) else {
+        return Ok(Vec::new());
+    };
+    let mut related = vec![
+        RelatedObjectSummary::new("Schema", &grant.schema_name, "Grant target schema"),
+        RelatedObjectSummary::new(
+            "Target Object",
+            &grant_target_display(grant),
+            "Grant target object",
+        ),
+        RelatedObjectSummary::new(
+            "Grantee Role",
+            &grant.grantee,
+            "Informational role dependency",
+        ),
+    ];
+    if let Some(grantor) = &grant.grantor {
+        related.push(RelatedObjectSummary::new(
+            "Grantor Role",
+            grantor,
+            "Observed grantor",
+        ));
+    }
+    Ok(related)
+}
+
+fn grant_target_display(grant: &GrantInfo) -> String {
+    match (&grant.object_name, &grant.identity_arguments) {
+        (Some(object), Some(arguments)) => {
+            format!("{}.{}({})", grant.schema_name, object, arguments)
+        }
+        (Some(object), None) => format!("{}.{}", grant.schema_name, object),
+        (None, _) => grant.schema_name.clone(),
+    }
 }
 
 #[derive(Debug, Clone)]

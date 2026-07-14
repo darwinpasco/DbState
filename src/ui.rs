@@ -252,7 +252,7 @@ const UI_HTML: &str = r#"<!doctype html>
           <label><input type="checkbox" checked disabled> materialized views</label>
           <label><input type="checkbox" checked disabled> functions</label>
           <label><input type="checkbox" checked disabled> triggers</label>
-          <label><input type="checkbox" disabled> grants future</label>
+          <label><input type="checkbox" checked disabled> grants</label>
         </div>
         <div class="button-row">
           <button type="button" data-action="inspect" data-standard-operation-action>Inspect</button>
@@ -2105,7 +2105,7 @@ const UI_JS: &str = r#"(function () {
     select.options[0].value = "all";
     appendOption(select, "schema", "Schema");
     appendOption(select, "table", "Table");
-    ["extension", "enum", "sequence", "index", "view", "constraint", "function", "trigger"].forEach(function (type) {
+    ["extension", "enum", "sequence", "index", "view", "constraint", "function", "trigger", "grant"].forEach(function (type) {
       if (rows.some(function (row) { return row.objectType === type; })) {
         appendOption(select, type, type.charAt(0).toUpperCase() + type.slice(1));
       }
@@ -2332,6 +2332,40 @@ const UI_JS: &str = r#"(function () {
         };
       }
     }
+    if (normalized.indexOf("database/objects/grants/") >= 0) {
+      const parts = fileBase.split(".");
+      const folder = normalized.indexOf("database/objects/grants/schemas/") >= 0 ? "schema"
+        : normalized.indexOf("database/objects/grants/tables/") >= 0 ? "table"
+        : normalized.indexOf("database/objects/grants/views/") >= 0 ? "view"
+        : normalized.indexOf("database/objects/grants/materialized-views/") >= 0 ? "materializedView"
+        : normalized.indexOf("database/objects/grants/sequences/") >= 0 ? "sequence"
+        : normalized.indexOf("database/objects/grants/functions/") >= 0 ? "function"
+        : "grant";
+      if (folder === "schema" && parts.length === 2) {
+        return {
+          objectType: "grant",
+          schema: parts[0],
+          name: folder + "." + parts[0] + "." + parts[1],
+          parentName: folder
+        };
+      }
+      if (folder === "function" && parts.length === 4) {
+        return {
+          objectType: "grant",
+          schema: parts[0],
+          name: folder + "." + parts.join("."),
+          parentName: folder
+        };
+      }
+      if (parts.length === 3) {
+        return {
+          objectType: "grant",
+          schema: parts[0],
+          name: folder + "." + parts.join("."),
+          parentName: folder
+        };
+      }
+    }
     return null;
   }
 
@@ -2401,6 +2435,13 @@ const UI_JS: &str = r#"(function () {
         return { objectType: "trigger", schema: parts[0], name: parts.slice(1).join("."), parentName: parts[1] };
       }
     }
+    if (text.indexOf("grant:") === 0) {
+      const identity = text.slice("grant:".length);
+      const parts = identity.split(".");
+      if (parts.length >= 3) {
+        return { objectType: "grant", schema: parts[1] || "", name: identity, parentName: parts[0] };
+      }
+    }
     return null;
   }
 
@@ -2421,7 +2462,7 @@ const UI_JS: &str = r#"(function () {
     if (text === "reference table") {
       return "referenceDataTable";
     }
-    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "materializedView", "constraint", "function", "trigger", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
+    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "materializedView", "constraint", "function", "trigger", "grant", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
       return text;
     }
     return text || "unknown";
@@ -2669,6 +2710,30 @@ const UI_JS: &str = r#"(function () {
             schema: item.schemaName,
             name: item.relationName + "." + item.triggerName,
             parentName: item.relationName,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: item
+          });
+        });
+      }
+      if (Array.isArray(data.grants)) {
+        data.grants.forEach(function (item) {
+          const granteeToken = String(item.grantee || "").toUpperCase() === "PUBLIC" ? "public" : item.grantee;
+          const signature = item.targetKind === "function" ? functionIdentitySlug(item.identityArguments || "") : "";
+          const targetIdentity = item.targetKind === "schema"
+            ? item.schemaName + "." + granteeToken
+            : item.targetKind === "function"
+              ? item.schemaName + "." + item.objectName + "." + signature + "." + granteeToken
+              : item.schemaName + "." + item.objectName + "." + granteeToken;
+          rows.push({
+            objectRef: "grant:" + item.targetKind + "." + targetIdentity,
+            objectType: "grant",
+            schema: item.schemaName,
+            name: item.targetKind + "." + targetIdentity,
+            parentName: item.targetKind,
             status: "inspected",
             operation: "",
             warnings: [],

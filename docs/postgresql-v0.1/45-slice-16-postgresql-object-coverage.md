@@ -144,7 +144,7 @@ Dependency warnings remain intentionally limited. Slice 16 checks simple schema 
 
 Release generation never executes SQL.
 
-Release generation does not generate destructive SQL such as `DROP`, `TRUNCATE`, `DELETE`, destructive `ALTER`, `GRANT`, or `REVOKE`.
+Release generation does not generate destructive SQL such as `DROP`, `TRUNCATE`, `DELETE`, destructive `ALTER`, `REVOKE`, or privilege-removal SQL. Later grant support generates review-only `GRANT` SQL for repository-only explicit object grants.
 
 Slice 17 hardens release bundles with sectioned SQL, summary markdown, risk JSON, and manifest JSON under `database/releases/`.
 
@@ -192,17 +192,15 @@ Do not point `DBSTATE_TEST_POSTGRES_URL` at production, UAT, staging, or any sha
 
 The following remain deferred:
 
-- primary keys as first-class desired-state objects
-- foreign keys
-- unique constraints
-- check constraints
-- functions
-- triggers
-- grants
+- procedures, aggregates, and window functions
+- event triggers
+- internal or constraint-generated triggers
+- default privileges
+- role membership grants
+- column-level privileges
 - policies
 - roles
 - ownership
-- materialized views
 - partitioning details
 - row-level security
 - full dependency graph

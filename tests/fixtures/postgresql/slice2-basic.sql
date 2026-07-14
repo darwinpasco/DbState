@@ -18,3 +18,6 @@ CREATE TABLE dbstate_slice2.sample_events (
     event_name text NOT NULL,
     notes text
 );
+
+GRANT USAGE ON SCHEMA dbstate_slice2 TO PUBLIC;
+GRANT SELECT ON TABLE dbstate_slice2.sample_accounts TO PUBLIC;

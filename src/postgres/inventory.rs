@@ -1,5 +1,5 @@
 use crate::postgres::inspect::{
-    ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, IndexInfo,
+    ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, GrantInfo, IndexInfo,
     MaterializedViewInfo, SchemaInfo, SequenceInfo, TableInfo, TriggerInfo, ViewInfo,
 };
 
@@ -17,4 +17,5 @@ pub struct PostgresInventory {
     pub constraints: Vec<ConstraintInfo>,
     pub functions: Vec<FunctionInfo>,
     pub triggers: Vec<TriggerInfo>,
+    pub grants: Vec<GrantInfo>,
 }

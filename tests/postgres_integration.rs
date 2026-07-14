@@ -96,6 +96,19 @@ fn local_postgres_fixture_inspection_is_read_only_and_redacted() {
         .schemas
         .iter()
         .any(|schema| schema.name.starts_with("pg_toast")));
+    assert!(inventory.grants.iter().any(|grant| {
+        grant.target_kind == "schema"
+            && grant.schema_name == "dbstate_slice2"
+            && grant.grantee == "PUBLIC"
+            && grant.privileges == vec!["USAGE".to_string()]
+    }));
+    assert!(inventory.grants.iter().any(|grant| {
+        grant.target_kind == "table"
+            && grant.schema_name == "dbstate_slice2"
+            && grant.object_name.as_deref() == Some("sample_accounts")
+            && grant.grantee == "PUBLIC"
+            && grant.privileges == vec!["SELECT".to_string()]
+    }));
 
     let report = inspect_postgres_command(Some(url.clone()), None);
     let json = report.to_json();
@@ -226,6 +239,9 @@ fn local_postgres_fixture_export_plans_and_writes_expected_files() {
     assert!(dry_run
         .planned_files
         .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+    assert!(dry_run.planned_files.contains(
+        &"database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql".to_string()
+    ));
     assert!(!repo
         .join("database/objects/schemas/dbstate_slice2.sql")
         .exists());
@@ -242,8 +258,15 @@ fn local_postgres_fixture_export_plans_and_writes_expected_files() {
 
     assert!(schema_file.contains("CREATE SCHEMA \"dbstate_slice2\";"));
     assert!(table_file.contains("CREATE TABLE \"dbstate_slice2\".\"sample_accounts\""));
+    let grant_file = std::fs::read_to_string(
+        repo.join("database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql"),
+    )
+    .expect("read grant file");
+    assert!(grant_file
+        .contains("GRANT SELECT ON TABLE \"dbstate_slice2\".\"sample_accounts\" TO PUBLIC;"));
     assert!(!schema_file.contains(&url));
     assert!(!table_file.contains(&url));
+    assert!(!grant_file.contains(&url));
 }
 
 #[test]
@@ -284,6 +307,9 @@ fn local_postgres_fixture_sync_plans_creates_updates_and_unchanged_files() {
     assert!(create
         .created_files
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert!(create.created_files.contains(
+        &"database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql".to_string()
+    ));
 
     run_git(&repo, &["add", "."]);
     run_git(
@@ -406,6 +432,9 @@ fn local_postgres_fixture_compare_classifies_supported_objects_read_only() {
     assert!(in_sync
         .in_sync
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert!(in_sync.in_sync.contains(
+        &"database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql".to_string()
+    ));
     assert!(!in_sync
         .deferred_object_types
         .contains(&"indexes".to_string()));
@@ -986,6 +1015,12 @@ fn create_complete_structure(root: &Path) {
         "database/objects/functions",
         "database/objects/triggers",
         "database/objects/grants",
+        "database/objects/grants/schemas",
+        "database/objects/grants/tables",
+        "database/objects/grants/views",
+        "database/objects/grants/materialized-views",
+        "database/objects/grants/sequences",
+        "database/objects/grants/functions",
         "database/reference-data/tables",
         "database/releases",
     ] {
