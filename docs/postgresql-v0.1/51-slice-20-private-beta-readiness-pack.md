@@ -113,11 +113,10 @@ Release artifacts remain review-only.
 - default privileges
 - role membership grants
 - column-level privileges
-- policies
 - roles
 - ownership
 - partitioning details
-- row-level security
+- table-level RLS enable/force state changes
 - durable comments as first-class objects
 - reference-data DML generation
 - arbitrary transactional data compare

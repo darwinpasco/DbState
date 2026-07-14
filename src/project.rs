@@ -169,6 +169,10 @@ pub(crate) const EXPECTED_PATHS: &[ExpectedPath] = &[
         kind: PathKind::Directory,
     },
     ExpectedPath {
+        relative: "database/objects/rls-policies",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
         relative: "database/reference-data",
         kind: PathKind::Directory,
     },

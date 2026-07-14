@@ -14,6 +14,7 @@ pub(crate) enum RepositoryObjectType {
     Function,
     Trigger,
     Grant,
+    RlsPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -86,13 +87,18 @@ pub(crate) enum ObjectRef {
         signature: Option<String>,
         grantee: String,
     },
+    RlsPolicy {
+        schema: String,
+        table: String,
+        policy: String,
+    },
 }
 
 impl ObjectRef {
     pub(crate) fn parse(value: &str) -> Result<Self, String> {
         let Some((object_type, identity)) = value.split_once(':') else {
             return Err(format!(
-                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, materializedView:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, trigger:<schema>.<relation>.<trigger>, or grant:<target-kind>.<target-identity>.<grantee>."
+                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, materializedView:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, trigger:<schema>.<relation>.<trigger>, grant:<target-kind>.<target-identity>.<grantee>, or rlsPolicy:<schema>.<table>.<policy>."
             ));
         };
         match object_type {
@@ -263,8 +269,24 @@ impl ObjectRef {
                     )),
                 }
             }
+            "rlsPolicy" => {
+                let parts: Vec<&str> = identity.split('.').collect();
+                if parts.len() != 3 || parts.iter().any(|part| part.trim().is_empty()) {
+                    return Err(format!(
+                        "Invalid RLS policy object reference '{value}'. Use rlsPolicy:<schema>.<table>.<policy>."
+                    ));
+                }
+                safe_file_component(parts[0])?;
+                safe_file_component(parts[1])?;
+                safe_file_component(parts[2])?;
+                Ok(Self::RlsPolicy {
+                    schema: parts[0].to_string(),
+                    table: parts[1].to_string(),
+                    policy: parts[2].to_string(),
+                })
+            }
             _ => Err(format!(
-                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, materializedView:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, trigger:<schema>.<relation>.<trigger>, or grant:<target-kind>.<target-identity>.<grantee>."
+                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, materializedView:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, trigger:<schema>.<relation>.<trigger>, grant:<target-kind>.<target-identity>.<grantee>, or rlsPolicy:<schema>.<table>.<policy>."
             )),
         }
     }
@@ -316,6 +338,11 @@ impl ObjectRef {
                 (Some(object), None) => format!("grant:{target_kind}.{schema}.{object}.{grantee}"),
                 (None, _) => format!("grant:{target_kind}.{schema}.{grantee}"),
             },
+            Self::RlsPolicy {
+                schema,
+                table,
+                policy,
+            } => format!("rlsPolicy:{schema}.{table}.{policy}"),
         }
     }
 
@@ -333,6 +360,7 @@ impl ObjectRef {
             Self::Function { .. } => "function",
             Self::Trigger { .. } => "trigger",
             Self::Grant { .. } => "grant",
+            Self::RlsPolicy { .. } => "rlsPolicy",
         }
     }
 
@@ -346,7 +374,8 @@ impl ObjectRef {
             | Self::MaterializedView { schema, .. }
             | Self::Function { schema, .. }
             | Self::Trigger { schema, .. }
-            | Self::Grant { schema, .. } => Some(Self::Schema(schema.clone())),
+            | Self::Grant { schema, .. }
+            | Self::RlsPolicy { schema, .. } => Some(Self::Schema(schema.clone())),
             Self::Index { schema, .. } | Self::Constraint { schema, .. } => {
                 Some(Self::Schema(schema.clone()))
             }
@@ -469,6 +498,18 @@ pub(crate) fn object_ref_from_relative_path(relative_path: &str) -> Result<Objec
             schema,
             relation,
             trigger,
+        });
+    }
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/rls-policies/") {
+        let Some((schema, table, policy)) = three_part_name_from_file(file_name) else {
+            return Err(format!(
+                "Invalid RLS policy desired-state file path: {relative_path}"
+            ));
+        };
+        return Ok(ObjectRef::RlsPolicy {
+            schema,
+            table,
+            policy,
         });
     }
     for (folder, target_kind) in [
@@ -653,6 +694,19 @@ pub(crate) fn grant_file_path(
     }
 }
 
+pub(crate) fn rls_policy_file_path(
+    schema: &str,
+    table: &str,
+    policy: &str,
+) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/rls-policies/{}.{}.{}.sql",
+        safe_file_component(schema)?,
+        safe_file_component(table)?,
+        safe_file_component(policy)?
+    ))
+}
+
 pub(crate) fn grant_grantee_file_token(grantee: &str) -> Result<String, String> {
     if grantee.eq_ignore_ascii_case("PUBLIC") {
         Ok("public".to_string())
@@ -772,6 +826,11 @@ pub(crate) fn object_key(object: &DesiredStateObject) -> String {
             &object.object_name,
         ),
         RepositoryObjectType::Grant => grant_key(&object.object_name),
+        RepositoryObjectType::RlsPolicy => rls_policy_key(
+            &object.schema_name,
+            object.parent_name.as_deref().unwrap_or(""),
+            &object.object_name,
+        ),
     }
 }
 
@@ -821,6 +880,10 @@ pub(crate) fn trigger_key(schema: &str, relation: &str, trigger: &str) -> String
 
 pub(crate) fn grant_key(identity: &str) -> String {
     format!("grant:{identity}")
+}
+
+pub(crate) fn rls_policy_key(schema: &str, table: &str, policy: &str) -> String {
+    format!("rlsPolicy:{schema}.{table}.{policy}")
 }
 
 pub(crate) fn grant_ref_from_file_name(target_kind: &str, file_name: &str) -> Option<ObjectRef> {

@@ -1,7 +1,7 @@
 use std::fmt::Write as _;
 use std::path::Path;
 
-const DEFERRED_OBJECT_TYPES: &[&str] = &["rlsPolicies"];
+const DEFERRED_OBJECT_TYPES: &[&str] = &[];
 
 const PROFILE_FILE_NAME: &str = "connection-profiles.json";
 const PROFILE_FILE_VERSION: i32 = 1;
@@ -727,11 +727,50 @@ fn write_grant_array_field(json: &mut String, name: &str, values: &[GrantInfo]) 
     json.push(']');
 }
 
+fn write_rls_policy_array_field(
+    json: &mut String,
+    name: &str,
+    values: &[crate::postgres::RlsPolicyInfo],
+) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schemaName", &value.schema_name, true);
+        write_json_string_field(json, "tableName", &value.table_name, false);
+        write_json_string_field(json, "policyName", &value.policy_name, false);
+        write_json_string_field(json, "command", &value.command, false);
+        write_json_string_field(json, "policyKind", &value.policy_kind, false);
+        write_json_array_field(json, "roles", &value.roles);
+        write_json_optional_string_field(
+            json,
+            "usingExpression",
+            value.using_expression.as_deref(),
+        );
+        write_json_optional_string_field(
+            json,
+            "withCheckExpression",
+            value.with_check_expression.as_deref(),
+        );
+        if let Some(enabled) = value.table_rls_enabled {
+            write_json_bool_field(json, "tableRlsEnabled", enabled);
+        }
+        if let Some(forced) = value.table_rls_forced {
+            write_json_bool_field(json, "tableRlsForced", forced);
+        }
+        json.push('}');
+    }
+    json.push(']');
+}
+
 fn write_counts_field(json: &mut String, name: &str, counts: &InspectionCounts) {
     json.push(',');
     write!(
         json,
-        "\"{}\":{{\"schemas\":{},\"tables\":{},\"columns\":{},\"extensions\":{},\"enums\":{},\"sequences\":{},\"indexes\":{},\"views\":{},\"materializedViews\":{},\"constraints\":{},\"functions\":{},\"triggers\":{},\"grants\":{}}}",
+        "\"{}\":{{\"schemas\":{},\"tables\":{},\"columns\":{},\"extensions\":{},\"enums\":{},\"sequences\":{},\"indexes\":{},\"views\":{},\"materializedViews\":{},\"constraints\":{},\"functions\":{},\"triggers\":{},\"grants\":{},\"rlsPolicies\":{}}}",
         escape_json(name),
         counts.schemas,
         counts.tables,
@@ -745,7 +784,8 @@ fn write_counts_field(json: &mut String, name: &str, counts: &InspectionCounts) 
         counts.constraints,
         counts.functions,
         counts.triggers,
-        counts.grants
+        counts.grants,
+        counts.rls_policies
     )
     .ok();
 }

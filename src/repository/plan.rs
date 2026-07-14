@@ -348,7 +348,8 @@ pub fn plan_postgres_with_inventory(
                 | ObjectRef::Constraint { .. }
                 | ObjectRef::Function { .. }
                 | ObjectRef::Trigger { .. }
-                | ObjectRef::Grant { .. } => String::new(),
+                | ObjectRef::Grant { .. }
+                | ObjectRef::RlsPolicy { .. } => String::new(),
             };
             if !required_schema_path.is_empty() && !root.join(&required_schema_path).is_file() {
                 let warning = DependencyWarning {
@@ -574,6 +575,23 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                 ],
             };
         }
+        if matches!(input.object_ref, ObjectRef::RlsPolicy { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "createRlsPolicyReviewSql".to_string(),
+                operation_label: "Create RLS Policy".to_string(),
+                safety_badge: "Review SQL".to_string(),
+                safety_level: "reviewOnly".to_string(),
+                operation_explanation:
+                    "DbState can generate review-only CREATE POLICY SQL for this new repository RLS policy. DbState does not execute SQL and does not enable, disable, or force RLS state."
+                        .to_string(),
+                operation_reasons: vec![
+                    "RLS policy exists in repository desired state and is missing from the target database."
+                        .to_string(),
+                    "DbState does not generate DROP POLICY, ALTER POLICY, or ALTER TABLE RLS state SQL."
+                        .to_string(),
+                ],
+            };
+        }
         return PlanOperationMetadata {
             operation_kind: "createReviewSql".to_string(),
             operation_label: "Review SQL".to_string(),
@@ -661,6 +679,23 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                     "Database-only grants are informational/manual-review only in this version."
                         .to_string(),
                     "DbState does not generate REVOKE.".to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::RlsPolicy { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "databaseOnlyReview".to_string(),
+                operation_label: "Database Only".to_string(),
+                safety_badge: "Database Only".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "RLS policy exists only in the target database. DbState does not generate destructive policy changes or DROP POLICY SQL."
+                        .to_string(),
+                operation_reasons: vec![
+                    "Database-only RLS policies are informational/manual-review only in this version."
+                        .to_string(),
+                    "DbState does not generate DROP POLICY.".to_string(),
+                    "DbState does not enable, disable, or force RLS state.".to_string(),
                 ],
             };
         }
@@ -759,6 +794,21 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                         .to_string(),
                 operation_reasons: vec![
                     "DbState does not generate REVOKE or grant-delta SQL for changed grants."
+                        .to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::RlsPolicy { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "manualReviewRequired".to_string(),
+                operation_label: "Manual Review".to_string(),
+                safety_badge: "Manual Review".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "RLS policy differs, but changed RLS policies are manual-review only in this version."
+                        .to_string(),
+                operation_reasons: vec![
+                    "DbState does not generate ALTER POLICY, DROP POLICY, replacement policy SQL, or ALTER TABLE RLS state SQL for changed RLS policies."
                         .to_string(),
                 ],
             };

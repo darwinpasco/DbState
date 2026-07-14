@@ -21,3 +21,11 @@ CREATE TABLE dbstate_slice2.sample_events (
 
 GRANT USAGE ON SCHEMA dbstate_slice2 TO PUBLIC;
 GRANT SELECT ON TABLE dbstate_slice2.sample_accounts TO PUBLIC;
+
+ALTER TABLE dbstate_slice2.sample_accounts ENABLE ROW LEVEL SECURITY;
+CREATE POLICY sample_accounts_public_read
+ON dbstate_slice2.sample_accounts
+AS PERMISSIVE
+FOR SELECT
+TO PUBLIC
+USING (true);

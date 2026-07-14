@@ -1,5 +1,7 @@
 use super::*;
-use crate::postgres::{inspect::empty_inspection_report, resolve_postgres_url};
+use crate::postgres::{
+    inspect::empty_inspection_report, render_rls_policy_sql, resolve_postgres_url, RlsPolicyInfo,
+};
 use crate::project::{PathKind, DEFAULT_REGISTRY, EXPECTED_PATHS};
 use crate::reference_data::data_compare_postgres_command;
 use crate::reference_data::{
@@ -11,7 +13,7 @@ use crate::release::release_postgres_command;
 use crate::repository::discovery::discover_repository_objects;
 use crate::repository::objects::{
     constraint_file_path, function_file_path, function_identity_slug, grant_file_path,
-    materialized_view_file_path, trigger_file_path,
+    materialized_view_file_path, rls_policy_file_path, trigger_file_path,
 };
 use crate::repository::{
     compare_postgres_command, ensure_database_object_path, enum_file_path, export_postgres_command,
@@ -329,6 +331,44 @@ fn sample_inventory() -> PostgresInventory {
                     privileges: vec!["EXECUTE".to_string()],
                     grantable_privileges: Vec::new(),
                     with_grant_option: false,
+                },
+            ],
+            rls_policies: vec![
+                RlsPolicyInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    table_name: "sample_accounts".to_string(),
+                    policy_name: "sample_accounts_public_read".to_string(),
+                    command: "SELECT".to_string(),
+                    policy_kind: "PERMISSIVE".to_string(),
+                    roles: vec!["PUBLIC".to_string()],
+                    using_expression: Some("true".to_string()),
+                    with_check_expression: None,
+                    table_rls_enabled: Some(true),
+                    table_rls_forced: Some(false),
+                },
+                RlsPolicyInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    table_name: "sample_accounts".to_string(),
+                    policy_name: "sample_accounts_insert_check".to_string(),
+                    command: "INSERT".to_string(),
+                    policy_kind: "PERMISSIVE".to_string(),
+                    roles: vec!["app_writer".to_string()],
+                    using_expression: None,
+                    with_check_expression: Some("account_code <> ''::text".to_string()),
+                    table_rls_enabled: Some(true),
+                    table_rls_forced: Some(false),
+                },
+                RlsPolicyInfo {
+                    schema_name: "dbstate_slice2".to_string(),
+                    table_name: "sample_accounts".to_string(),
+                    policy_name: "sample_accounts_restrictive_update".to_string(),
+                    command: "UPDATE".to_string(),
+                    policy_kind: "RESTRICTIVE".to_string(),
+                    roles: vec!["PUBLIC".to_string(), "app_writer".to_string()],
+                    using_expression: Some("account_id > 0".to_string()),
+                    with_check_expression: Some("account_id > 0".to_string()),
+                    table_rls_enabled: Some(true),
+                    table_rls_forced: Some(false),
                 },
             ],
         }
@@ -650,6 +690,7 @@ fn inspection_json_output_includes_expected_fields_and_no_secrets() {
         "\"functions\"",
         "\"triggers\"",
         "\"grants\"",
+        "\"rlsPolicies\"",
         "\"counts\"",
         "\"warnings\"",
         "\"errors\"",
@@ -845,6 +886,18 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
             grantable_privileges: Vec::new(),
             with_grant_option: false,
         }],
+        rls_policies: vec![RlsPolicyInfo {
+            schema_name: "app".to_string(),
+            table_name: "orders".to_string(),
+            policy_name: "orders_tenant_isolation".to_string(),
+            command: "SELECT".to_string(),
+            policy_kind: "PERMISSIVE".to_string(),
+            roles: vec!["PUBLIC".to_string(), "app_reader".to_string()],
+            using_expression: Some("tenant_id = current_setting('app.tenant_id')::uuid".to_string()),
+            with_check_expression: None,
+            table_rls_enabled: Some(true),
+            table_rls_forced: Some(false),
+        }],
     };
 
     assert_eq!(inventory.schemas[0].name, "app");
@@ -875,6 +928,11 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
     assert_eq!(inventory.triggers[0].relation_name, "orders");
     assert_eq!(inventory.triggers[0].trigger_name, "orders_audit_trigger");
     assert_eq!(inventory.grants[0].grantee, "app_reader");
+    assert_eq!(
+        inventory.rls_policies[0].policy_name,
+        "orders_tenant_isolation"
+    );
+    assert_eq!(inventory.rls_policies[0].roles[0], "PUBLIC");
 }
 
 #[test]
@@ -914,7 +972,7 @@ fn deferred_object_types_are_explicit() {
         .deferred_object_types
         .contains(&"triggers".to_string()));
     assert!(!report.deferred_object_types.contains(&"grants".to_string()));
-    assert!(report
+    assert!(!report
         .deferred_object_types
         .contains(&"rlsPolicies".to_string()));
 }
@@ -1020,12 +1078,18 @@ fn export_paths_stay_under_database_objects() {
         .expect("function grant path"),
         "database/objects/grants/functions/core.calculate_total.integer_numeric.app_reader.sql"
     );
+    assert_eq!(
+        rls_policy_file_path("core", "payments", "payments_tenant_policy")
+            .expect("RLS policy path"),
+        "database/objects/rls-policies/core.payments.payments_tenant_policy.sql"
+    );
     assert!(schema_file_path("../evil").is_err());
     assert!(table_file_path("core", "bad/name").is_err());
     assert!(function_file_path("core", "bad/name", "integer").is_err());
     assert!(trigger_file_path("core", "payments", "bad/name").is_err());
     assert!(materialized_view_file_path("core", "bad/name").is_err());
     assert!(grant_file_path("table", "core", Some("payments"), None, "bad/name").is_err());
+    assert!(rls_policy_file_path("core", "payments", "bad/name").is_err());
     assert!(ensure_database_object_path("database/releases/bad.sql").is_err());
 }
 
@@ -1134,6 +1198,33 @@ fn grant_sql_rendering_is_deterministic_and_review_only() {
     assert!(function_sql.contains(
         "GRANT EXECUTE ON FUNCTION \"dbstate_slice2\".\"account_label\"(account_id integer) TO \"app_reader\";"
     ));
+}
+
+#[test]
+fn rls_policy_sql_rendering_is_deterministic_and_review_only() {
+    let select_sql = render_rls_policy_sql(&sample_inventory().rls_policies[0]);
+    assert!(select_sql.contains("-- Object type: rlsPolicy"));
+    assert!(select_sql.contains("CREATE POLICY \"sample_accounts_public_read\""));
+    assert!(select_sql.contains("ON \"dbstate_slice2\".\"sample_accounts\""));
+    assert!(select_sql.contains("AS PERMISSIVE"));
+    assert!(select_sql.contains("FOR SELECT"));
+    assert!(select_sql.contains("TO PUBLIC"));
+    assert!(select_sql.contains("USING (true)"));
+    assert!(select_sql.ends_with(";\n"));
+    assert!(!select_sql.contains("DROP POLICY"));
+    assert!(!select_sql.contains("ALTER POLICY"));
+    assert!(!select_sql.contains("ENABLE ROW LEVEL SECURITY"));
+    assert!(!select_sql.contains("DISABLE ROW LEVEL SECURITY"));
+    assert!(!select_sql.contains("FORCE ROW LEVEL SECURITY"));
+
+    let insert_sql = render_rls_policy_sql(&sample_inventory().rls_policies[1]);
+    assert!(insert_sql.contains("FOR INSERT"));
+    assert!(insert_sql.contains("TO \"app_writer\""));
+    assert!(insert_sql.contains("WITH CHECK (account_code <> ''::text)"));
+
+    let restrictive_sql = render_rls_policy_sql(&sample_inventory().rls_policies[2]);
+    assert!(restrictive_sql.contains("AS RESTRICTIVE"));
+    assert!(restrictive_sql.contains("TO PUBLIC, \"app_writer\""));
 }
 
 #[test]
@@ -1327,6 +1418,9 @@ fn actual_export_creates_schema_and_table_files() {
     assert!(dir
         .join("database/objects/grants/functions/dbstate_slice2.account_label.account_id_integer.app_reader.sql")
         .is_file());
+    assert!(dir
+        .join("database/objects/rls-policies/dbstate_slice2.sample_accounts.sample_accounts_public_read.sql")
+        .is_file());
 }
 
 #[test]
@@ -1360,6 +1454,10 @@ fn sync_dry_run_creates_or_updates_no_files() {
     ));
     assert!(report.planned_creates.contains(
         &"database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql".to_string()
+    ));
+    assert!(report.planned_creates.contains(
+        &"database/objects/rls-policies/dbstate_slice2.sample_accounts.sample_accounts_public_read.sql"
+            .to_string()
     ));
     assert!(report.created_files.is_empty());
     assert!(report.updated_files.is_empty());
@@ -1442,6 +1540,10 @@ fn sync_creates_added_object_files() {
     ));
     assert!(report.created_files.contains(
         &"database/objects/grants/functions/dbstate_slice2.account_label.account_id_integer.app_reader.sql"
+            .to_string()
+    ));
+    assert!(report.created_files.contains(
+        &"database/objects/rls-policies/dbstate_slice2.sample_accounts.sample_accounts_public_read.sql"
             .to_string()
     ));
     assert!(dir
@@ -1665,6 +1767,96 @@ fn compare_classifies_grant_objects() {
         &"database/objects/grants/functions/dbstate_slice2.account_label.account_id_integer.app_reader.sql"
             .to_string()
     ));
+}
+
+#[test]
+fn compare_classifies_rls_policy_objects() {
+    let dir = create_temp_dir("compare-rls-policies");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/rls-policies/dbstate_slice2.sample_accounts.sample_accounts_public_read.sql"),
+        render_rls_policy_sql(&sample_inventory().rls_policies[0]),
+    )
+    .expect("write in-sync policy");
+    fs::write(
+        dir.join("database/objects/rls-policies/dbstate_slice2.sample_accounts.sample_accounts_insert_check.sql"),
+        "-- changed policy\nCREATE POLICY \"sample_accounts_insert_check\" ON \"dbstate_slice2\".\"sample_accounts\" AS PERMISSIVE FOR INSERT TO \"app_writer\" WITH CHECK (false);\n",
+    )
+    .expect("write different policy");
+    fs::write(
+        dir.join(
+            "database/objects/rls-policies/dbstate_slice2.sample_accounts.repo_only_policy.sql",
+        ),
+        render_rls_policy_sql(&RlsPolicyInfo {
+            policy_name: "repo_only_policy".to_string(),
+            ..sample_inventory().rls_policies[0].clone()
+        }),
+    )
+    .expect("write repo-only policy");
+    commit_all(&dir, "RLS policy compare files");
+
+    let report = compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
+
+    assert!(report.success, "{:?}", report.errors);
+    assert!(report.in_sync.contains(
+        &"database/objects/rls-policies/dbstate_slice2.sample_accounts.sample_accounts_public_read.sql".to_string()
+    ));
+    assert!(report.repo_different.contains(
+        &"database/objects/rls-policies/dbstate_slice2.sample_accounts.sample_accounts_insert_check.sql".to_string()
+    ));
+    assert!(report.repo_only.contains(
+        &"database/objects/rls-policies/dbstate_slice2.sample_accounts.repo_only_policy.sql"
+            .to_string()
+    ));
+    assert!(report.database_only.contains(
+        &"database/objects/rls-policies/dbstate_slice2.sample_accounts.sample_accounts_restrictive_update.sql".to_string()
+    ));
+}
+
+#[test]
+fn repository_discovery_finds_rls_policy_files_and_skips_invalid_names() {
+    let dir = create_temp_dir("discover-rls-policies");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/rls-policies/dbstate_slice2.sample_accounts.policy_one.sql"),
+        render_rls_policy_sql(&RlsPolicyInfo {
+            policy_name: "policy_one".to_string(),
+            ..sample_inventory().rls_policies[0].clone()
+        }),
+    )
+    .expect("write first policy");
+    fs::write(
+        dir.join("database/objects/rls-policies/dbstate_slice2.sample_accounts.policy_two.sql"),
+        render_rls_policy_sql(&RlsPolicyInfo {
+            policy_name: "policy_two".to_string(),
+            ..sample_inventory().rls_policies[0].clone()
+        }),
+    )
+    .expect("write second policy");
+    fs::write(
+        dir.join("database/objects/rls-policies/bad.name.sql"),
+        "-- bad policy\n",
+    )
+    .expect("write bad policy");
+
+    let import = discover_repository_objects(&dir).expect("discover repository objects");
+
+    assert!(import
+        .objects
+        .contains_key("rlsPolicy:dbstate_slice2.sample_accounts.policy_one"));
+    assert!(import
+        .objects
+        .contains_key("rlsPolicy:dbstate_slice2.sample_accounts.policy_two"));
+    assert!(import
+        .skipped
+        .contains(&"database/objects/rls-policies/bad.name.sql".to_string()));
 }
 
 #[test]
@@ -3829,6 +4021,209 @@ fn release_candidate_selection_respects_selected_grant_refs() {
 }
 
 #[test]
+fn repo_only_rls_policy_release_generates_review_only_create_policy_sql() {
+    let dir = create_temp_dir("release-rls-policy-create");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/rls-policies/dbstate_slice2.sample_accounts.sample_accounts_public_read.sql"),
+        render_rls_policy_sql(&sample_inventory().rls_policies[0]),
+    )
+    .expect("write repo-only RLS policy");
+    commit_all(&dir, "repo-only RLS policy");
+    let mut target_inventory = sample_inventory();
+    target_inventory.rls_policies.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec![
+                "rlsPolicy:dbstate_slice2.sample_accounts.sample_accounts_public_read".to_string(),
+            ],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice33_rls_policy",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.plan_items[0].operation_kind,
+        "createRlsPolicyReviewSql"
+    );
+    assert_eq!(report.plan_items[0].operation_label, "Create RLS Policy");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice33_rls_policy.sql")).expect("sql");
+    assert!(sql.contains("-- Review-only RLS policy suggestion."));
+    assert!(sql.contains("-- DbState does not execute this SQL."));
+    assert!(sql.contains("CREATE POLICY \"sample_accounts_public_read\""));
+    assert!(!sql
+        .lines()
+        .any(|line| line.trim_start().starts_with("DROP POLICY")));
+    assert!(!sql
+        .lines()
+        .any(|line| line.trim_start().starts_with("ALTER POLICY")));
+    assert!(!sql
+        .lines()
+        .any(|line| line.trim_start().starts_with("ALTER TABLE")
+            && line.contains("ROW LEVEL SECURITY")));
+}
+
+#[test]
+fn changed_rls_policy_release_remains_manual_review_only() {
+    let dir = create_temp_dir("release-rls-policy-changed");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/rls-policies/dbstate_slice2.sample_accounts.sample_accounts_public_read.sql"),
+        "-- stale policy\nCREATE POLICY \"sample_accounts_public_read\" ON \"dbstate_slice2\".\"sample_accounts\" AS PERMISSIVE FOR SELECT TO PUBLIC USING (false);\n",
+    )
+    .expect("write changed policy");
+    commit_all(&dir, "changed RLS policy");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec![
+                "rlsPolicy:dbstate_slice2.sample_accounts.sample_accounts_public_read".to_string(),
+            ],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice33_changed_rls_policy",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].operation_label, "Manual Review");
+    assert!(report.plan_items[0]
+        .operation_explanation
+        .contains("changed RLS policies are manual-review only"));
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice33_changed_rls_policy.sql"))
+        .expect("sql");
+    assert!(sql.contains("changed RLS policies are manual-review only"));
+    assert!(!sql
+        .lines()
+        .any(|line| line.trim_start().starts_with("DROP POLICY")));
+    assert!(!sql
+        .lines()
+        .any(|line| line.trim_start().starts_with("ALTER POLICY")));
+}
+
+#[test]
+fn database_only_rls_policy_release_does_not_generate_drop_policy() {
+    let dir = create_temp_dir("release-rls-policy-db-only");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    commit_all(&dir, "complete structure");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec![
+                "rlsPolicy:dbstate_slice2.sample_accounts.sample_accounts_public_read".to_string(),
+            ],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice33_database_only_rls_policy",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].operation_label, "Database Only");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice33_database_only_rls_policy.sql"))
+            .expect("sql");
+    assert!(sql.contains("RLS policy exists only in target database"));
+    assert!(!sql
+        .lines()
+        .any(|line| line.trim_start().starts_with("DROP POLICY")));
+    assert!(!sql
+        .lines()
+        .any(|line| line.trim_start().starts_with("ALTER POLICY")));
+}
+
+#[test]
+fn release_candidate_selection_respects_selected_rls_policy_refs() {
+    let dir = create_temp_dir("release-rls-policy-selection");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    let mut selected = sample_inventory().rls_policies[0].clone();
+    selected.policy_name = "selected_policy".to_string();
+    let mut unselected = sample_inventory().rls_policies[0].clone();
+    unselected.policy_name = "unselected_policy".to_string();
+    fs::write(
+        dir.join(
+            "database/objects/rls-policies/dbstate_slice2.sample_accounts.selected_policy.sql",
+        ),
+        render_rls_policy_sql(&selected),
+    )
+    .expect("write selected policy");
+    fs::write(
+        dir.join(
+            "database/objects/rls-policies/dbstate_slice2.sample_accounts.unselected_policy.sql",
+        ),
+        render_rls_policy_sql(&unselected),
+    )
+    .expect("write unselected policy");
+    commit_all(&dir, "repo-only RLS policies");
+    let mut target_inventory = sample_inventory();
+    target_inventory.rls_policies.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["rlsPolicy:dbstate_slice2.sample_accounts.selected_policy".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice33_rls_policy_selection",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.included_objects,
+        vec!["rlsPolicy:dbstate_slice2.sample_accounts.selected_policy".to_string()]
+    );
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice33_rls_policy_selection.sql"))
+            .expect("sql");
+    assert!(sql.contains("selected_policy"));
+    assert!(!sql.contains("unselected_policy"));
+}
+
+#[test]
 fn release_does_not_overwrite_existing_artifacts() {
     let dir = create_temp_dir("release-sequence");
     init_git_repo(&dir);
@@ -5381,6 +5776,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "database/objects/functions/",
         "database/objects/triggers/",
         "database/objects/grants/",
+        "database/objects/rls-policies/",
         "objectType: \"schema\"",
         "objectType: \"table\"",
         "objectType: \"extension\"",
@@ -5393,6 +5789,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "objectType: \"function\"",
         "objectType: \"trigger\"",
         "objectType: \"grant\"",
+        "objectType: \"rlsPolicy\"",
         "referenceDataRow",
         "rowMatchesFilter",
         "rowMatchesStatusFilter",
@@ -5412,6 +5809,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "data.functions",
         "data.triggers",
         "data.grants",
+        "data.rlsPolicies",
         "functionIdentitySlug",
         "updateCompareOptionLists",
         "updateTableOptions",
@@ -5433,6 +5831,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
     assert!(!html.contains("triggers future"));
     assert!(!html.contains("materialized views future"));
     assert!(!html.contains("grants future"));
+    assert!(!html.contains("RLS policies future"));
     assert!(js.contains("label === \"Inspect\""));
     assert!(js.contains("label === \"Reference-data compare\""));
     assert!(js.contains("appendOption(select, \"referenceData\", \"Reference data\")"));
@@ -5741,6 +6140,37 @@ fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
     assert!(grant_response.body.contains("\"group\":\"Target Object\""));
     assert!(grant_response.body.contains("\"group\":\"Grantee Role\""));
     assert!(!grant_response.body.contains("REVOKE"));
+}
+
+#[test]
+fn object_ddl_returns_rls_policy_ddl_and_related_objects() {
+    let dir = create_temp_dir("object-ddl-rls-policy");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let policy_path = dir
+        .join("database")
+        .join("objects")
+        .join("rls-policies")
+        .join("core.accounts.accounts_tenant_policy.sql");
+    fs::write(
+        &policy_path,
+        "-- DbState PostgreSQL desired-state object\n-- Object type: rlsPolicy\n-- Object name: core.accounts.accounts_tenant_policy\n-- Table RLS enabled observed: true\n-- Table RLS forced observed: false\n-- Table RLS state is informational only; DbState does not enable, disable, or force RLS.\n\nCREATE POLICY \"accounts_tenant_policy\"\nON \"core\".\"accounts\"\nAS PERMISSIVE\nFOR SELECT\nTO PUBLIC, \"app_reader\"\nUSING (tenant_id = current_setting('app.tenant_id')::uuid)\n;\n",
+    )
+    .expect("write RLS policy ddl");
+    commit_all(&dir, "add RLS policy object");
+
+    let body = r#"{ "scope": "all", "objectType": "rlsPolicy", "schema": "core", "objectName": "accounts.accounts_tenant_policy", "relativePath": "database/objects/rls-policies/core.accounts.accounts_tenant_policy.sql" }"#;
+    let response = service_response("POST", "/api/v1/postgres/object-ddl", body, &dir);
+
+    assert_eq!(response.status_code, 200, "{}", response.body);
+    assert!(response.body.contains("\"objectType\":\"rlsPolicy\""));
+    assert!(response.body.contains("CREATE POLICY"));
+    assert!(response.body.contains("\"group\":\"Schema\""));
+    assert!(response.body.contains("\"group\":\"Target Table\""));
+    assert!(response.body.contains("\"group\":\"Role\""));
+    assert!(!response.body.contains("DROP POLICY"));
+    assert!(!response.body.contains("ALTER POLICY"));
+    assert!(!response.body.contains("ENABLE ROW LEVEL SECURITY"));
 }
 
 #[test]

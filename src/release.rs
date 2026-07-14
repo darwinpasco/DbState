@@ -584,6 +584,12 @@ fn render_release_sql(
                         "-- REVIEW REQUIRED: grant exists only in target database. DbState does not generate REVOKE or destructive privilege changes."
                     )
                     .ok();
+                } else if item.object_type == "rlsPolicy" {
+                    writeln!(
+                        sql,
+                        "-- REVIEW REQUIRED: RLS policy exists only in target database. DbState does not generate DROP POLICY or destructive policy changes."
+                    )
+                    .ok();
                 } else {
                     writeln!(
                         sql,
@@ -664,6 +670,7 @@ fn release_object_order(item: &&PlanItem) -> (u8, String) {
         "view" => 10,
         "materializedView" => 11,
         "grant" => 12,
+        "rlsPolicy" => 13,
         _ => 99,
     };
     (order, item.object_ref.clone())
@@ -727,6 +734,15 @@ fn render_create_later_sql(root: &Path, item: &PlanItem) -> Result<String, Strin
                 content.trim_start()
             ))
         }
+        ObjectRef::RlsPolicy { .. } => {
+            ensure_database_object_path(&item.relative_path)?;
+            let content = fs::read_to_string(root.join(&item.relative_path))
+                .map_err(|error| format!("Could not read {}: {error}", item.relative_path))?;
+            Ok(format!(
+                "-- Review-only RLS policy suggestion.\n-- DbState does not execute this SQL.\n-- Review before applying manually outside DbState.\n{}",
+                content.trim_start()
+            ))
+        }
         ObjectRef::Constraint { .. } => {
             ensure_database_object_path(&item.relative_path)?;
             let content = fs::read_to_string(root.join(&item.relative_path))
@@ -773,6 +789,12 @@ fn render_update_database_later_sql(
         if matches!(object_ref, ObjectRef::Grant { .. }) {
             return Ok(
                 "-- REVIEW REQUIRED: grant differs; changed grants are manual-review only. DbState does not generate REVOKE or grant-delta SQL.\n"
+                    .to_string(),
+            );
+        }
+        if matches!(object_ref, ObjectRef::RlsPolicy { .. }) {
+            return Ok(
+                "-- REVIEW REQUIRED: RLS policy differs; changed RLS policies are manual-review only. DbState does not generate DROP POLICY, ALTER POLICY, replacement policy SQL, or ALTER TABLE RLS state SQL.\n"
                     .to_string(),
             );
         }
