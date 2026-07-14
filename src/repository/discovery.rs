@@ -24,6 +24,7 @@ pub(crate) fn discover_repository_objects(root: &Path) -> Result<RepositoryImpor
     discover_function_files(root, &mut import)?;
     discover_trigger_files(root, &mut import)?;
     discover_constraint_files(root, &mut import)?;
+    discover_grant_files(root, &mut import)?;
     import.skipped.sort();
     import.skipped.dedup();
     Ok(import)
@@ -332,6 +333,81 @@ fn discover_constraint_files(root: &Path, import: &mut RepositoryImport) -> Resu
     Ok(())
 }
 
+fn discover_grant_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    for (folder, target_kind) in [
+        ("schemas", "schema"),
+        ("tables", "table"),
+        ("views", "view"),
+        ("materialized-views", "materializedView"),
+        ("sequences", "sequence"),
+        ("functions", "function"),
+    ] {
+        let dir = root.join("database/objects/grants").join(folder);
+        for entry in fs::read_dir(&dir)
+            .map_err(|error| format!("Could not read database/objects/grants/{folder}: {error}"))?
+        {
+            let entry =
+                entry.map_err(|error| format!("Could not read grant file entry: {error}"))?;
+            let path = entry.path();
+            if !path.is_file() {
+                continue;
+            }
+            let file_name = entry.file_name().to_string_lossy().to_string();
+            let relative_path = format!("database/objects/grants/{folder}/{file_name}");
+            let Some(object_ref) = grant_ref_from_file_name(target_kind, &file_name) else {
+                import.skipped.push(relative_path);
+                continue;
+            };
+            let ObjectRef::Grant {
+                target_kind,
+                schema,
+                object,
+                signature,
+                grantee,
+            } = object_ref
+            else {
+                import.skipped.push(relative_path);
+                continue;
+            };
+            if safe_file_component(&target_kind).is_err()
+                || safe_file_component(&schema).is_err()
+                || object
+                    .as_deref()
+                    .is_some_and(|value| safe_file_component(value).is_err())
+                || signature
+                    .as_deref()
+                    .is_some_and(|value| safe_file_component(value).is_err())
+                || safe_file_component(&grantee).is_err()
+            {
+                import.skipped.push(relative_path);
+                continue;
+            }
+            let content = fs::read_to_string(&path)
+                .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+            let identity = grant_identity(
+                &target_kind,
+                &schema,
+                object.as_deref(),
+                signature.as_deref(),
+                &grantee,
+            );
+            import.objects.insert(
+                grant_key(&identity),
+                DesiredStateObject {
+                    object_type: RepositoryObjectType::Grant,
+                    schema_name: schema,
+                    table_name: object,
+                    object_name: identity,
+                    parent_name: Some(target_kind),
+                    relative_path,
+                    content,
+                },
+            );
+        }
+    }
+    Ok(())
+}
+
 fn discover_one_part_object_files(
     root: &Path,
     import: &mut RepositoryImport,
@@ -447,6 +523,22 @@ fn three_part_name_from_file(file_name: &str) -> Option<(String, String, String)
     ))
 }
 
+fn grant_identity(
+    target_kind: &str,
+    schema: &str,
+    object_name: Option<&str>,
+    signature: Option<&str>,
+    grantee: &str,
+) -> String {
+    match (object_name, signature) {
+        (Some(object_name), Some(signature)) => {
+            format!("{target_kind}.{schema}.{object_name}.{signature}.{grantee}")
+        }
+        (Some(object_name), None) => format!("{target_kind}.{schema}.{object_name}.{grantee}"),
+        (None, _) => format!("{target_kind}.{schema}.{grantee}"),
+    }
+}
+
 pub(crate) fn render_database_objects_for_selection(
     _root: &Path,
     inventory: &PostgresInventory,
@@ -465,6 +557,7 @@ pub(crate) fn render_database_objects_for_selection(
     let mut constraint_names = Vec::new();
     let mut function_names = Vec::new();
     let mut trigger_names = Vec::new();
+    let mut grant_names = Vec::new();
     match selection {
         ExportSelection::All => {
             include_extensions = true;
@@ -526,6 +619,15 @@ pub(crate) fn render_database_objects_for_selection(
                     item.schema_name.clone(),
                     item.relation_name.clone(),
                     item.trigger_name.clone(),
+                )
+            }));
+            grant_names.extend(inventory.grants.iter().map(|item| {
+                (
+                    item.target_kind.clone(),
+                    item.schema_name.clone(),
+                    item.object_name.clone(),
+                    item.identity_arguments.clone(),
+                    item.grantee.clone(),
                 )
             }));
         }
@@ -631,6 +733,21 @@ pub(crate) fn render_database_objects_for_selection(
                         )
                     }),
             );
+            grant_names.extend(
+                inventory
+                    .grants
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| {
+                        (
+                            item.target_kind.clone(),
+                            item.schema_name.clone(),
+                            item.object_name.clone(),
+                            item.identity_arguments.clone(),
+                            item.grantee.clone(),
+                        )
+                    }),
+            );
         }
         ExportSelection::Table { schema, table } => {
             if inventory.tables.iter().any(|candidate| {
@@ -679,6 +796,25 @@ pub(crate) fn render_database_objects_for_selection(
                         )
                     }),
             );
+            grant_names.extend(
+                inventory
+                    .grants
+                    .iter()
+                    .filter(|item| {
+                        item.schema_name == *schema
+                            && item.object_name.as_deref() == Some(table.as_str())
+                            && item.target_kind == "table"
+                    })
+                    .map(|item| {
+                        (
+                            item.target_kind.clone(),
+                            item.schema_name.clone(),
+                            item.object_name.clone(),
+                            item.identity_arguments.clone(),
+                            item.grantee.clone(),
+                        )
+                    }),
+            );
         }
     }
 
@@ -702,6 +838,8 @@ pub(crate) fn render_database_objects_for_selection(
     function_names.dedup();
     trigger_names.sort();
     trigger_names.dedup();
+    grant_names.sort();
+    grant_names.dedup();
 
     for schema in schema_names {
         let relative_path = schema_file_path(&schema)?;
@@ -889,6 +1027,48 @@ pub(crate) fn render_database_objects_for_selection(
         };
         objects.insert(object_key(&object), object);
     }
+    for (target_kind, schema, object_name, identity_arguments, grantee) in grant_names {
+        let Some(grant) = inventory.grants.iter().find(|item| {
+            item.target_kind == target_kind
+                && item.schema_name == schema
+                && item.object_name == object_name
+                && item.identity_arguments == identity_arguments
+                && item.grantee == grantee
+        }) else {
+            continue;
+        };
+        let signature = if target_kind == "function" {
+            Some(function_identity_slug(
+                identity_arguments.as_deref().unwrap_or(""),
+            )?)
+        } else {
+            None
+        };
+        let relative_path = grant_file_path(
+            &target_kind,
+            &schema,
+            object_name.as_deref(),
+            signature.as_deref(),
+            &grantee,
+        )?;
+        let identity = grant_identity(
+            &target_kind,
+            &schema,
+            object_name.as_deref(),
+            signature.as_deref(),
+            &grant_grantee_file_token(&grantee)?,
+        );
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Grant,
+            schema_name: schema.clone(),
+            table_name: object_name.clone(),
+            object_name: identity,
+            parent_name: Some(target_kind),
+            relative_path,
+            content: render_grant_sql(grant),
+        };
+        objects.insert(object_key(&object), object);
+    }
     for (schema, table, constraint_name) in constraint_names {
         let Some(constraint) = inventory.constraints.iter().find(|item| {
             item.schema_name == schema
@@ -935,7 +1115,10 @@ pub(crate) fn select_repository_objects(
                         || object.object_type == RepositoryObjectType::Constraint
                             && object.parent_name.as_deref() == Some(table.as_str())
                         || object.object_type == RepositoryObjectType::Trigger
-                            && object.parent_name.as_deref() == Some(table.as_str()))
+                            && object.parent_name.as_deref() == Some(table.as_str())
+                        || object.object_type == RepositoryObjectType::Grant
+                            && object.parent_name.as_deref() == Some("table")
+                            && object.table_name.as_deref() == Some(table.as_str()))
             }
         };
         if include {

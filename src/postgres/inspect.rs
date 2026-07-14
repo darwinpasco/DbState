@@ -119,6 +119,19 @@ pub struct TriggerInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantInfo {
+    pub target_kind: String,
+    pub schema_name: String,
+    pub object_name: Option<String>,
+    pub identity_arguments: Option<String>,
+    pub grantee: String,
+    pub grantor: Option<String>,
+    pub privileges: Vec<String>,
+    pub grantable_privileges: Vec<String>,
+    pub with_grant_option: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectionCounts {
     pub schemas: usize,
     pub tables: usize,
@@ -132,6 +145,7 @@ pub struct InspectionCounts {
     pub constraints: usize,
     pub functions: usize,
     pub triggers: usize,
+    pub grants: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -152,6 +166,7 @@ pub struct InspectionReport {
     pub constraints: Vec<ConstraintInfo>,
     pub functions: Vec<FunctionInfo>,
     pub triggers: Vec<TriggerInfo>,
+    pub grants: Vec<GrantInfo>,
     pub counts: InspectionCounts,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
@@ -198,6 +213,7 @@ pub(crate) fn inspect_postgres_scoped_command(
             report.constraints = inventory.constraints;
             report.functions = inventory.functions;
             report.triggers = inventory.triggers;
+            report.grants = inventory.grants;
             if let Err(error) = apply_inspection_scope(&mut report, schema, table) {
                 report.success = false;
                 report.errors.push(error);
@@ -216,6 +232,7 @@ pub(crate) fn inspect_postgres_scoped_command(
                 constraints: report.constraints.len(),
                 functions: report.functions.len(),
                 triggers: report.triggers.len(),
+                grants: report.grants.len(),
             };
             report.success = true;
         }
@@ -254,6 +271,7 @@ fn apply_inspection_scope(
         report.constraints.retain(|item| item.schema_name == schema);
         report.functions.retain(|item| item.schema_name == schema);
         report.triggers.retain(|item| item.schema_name == schema);
+        report.grants.retain(|item| item.schema_name == schema);
         report.inspection_scope = vec![format!("schema:{schema}")];
         return Ok(());
     }
@@ -299,6 +317,11 @@ fn apply_inspection_scope(
         report
             .triggers
             .retain(|item| item.schema_name == schema && item.relation_name == table_name);
+        report.grants.retain(|item| {
+            item.schema_name == schema
+                && item.object_name.as_deref() == Some(table_name)
+                && item.target_kind == "table"
+        });
         report.inspection_scope = vec![format!("table:{schema}.{table_name}")];
     }
 
@@ -606,6 +629,91 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         )
         .map_err(|_| "PostgreSQL schema inspection failed while reading triggers.".to_string())?;
 
+    let grant_rows = client
+        .query(
+            "SELECT target_kind,
+                    schema_name,
+                    object_name,
+                    identity_arguments,
+                    grantee_name,
+                    grantor_name,
+                    privilege_type,
+                    is_grantable
+             FROM (
+                 SELECT 'schema'::text AS target_kind,
+                        n.nspname::text AS schema_name,
+                        NULL::text AS object_name,
+                        NULL::text AS identity_arguments,
+                        CASE WHEN acl.grantee = 0 THEN 'PUBLIC' ELSE grantee.rolname END::text AS grantee_name,
+                        grantor.rolname::text AS grantor_name,
+                        acl.privilege_type::text,
+                        acl.is_grantable::bool
+                 FROM pg_catalog.pg_namespace n
+                 CROSS JOIN LATERAL pg_catalog.aclexplode(n.nspacl) acl
+                 LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid = acl.grantee
+                 LEFT JOIN pg_catalog.pg_roles grantor ON grantor.oid = acl.grantor
+                 WHERE n.nspacl IS NOT NULL
+                   AND n.nspname <> 'pg_catalog'
+                   AND n.nspname <> 'information_schema'
+                   AND n.nspname NOT LIKE 'pg_toast%'
+                   AND n.nspname NOT LIKE 'pg_%'
+                 UNION ALL
+                 SELECT CASE c.relkind
+                            WHEN 'S' THEN 'sequence'
+                            WHEN 'v' THEN 'view'
+                            WHEN 'm' THEN 'materializedView'
+                            ELSE 'table'
+                        END::text AS target_kind,
+                        n.nspname::text AS schema_name,
+                        c.relname::text AS object_name,
+                        NULL::text AS identity_arguments,
+                        CASE WHEN acl.grantee = 0 THEN 'PUBLIC' ELSE grantee.rolname END::text AS grantee_name,
+                        grantor.rolname::text AS grantor_name,
+                        acl.privilege_type::text,
+                        acl.is_grantable::bool
+                 FROM pg_catalog.pg_class c
+                 JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+                 CROSS JOIN LATERAL pg_catalog.aclexplode(c.relacl) acl
+                 LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid = acl.grantee
+                 LEFT JOIN pg_catalog.pg_roles grantor ON grantor.oid = acl.grantor
+                 WHERE c.relacl IS NOT NULL
+                   AND c.relkind IN ('r', 'p', 'v', 'm', 'S')
+                   AND n.nspname <> 'pg_catalog'
+                   AND n.nspname <> 'information_schema'
+                   AND n.nspname NOT LIKE 'pg_toast%'
+                   AND n.nspname NOT LIKE 'pg_%'
+                 UNION ALL
+                 SELECT 'function'::text AS target_kind,
+                        n.nspname::text AS schema_name,
+                        p.proname::text AS object_name,
+                        pg_catalog.pg_get_function_identity_arguments(p.oid)::text AS identity_arguments,
+                        CASE WHEN acl.grantee = 0 THEN 'PUBLIC' ELSE grantee.rolname END::text AS grantee_name,
+                        grantor.rolname::text AS grantor_name,
+                        acl.privilege_type::text,
+                        acl.is_grantable::bool
+                 FROM pg_catalog.pg_proc p
+                 JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace
+                 CROSS JOIN LATERAL pg_catalog.aclexplode(p.proacl) acl
+                 LEFT JOIN pg_catalog.pg_roles grantee ON grantee.oid = acl.grantee
+                 LEFT JOIN pg_catalog.pg_roles grantor ON grantor.oid = acl.grantor
+                 WHERE p.proacl IS NOT NULL
+                   AND p.prokind = 'f'
+                   AND n.nspname <> 'pg_catalog'
+                   AND n.nspname <> 'information_schema'
+                   AND n.nspname NOT LIKE 'pg_toast%'
+                   AND n.nspname NOT LIKE 'pg_%'
+             ) grants
+             WHERE grantee_name IS NOT NULL
+             ORDER BY target_kind,
+                      schema_name,
+                      object_name NULLS FIRST,
+                      identity_arguments NULLS FIRST,
+                      grantee_name,
+                      privilege_type",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading grants.".to_string())?;
+
     let schemas = schema_rows
         .into_iter()
         .map(|row| SchemaInfo { name: row.get(0) })
@@ -769,6 +877,83 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         });
     }
 
+    type GrantIdentityKey = (String, String, Option<String>, Option<String>, String);
+    let mut grant_map: BTreeMap<GrantIdentityKey, GrantInfo> = BTreeMap::new();
+    for row in grant_rows {
+        let target_kind = try_get_catalog_string(&row, 0, "grant target kind")?;
+        let schema_name = try_get_catalog_string(&row, 1, "grant schema")?;
+        let object_name = try_get_catalog_optional_string(&row, 2, "grant object")?;
+        let identity_arguments =
+            try_get_catalog_optional_string(&row, 3, "grant function identity arguments")?;
+        let grantee = try_get_catalog_string(&row, 4, "grant grantee")?;
+        let grantor = try_get_catalog_optional_string(&row, 5, "grant grantor")?;
+        let privilege = try_get_catalog_string(&row, 6, "grant privilege")?;
+        let is_grantable = try_get_catalog_bool(&row, 7, "grant option")?;
+        let key = (
+            target_kind.clone(),
+            schema_name.clone(),
+            object_name.clone(),
+            identity_arguments.clone(),
+            grantee.clone(),
+        );
+        let entry = grant_map.entry(key).or_insert_with(|| GrantInfo {
+            target_kind,
+            schema_name,
+            object_name,
+            identity_arguments,
+            grantee,
+            grantor: grantor.clone(),
+            privileges: Vec::new(),
+            grantable_privileges: Vec::new(),
+            with_grant_option: false,
+        });
+        if entry.grantor != grantor {
+            entry.grantor = None;
+        }
+        if !entry.privileges.iter().any(|item| item == &privilege) {
+            entry.privileges.push(privilege.clone());
+        }
+        if is_grantable
+            && !entry
+                .grantable_privileges
+                .iter()
+                .any(|item| item == &privilege)
+        {
+            entry.grantable_privileges.push(privilege);
+            entry.with_grant_option = true;
+        }
+    }
+    let mut grants: Vec<GrantInfo> = grant_map
+        .into_values()
+        .map(|mut grant| {
+            grant.privileges = crate::postgres::render::ordered_grant_privileges(
+                &grant.target_kind,
+                grant.privileges,
+            );
+            grant.grantable_privileges = crate::postgres::render::ordered_grant_privileges(
+                &grant.target_kind,
+                grant.grantable_privileges,
+            );
+            grant
+        })
+        .collect();
+    grants.sort_by(|left, right| {
+        (
+            &left.target_kind,
+            &left.schema_name,
+            &left.object_name,
+            &left.identity_arguments,
+            &left.grantee,
+        )
+            .cmp(&(
+                &right.target_kind,
+                &right.schema_name,
+                &right.object_name,
+                &right.identity_arguments,
+                &right.grantee,
+            ))
+    });
+
     Ok(PostgresInventory {
         schemas,
         tables,
@@ -782,6 +967,7 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         constraints,
         functions,
         triggers,
+        grants,
     })
 }
 
@@ -859,6 +1045,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             "constraints".to_string(),
             "functions".to_string(),
             "triggers".to_string(),
+            "grants".to_string(),
         ],
         schemas: Vec::new(),
         tables: Vec::new(),
@@ -872,6 +1059,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
         constraints: Vec::new(),
         functions: Vec::new(),
         triggers: Vec::new(),
+        grants: Vec::new(),
         counts: InspectionCounts {
             schemas: 0,
             tables: 0,
@@ -885,6 +1073,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             constraints: 0,
             functions: 0,
             triggers: 0,
+            grants: 0,
         },
         warnings: Vec::new(),
         errors: Vec::new(),
@@ -930,6 +1119,7 @@ impl InspectionReport {
         writeln!(text, "Constraint count: {}", self.counts.constraints).ok();
         writeln!(text, "Function count: {}", self.counts.functions).ok();
         writeln!(text, "Trigger count: {}", self.counts.triggers).ok();
+        writeln!(text, "Grant count: {}", self.counts.grants).ok();
         writeln!(text, "Schemas:").ok();
         for schema in &self.schemas {
             writeln!(text, "  - {}", schema.name).ok();
@@ -1017,6 +1207,22 @@ impl InspectionReport {
             )
             .ok();
         }
+        writeln!(text, "Grants:").ok();
+        for grant in &self.grants {
+            let target = match (&grant.object_name, &grant.identity_arguments) {
+                (Some(object), Some(arguments)) => {
+                    format!("{}.{}({})", grant.schema_name, object, arguments)
+                }
+                (Some(object), None) => format!("{}.{}", grant.schema_name, object),
+                (None, _) => grant.schema_name.clone(),
+            };
+            writeln!(
+                text,
+                "  - {} on {} to {}",
+                grant.target_kind, target, grant.grantee
+            )
+            .ok();
+        }
         for warning in &self.warnings {
             writeln!(text, "Warning: {warning}").ok();
         }
@@ -1049,6 +1255,7 @@ impl InspectionReport {
         write_constraint_array_field(&mut json, "constraints", &self.constraints);
         write_function_array_field(&mut json, "functions", &self.functions);
         write_trigger_array_field(&mut json, "triggers", &self.triggers);
+        write_grant_array_field(&mut json, "grants", &self.grants);
         write_counts_field(&mut json, "counts", &self.counts);
         write_json_array_field(&mut json, "warnings", &self.warnings);
         write_json_array_field(&mut json, "errors", &self.errors);

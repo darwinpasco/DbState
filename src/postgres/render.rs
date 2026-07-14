@@ -1,5 +1,5 @@
 use crate::postgres::inspect::{
-    ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, IndexInfo,
+    ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, GrantInfo, IndexInfo,
     MaterializedViewInfo, SequenceInfo, TriggerInfo, ViewInfo,
 };
 use std::fmt::Write as _;
@@ -353,6 +353,173 @@ pub fn render_trigger_sql(trigger: &TriggerInfo) -> String {
     let definition = trigger.definition.trim().trim_end_matches(';');
     writeln!(sql, "{definition};").ok();
     sql
+}
+
+pub fn render_grant_sql(grant: &GrantInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: grant").ok();
+    writeln!(sql, "-- Grant target kind: {}", grant.target_kind).ok();
+    writeln!(sql, "-- Object name: {}", grant_object_display_name(grant)).ok();
+    writeln!(sql, "-- Grantee: {}", grant.grantee).ok();
+    if let Some(grantor) = &grant.grantor {
+        writeln!(sql, "-- Grantor observed: {grantor}").ok();
+    }
+    if grant.with_grant_option {
+        writeln!(sql, "-- With grant option: true").ok();
+    }
+    writeln!(sql).ok();
+
+    let grantable: std::collections::BTreeSet<&str> = grant
+        .grantable_privileges
+        .iter()
+        .map(String::as_str)
+        .collect();
+    let plain_privileges: Vec<String> = grant
+        .privileges
+        .iter()
+        .filter(|privilege| !grantable.contains(privilege.as_str()))
+        .cloned()
+        .collect();
+    if !plain_privileges.is_empty() {
+        writeln!(
+            sql,
+            "{};",
+            render_grant_statement(grant, &plain_privileges, false)
+        )
+        .ok();
+    }
+    if !grant.grantable_privileges.is_empty() {
+        writeln!(
+            sql,
+            "{};",
+            render_grant_statement(grant, &grant.grantable_privileges, true)
+        )
+        .ok();
+    }
+    sql
+}
+
+pub(crate) fn ordered_grant_privileges(target_kind: &str, privileges: Vec<String>) -> Vec<String> {
+    let mut privileges = privileges;
+    privileges.sort_by(|left, right| {
+        grant_privilege_rank(target_kind, left)
+            .cmp(&grant_privilege_rank(target_kind, right))
+            .then(left.cmp(right))
+    });
+    privileges.dedup();
+    privileges
+}
+
+fn grant_privilege_rank(target_kind: &str, privilege: &str) -> u8 {
+    let normalized = privilege.to_ascii_uppercase();
+    match target_kind {
+        "schema" => match normalized.as_str() {
+            "USAGE" => 1,
+            "CREATE" => 2,
+            _ => 99,
+        },
+        "table" | "view" | "materializedView" => match normalized.as_str() {
+            "SELECT" => 1,
+            "INSERT" => 2,
+            "UPDATE" => 3,
+            "DELETE" => 4,
+            "TRUNCATE" => 5,
+            "REFERENCES" => 6,
+            "TRIGGER" => 7,
+            _ => 99,
+        },
+        "sequence" => match normalized.as_str() {
+            "USAGE" => 1,
+            "SELECT" => 2,
+            "UPDATE" => 3,
+            _ => 99,
+        },
+        "function" => match normalized.as_str() {
+            "EXECUTE" => 1,
+            _ => 99,
+        },
+        _ => 99,
+    }
+}
+
+fn render_grant_statement(
+    grant: &GrantInfo,
+    privileges: &[String],
+    with_grant_option: bool,
+) -> String {
+    let mut statement = format!(
+        "GRANT {} ON {} TO {}",
+        ordered_grant_privileges(&grant.target_kind, privileges.to_vec())
+            .iter()
+            .map(|privilege| privilege.to_ascii_uppercase())
+            .collect::<Vec<_>>()
+            .join(", "),
+        grant_target_sql(grant),
+        grant_grantee_sql(&grant.grantee)
+    );
+    if with_grant_option {
+        statement.push_str(" WITH GRANT OPTION");
+    }
+    statement
+}
+
+fn grant_target_sql(grant: &GrantInfo) -> String {
+    match grant.target_kind.as_str() {
+        "schema" => format!("SCHEMA {}", quote_postgres_identifier(&grant.schema_name)),
+        "table" => format!(
+            "TABLE {}.{}",
+            quote_postgres_identifier(&grant.schema_name),
+            quote_postgres_identifier(grant.object_name.as_deref().unwrap_or(""))
+        ),
+        "view" => format!(
+            "TABLE {}.{}",
+            quote_postgres_identifier(&grant.schema_name),
+            quote_postgres_identifier(grant.object_name.as_deref().unwrap_or(""))
+        ),
+        "materializedView" => format!(
+            "TABLE {}.{}",
+            quote_postgres_identifier(&grant.schema_name),
+            quote_postgres_identifier(grant.object_name.as_deref().unwrap_or(""))
+        ),
+        "sequence" => format!(
+            "SEQUENCE {}.{}",
+            quote_postgres_identifier(&grant.schema_name),
+            quote_postgres_identifier(grant.object_name.as_deref().unwrap_or(""))
+        ),
+        "function" => format!(
+            "FUNCTION {}.{}({})",
+            quote_postgres_identifier(&grant.schema_name),
+            quote_postgres_identifier(grant.object_name.as_deref().unwrap_or("")),
+            grant.identity_arguments.as_deref().unwrap_or("")
+        ),
+        _ => format!(
+            "{} {}",
+            grant.target_kind.to_ascii_uppercase(),
+            grant_object_display_name(grant)
+        ),
+    }
+}
+
+fn grant_grantee_sql(grantee: &str) -> String {
+    if grantee.eq_ignore_ascii_case("PUBLIC") {
+        "PUBLIC".to_string()
+    } else {
+        quote_postgres_identifier(grantee)
+    }
+}
+
+fn grant_object_display_name(grant: &GrantInfo) -> String {
+    match (&grant.object_name, &grant.identity_arguments) {
+        (Some(object_name), Some(identity_arguments)) => {
+            format!(
+                "{}.{}({})",
+                grant.schema_name, object_name, identity_arguments
+            )
+        }
+        (Some(object_name), None) => format!("{}.{}", grant.schema_name, object_name),
+        (None, _) => grant.schema_name.clone(),
+    }
 }
 
 pub fn normalize_desired_state_text(value: &str) -> String {

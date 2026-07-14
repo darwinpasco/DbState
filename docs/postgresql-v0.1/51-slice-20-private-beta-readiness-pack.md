@@ -110,7 +110,9 @@ Release artifacts remain review-only.
 - procedures, aggregates, and window functions
 - event triggers
 - internal or constraint-generated triggers
-- grants
+- default privileges
+- role membership grants
+- column-level privileges
 - policies
 - roles
 - ownership

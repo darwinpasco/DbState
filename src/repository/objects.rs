@@ -13,6 +13,7 @@ pub(crate) enum RepositoryObjectType {
     Constraint,
     Function,
     Trigger,
+    Grant,
 }
 
 #[derive(Debug, Clone)]
@@ -78,13 +79,20 @@ pub(crate) enum ObjectRef {
         relation: String,
         trigger: String,
     },
+    Grant {
+        target_kind: String,
+        schema: String,
+        object: Option<String>,
+        signature: Option<String>,
+        grantee: String,
+    },
 }
 
 impl ObjectRef {
     pub(crate) fn parse(value: &str) -> Result<Self, String> {
         let Some((object_type, identity)) = value.split_once(':') else {
             return Err(format!(
-                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, materializedView:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, or trigger:<schema>.<relation>.<trigger>."
+                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, materializedView:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, trigger:<schema>.<relation>.<trigger>, or grant:<target-kind>.<target-identity>.<grantee>."
             ));
         };
         match object_type {
@@ -204,8 +212,59 @@ impl ObjectRef {
                     trigger: parts[2].to_string(),
                 })
             }
+            "grant" => {
+                let parts: Vec<&str> = identity.split('.').collect();
+                if parts.len() < 3 || parts.iter().any(|part| part.trim().is_empty()) {
+                    return Err(format!(
+                        "Invalid grant object reference '{value}'. Use grant:<target-kind>.<target-identity>.<grantee>."
+                    ));
+                }
+                let target_kind = parts[0];
+                safe_file_component(target_kind)?;
+                match target_kind {
+                    "schema" if parts.len() == 3 => {
+                        safe_file_component(parts[1])?;
+                        safe_file_component(parts[2])?;
+                        Ok(Self::Grant {
+                            target_kind: target_kind.to_string(),
+                            schema: parts[1].to_string(),
+                            object: None,
+                            signature: None,
+                            grantee: parts[2].to_string(),
+                        })
+                    }
+                    "table" | "view" | "materializedView" | "sequence" if parts.len() == 4 => {
+                        safe_file_component(parts[1])?;
+                        safe_file_component(parts[2])?;
+                        safe_file_component(parts[3])?;
+                        Ok(Self::Grant {
+                            target_kind: target_kind.to_string(),
+                            schema: parts[1].to_string(),
+                            object: Some(parts[2].to_string()),
+                            signature: None,
+                            grantee: parts[3].to_string(),
+                        })
+                    }
+                    "function" if parts.len() == 5 => {
+                        safe_file_component(parts[1])?;
+                        safe_file_component(parts[2])?;
+                        safe_file_component(parts[3])?;
+                        safe_file_component(parts[4])?;
+                        Ok(Self::Grant {
+                            target_kind: target_kind.to_string(),
+                            schema: parts[1].to_string(),
+                            object: Some(parts[2].to_string()),
+                            signature: Some(parts[3].to_string()),
+                            grantee: parts[4].to_string(),
+                        })
+                    }
+                    _ => Err(format!(
+                        "Invalid grant object reference '{value}'. Use grant:<target-kind>.<target-identity>.<grantee>."
+                    )),
+                }
+            }
             _ => Err(format!(
-                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, materializedView:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, or trigger:<schema>.<relation>.<trigger>."
+                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, materializedView:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, trigger:<schema>.<relation>.<trigger>, or grant:<target-kind>.<target-identity>.<grantee>."
             )),
         }
     }
@@ -244,6 +303,19 @@ impl ObjectRef {
                 relation,
                 trigger,
             } => format!("trigger:{schema}.{relation}.{trigger}"),
+            Self::Grant {
+                target_kind,
+                schema,
+                object,
+                signature,
+                grantee,
+            } => match (object, signature) {
+                (Some(object), Some(signature)) => {
+                    format!("grant:{target_kind}.{schema}.{object}.{signature}.{grantee}")
+                }
+                (Some(object), None) => format!("grant:{target_kind}.{schema}.{object}.{grantee}"),
+                (None, _) => format!("grant:{target_kind}.{schema}.{grantee}"),
+            },
         }
     }
 
@@ -260,6 +332,7 @@ impl ObjectRef {
             Self::Constraint { .. } => "constraint",
             Self::Function { .. } => "function",
             Self::Trigger { .. } => "trigger",
+            Self::Grant { .. } => "grant",
         }
     }
 
@@ -272,7 +345,8 @@ impl ObjectRef {
             | Self::View { schema, .. }
             | Self::MaterializedView { schema, .. }
             | Self::Function { schema, .. }
-            | Self::Trigger { schema, .. } => Some(Self::Schema(schema.clone())),
+            | Self::Trigger { schema, .. }
+            | Self::Grant { schema, .. } => Some(Self::Schema(schema.clone())),
             Self::Index { schema, .. } | Self::Constraint { schema, .. } => {
                 Some(Self::Schema(schema.clone()))
             }
@@ -397,6 +471,20 @@ pub(crate) fn object_ref_from_relative_path(relative_path: &str) -> Result<Objec
             trigger,
         });
     }
+    for (folder, target_kind) in [
+        ("schemas", "schema"),
+        ("tables", "table"),
+        ("views", "view"),
+        ("materialized-views", "materializedView"),
+        ("sequences", "sequence"),
+        ("functions", "function"),
+    ] {
+        let prefix = format!("database/objects/grants/{folder}/");
+        if let Some(file_name) = relative_path.strip_prefix(&prefix) {
+            return grant_ref_from_file_name(target_kind, file_name)
+                .ok_or_else(|| format!("Invalid grant desired-state file path: {relative_path}"));
+        }
+    }
     for folder in [
         "primary-keys",
         "unique-constraints",
@@ -514,6 +602,65 @@ pub(crate) fn trigger_file_path(
     ))
 }
 
+pub(crate) fn grant_file_path(
+    target_kind: &str,
+    schema: &str,
+    object_name: Option<&str>,
+    identity_arguments: Option<&str>,
+    grantee: &str,
+) -> Result<String, String> {
+    let grantee = grant_grantee_file_token(grantee)?;
+    match target_kind {
+        "schema" => Ok(format!(
+            "database/objects/grants/schemas/{}.{}.sql",
+            safe_file_component(schema)?,
+            grantee
+        )),
+        "table" => Ok(format!(
+            "database/objects/grants/tables/{}.{}.{}.sql",
+            safe_file_component(schema)?,
+            safe_file_component(object_name.unwrap_or(""))?,
+            grantee
+        )),
+        "view" => Ok(format!(
+            "database/objects/grants/views/{}.{}.{}.sql",
+            safe_file_component(schema)?,
+            safe_file_component(object_name.unwrap_or(""))?,
+            grantee
+        )),
+        "materializedView" => Ok(format!(
+            "database/objects/grants/materialized-views/{}.{}.{}.sql",
+            safe_file_component(schema)?,
+            safe_file_component(object_name.unwrap_or(""))?,
+            grantee
+        )),
+        "sequence" => Ok(format!(
+            "database/objects/grants/sequences/{}.{}.{}.sql",
+            safe_file_component(schema)?,
+            safe_file_component(object_name.unwrap_or(""))?,
+            grantee
+        )),
+        "function" => Ok(format!(
+            "database/objects/grants/functions/{}.{}.{}.{}.sql",
+            safe_file_component(schema)?,
+            safe_file_component(object_name.unwrap_or(""))?,
+            safe_file_component(identity_arguments.unwrap_or(""))?,
+            grantee
+        )),
+        _ => Err(format!(
+            "Unsupported PostgreSQL grant target kind for desired-state path: {target_kind}"
+        )),
+    }
+}
+
+pub(crate) fn grant_grantee_file_token(grantee: &str) -> Result<String, String> {
+    if grantee.eq_ignore_ascii_case("PUBLIC") {
+        Ok("public".to_string())
+    } else {
+        safe_file_component(grantee)
+    }
+}
+
 pub(crate) fn constraint_file_path(
     constraint_type: &str,
     schema: &str,
@@ -624,6 +771,7 @@ pub(crate) fn object_key(object: &DesiredStateObject) -> String {
             object.parent_name.as_deref().unwrap_or(""),
             &object.object_name,
         ),
+        RepositoryObjectType::Grant => grant_key(&object.object_name),
     }
 }
 
@@ -669,6 +817,41 @@ pub(crate) fn function_key(schema: &str, object_name: &str) -> String {
 
 pub(crate) fn trigger_key(schema: &str, relation: &str, trigger: &str) -> String {
     format!("trigger:{schema}.{relation}.{trigger}")
+}
+
+pub(crate) fn grant_key(identity: &str) -> String {
+    format!("grant:{identity}")
+}
+
+pub(crate) fn grant_ref_from_file_name(target_kind: &str, file_name: &str) -> Option<ObjectRef> {
+    let stem = file_name.strip_suffix(".sql")?;
+    let parts: Vec<&str> = stem.split('.').collect();
+    match target_kind {
+        "schema" if parts.len() == 2 => Some(ObjectRef::Grant {
+            target_kind: target_kind.to_string(),
+            schema: parts[0].to_string(),
+            object: None,
+            signature: None,
+            grantee: parts[1].to_string(),
+        }),
+        "table" | "view" | "materializedView" | "sequence" if parts.len() == 3 => {
+            Some(ObjectRef::Grant {
+                target_kind: target_kind.to_string(),
+                schema: parts[0].to_string(),
+                object: Some(parts[1].to_string()),
+                signature: None,
+                grantee: parts[2].to_string(),
+            })
+        }
+        "function" if parts.len() == 4 => Some(ObjectRef::Grant {
+            target_kind: target_kind.to_string(),
+            schema: parts[0].to_string(),
+            object: Some(parts[1].to_string()),
+            signature: Some(parts[2].to_string()),
+            grantee: parts[3].to_string(),
+        }),
+        _ => None,
+    }
 }
 
 pub(crate) fn schema_name_from_file(file_name: &str) -> Option<String> {

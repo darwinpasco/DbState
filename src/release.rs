@@ -578,11 +578,19 @@ fn render_release_sql(
                 sql.push_str(&render_update_database_later_sql(root, item, inventory)?);
             }
             "reviewDatabaseOnly" => {
-                writeln!(
-                    sql,
-                    "-- REVIEW REQUIRED: object exists only in target database. DbState does not generate DROP."
-                )
-                .ok();
+                if item.object_type == "grant" {
+                    writeln!(
+                        sql,
+                        "-- REVIEW REQUIRED: grant exists only in target database. DbState does not generate REVOKE or destructive privilege changes."
+                    )
+                    .ok();
+                } else {
+                    writeln!(
+                        sql,
+                        "-- REVIEW REQUIRED: object exists only in target database. DbState does not generate DROP."
+                    )
+                    .ok();
+                }
             }
             _ => {
                 writeln!(
@@ -655,6 +663,7 @@ fn release_object_order(item: &&PlanItem) -> (u8, String) {
         "index" => 9,
         "view" => 10,
         "materializedView" => 11,
+        "grant" => 12,
         _ => 99,
     };
     (order, item.object_ref.clone())
@@ -709,6 +718,15 @@ fn render_create_later_sql(root: &Path, item: &PlanItem) -> Result<String, Strin
                 content.trim_start()
             ))
         }
+        ObjectRef::Grant { .. } => {
+            ensure_database_object_path(&item.relative_path)?;
+            let content = fs::read_to_string(root.join(&item.relative_path))
+                .map_err(|error| format!("Could not read {}: {error}", item.relative_path))?;
+            Ok(format!(
+                "-- Review-only grant suggestion.\n-- DbState does not execute this SQL.\n-- Review before applying manually outside DbState.\n{}",
+                content.trim_start()
+            ))
+        }
         ObjectRef::Constraint { .. } => {
             ensure_database_object_path(&item.relative_path)?;
             let content = fs::read_to_string(root.join(&item.relative_path))
@@ -749,6 +767,12 @@ fn render_update_database_later_sql(
         if matches!(object_ref, ObjectRef::MaterializedView { .. }) {
             return Ok(
                 "-- REVIEW REQUIRED: materialized view differs; changed materialized views are manual-review only. DbState does not generate destructive materialized-view removal, replacement materialized view SQL, or materialized-view refresh SQL.\n"
+                    .to_string(),
+            );
+        }
+        if matches!(object_ref, ObjectRef::Grant { .. }) {
+            return Ok(
+                "-- REVIEW REQUIRED: grant differs; changed grants are manual-review only. DbState does not generate REVOKE or grant-delta SQL.\n"
                     .to_string(),
             );
         }

@@ -145,6 +145,30 @@ pub(crate) const EXPECTED_PATHS: &[ExpectedPath] = &[
         kind: PathKind::Directory,
     },
     ExpectedPath {
+        relative: "database/objects/grants/schemas",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
+        relative: "database/objects/grants/tables",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
+        relative: "database/objects/grants/views",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
+        relative: "database/objects/grants/materialized-views",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
+        relative: "database/objects/grants/sequences",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
+        relative: "database/objects/grants/functions",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
         relative: "database/reference-data",
         kind: PathKind::Directory,
     },

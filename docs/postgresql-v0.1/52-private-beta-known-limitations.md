@@ -61,12 +61,15 @@ Supported beta object types:
 - regular PostgreSQL functions
 - regular table and view triggers
 - materialized views
+- explicit object grants for schemas, tables, views, materialized views, sequences, and functions
 
 Deferred object types and details:
 
 - event triggers
 - internal or constraint-generated triggers
-- grants
+- default privileges
+- role membership grants
+- column-level privileges
 - policies
 - roles
 - ownership

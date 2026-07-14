@@ -10,8 +10,8 @@ use crate::release::empty_release_report;
 use crate::release::release_postgres_command;
 use crate::repository::discovery::discover_repository_objects;
 use crate::repository::objects::{
-    constraint_file_path, function_file_path, function_identity_slug, materialized_view_file_path,
-    trigger_file_path,
+    constraint_file_path, function_file_path, function_identity_slug, grant_file_path,
+    materialized_view_file_path, trigger_file_path,
 };
 use crate::repository::{
     compare_postgres_command, ensure_database_object_path, enum_file_path, export_postgres_command,
@@ -285,6 +285,52 @@ fn sample_inventory() -> PostgresInventory {
                     "CREATE TRIGGER sample_accounts_audit_trigger AFTER INSERT ON dbstate_slice2.sample_accounts FOR EACH ROW EXECUTE FUNCTION dbstate_slice2.account_label(account_id)"
                         .to_string(),
             }],
+            grants: vec![
+                GrantInfo {
+                    target_kind: "schema".to_string(),
+                    schema_name: "dbstate_slice2".to_string(),
+                    object_name: None,
+                    identity_arguments: None,
+                    grantee: "app_reader".to_string(),
+                    grantor: Some("dbstate_owner".to_string()),
+                    privileges: vec!["USAGE".to_string()],
+                    grantable_privileges: Vec::new(),
+                    with_grant_option: false,
+                },
+                GrantInfo {
+                    target_kind: "table".to_string(),
+                    schema_name: "dbstate_slice2".to_string(),
+                    object_name: Some("sample_accounts".to_string()),
+                    identity_arguments: None,
+                    grantee: "PUBLIC".to_string(),
+                    grantor: Some("dbstate_owner".to_string()),
+                    privileges: vec!["SELECT".to_string()],
+                    grantable_privileges: Vec::new(),
+                    with_grant_option: false,
+                },
+                GrantInfo {
+                    target_kind: "sequence".to_string(),
+                    schema_name: "dbstate_slice2".to_string(),
+                    object_name: Some("account_number_seq".to_string()),
+                    identity_arguments: None,
+                    grantee: "app_writer".to_string(),
+                    grantor: Some("dbstate_owner".to_string()),
+                    privileges: vec!["USAGE".to_string(), "SELECT".to_string()],
+                    grantable_privileges: vec!["USAGE".to_string()],
+                    with_grant_option: true,
+                },
+                GrantInfo {
+                    target_kind: "function".to_string(),
+                    schema_name: "dbstate_slice2".to_string(),
+                    object_name: Some("account_label".to_string()),
+                    identity_arguments: Some("account_id integer".to_string()),
+                    grantee: "app_reader".to_string(),
+                    grantor: Some("dbstate_owner".to_string()),
+                    privileges: vec!["EXECUTE".to_string()],
+                    grantable_privileges: Vec::new(),
+                    with_grant_option: false,
+                },
+            ],
         }
 }
 
@@ -599,6 +645,11 @@ fn inspection_json_output_includes_expected_fields_and_no_secrets() {
         "\"sequences\"",
         "\"indexes\"",
         "\"views\"",
+        "\"materializedViews\"",
+        "\"constraints\"",
+        "\"functions\"",
+        "\"triggers\"",
+        "\"grants\"",
         "\"counts\"",
         "\"warnings\"",
         "\"errors\"",
@@ -783,6 +834,17 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
                 "CREATE TRIGGER orders_audit_trigger AFTER INSERT OR UPDATE ON app.orders FOR EACH ROW EXECUTE FUNCTION app.order_label(order_id)"
                     .to_string(),
         }],
+        grants: vec![GrantInfo {
+            target_kind: "table".to_string(),
+            schema_name: "app".to_string(),
+            object_name: Some("orders".to_string()),
+            identity_arguments: None,
+            grantee: "app_reader".to_string(),
+            grantor: Some("app_owner".to_string()),
+            privileges: vec!["SELECT".to_string()],
+            grantable_privileges: Vec::new(),
+            with_grant_option: false,
+        }],
     };
 
     assert_eq!(inventory.schemas[0].name, "app");
@@ -812,6 +874,7 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
     assert_eq!(inventory.triggers.len(), 1);
     assert_eq!(inventory.triggers[0].relation_name, "orders");
     assert_eq!(inventory.triggers[0].trigger_name, "orders_audit_trigger");
+    assert_eq!(inventory.grants[0].grantee, "app_reader");
 }
 
 #[test]
@@ -850,7 +913,10 @@ fn deferred_object_types_are_explicit() {
     assert!(!report
         .deferred_object_types
         .contains(&"triggers".to_string()));
-    assert!(report.deferred_object_types.contains(&"grants".to_string()));
+    assert!(!report.deferred_object_types.contains(&"grants".to_string()));
+    assert!(report
+        .deferred_object_types
+        .contains(&"rlsPolicies".to_string()));
 }
 
 #[test]
@@ -934,11 +1000,32 @@ fn export_paths_stay_under_database_objects() {
         trigger_file_path("core", "payments", "payments_audit_trigger").expect("trigger path"),
         "database/objects/triggers/core.payments.payments_audit_trigger.sql"
     );
+    assert_eq!(
+        grant_file_path("schema", "core", None, None, "PUBLIC").expect("schema grant path"),
+        "database/objects/grants/schemas/core.public.sql"
+    );
+    assert_eq!(
+        grant_file_path("table", "core", Some("payments"), None, "app_reader")
+            .expect("table grant path"),
+        "database/objects/grants/tables/core.payments.app_reader.sql"
+    );
+    assert_eq!(
+        grant_file_path(
+            "function",
+            "core",
+            Some("calculate_total"),
+            Some("integer_numeric"),
+            "app_reader"
+        )
+        .expect("function grant path"),
+        "database/objects/grants/functions/core.calculate_total.integer_numeric.app_reader.sql"
+    );
     assert!(schema_file_path("../evil").is_err());
     assert!(table_file_path("core", "bad/name").is_err());
     assert!(function_file_path("core", "bad/name", "integer").is_err());
     assert!(trigger_file_path("core", "payments", "bad/name").is_err());
     assert!(materialized_view_file_path("core", "bad/name").is_err());
+    assert!(grant_file_path("table", "core", Some("payments"), None, "bad/name").is_err());
     assert!(ensure_database_object_path("database/releases/bad.sql").is_err());
 }
 
@@ -1021,6 +1108,32 @@ fn generated_slice16_object_sql_is_deterministic() {
     assert!(render_trigger_sql(&inventory.triggers[0]).contains("CREATE TRIGGER"));
     assert!(render_trigger_sql(&inventory.triggers[0]).ends_with(";\n"));
     assert!(!render_trigger_sql(&inventory.triggers[0]).contains("DROP TRIGGER"));
+}
+
+#[test]
+fn grant_sql_rendering_is_deterministic_and_review_only() {
+    let schema_sql = render_grant_sql(&sample_inventory().grants[0]);
+    assert!(schema_sql.contains("GRANT USAGE ON SCHEMA \"dbstate_slice2\" TO \"app_reader\";"));
+    assert!(schema_sql.ends_with('\n'));
+    assert!(!schema_sql.contains("REVOKE"));
+
+    let public_sql = render_grant_sql(&sample_inventory().grants[1]);
+    assert!(public_sql
+        .contains("GRANT SELECT ON TABLE \"dbstate_slice2\".\"sample_accounts\" TO PUBLIC;"));
+    assert!(!public_sql.contains("TO \"PUBLIC\""));
+
+    let sequence_sql = render_grant_sql(&sample_inventory().grants[2]);
+    assert!(sequence_sql.contains(
+        "GRANT SELECT ON SEQUENCE \"dbstate_slice2\".\"account_number_seq\" TO \"app_writer\";"
+    ));
+    assert!(sequence_sql.contains(
+        "GRANT USAGE ON SEQUENCE \"dbstate_slice2\".\"account_number_seq\" TO \"app_writer\" WITH GRANT OPTION;"
+    ));
+
+    let function_sql = render_grant_sql(&sample_inventory().grants[3]);
+    assert!(function_sql.contains(
+        "GRANT EXECUTE ON FUNCTION \"dbstate_slice2\".\"account_label\"(account_id integer) TO \"app_reader\";"
+    ));
 }
 
 #[test]
@@ -1202,6 +1315,18 @@ fn actual_export_creates_schema_and_table_files() {
             "database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql",
         )
         .is_file());
+    assert!(dir
+        .join("database/objects/grants/schemas/dbstate_slice2.app_reader.sql")
+        .is_file());
+    assert!(dir
+        .join("database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql")
+        .is_file());
+    assert!(dir
+        .join("database/objects/grants/sequences/dbstate_slice2.account_number_seq.app_writer.sql")
+        .is_file());
+    assert!(dir
+        .join("database/objects/grants/functions/dbstate_slice2.account_label.account_id_integer.app_reader.sql")
+        .is_file());
 }
 
 #[test]
@@ -1232,6 +1357,9 @@ fn sync_dry_run_creates_or_updates_no_files() {
     assert!(report.planned_creates.contains(
         &"database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql"
             .to_string()
+    ));
+    assert!(report.planned_creates.contains(
+        &"database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql".to_string()
     ));
     assert!(report.created_files.is_empty());
     assert!(report.updated_files.is_empty());
@@ -1309,6 +1437,13 @@ fn sync_creates_added_object_files() {
         &"database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql"
             .to_string()
     ));
+    assert!(report.created_files.contains(
+        &"database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql".to_string()
+    ));
+    assert!(report.created_files.contains(
+        &"database/objects/grants/functions/dbstate_slice2.account_label.account_id_integer.app_reader.sql"
+            .to_string()
+    ));
     assert!(dir
         .join(
             "database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql",
@@ -1316,6 +1451,9 @@ fn sync_creates_added_object_files() {
         .is_file());
     assert!(dir
         .join("database/objects/materialized-views/dbstate_slice2.account_summary.sql")
+        .is_file());
+    assert!(dir
+        .join("database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql")
         .is_file());
 }
 
@@ -1485,6 +1623,51 @@ fn compare_is_read_only_and_can_run_with_dirty_working_tree() {
 }
 
 #[test]
+fn compare_classifies_grant_objects() {
+    let dir = create_temp_dir("compare-grants");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql"),
+        render_grant_sql(&sample_inventory().grants[1]),
+    )
+    .expect("write in-sync grant");
+    fs::write(
+        dir.join("database/objects/grants/schemas/dbstate_slice2.app_reader.sql"),
+        "-- changed grant\nGRANT CREATE ON SCHEMA \"dbstate_slice2\" TO \"app_reader\";\n",
+    )
+    .expect("write different grant");
+    fs::write(
+        dir.join("database/objects/grants/tables/dbstate_slice2.sample_accounts.repo_only.sql"),
+        "GRANT SELECT ON TABLE \"dbstate_slice2\".\"sample_accounts\" TO \"repo_only\";\n",
+    )
+    .expect("write repo-only grant");
+    commit_all(&dir, "grant compare files");
+
+    let report = compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
+
+    assert!(report.success, "{:?}", report.errors);
+    assert!(report.in_sync.contains(
+        &"database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql".to_string()
+    ));
+    assert!(report
+        .repo_different
+        .contains(&"database/objects/grants/schemas/dbstate_slice2.app_reader.sql".to_string()));
+    assert!(report.repo_only.contains(
+        &"database/objects/grants/tables/dbstate_slice2.sample_accounts.repo_only.sql".to_string()
+    ));
+    assert!(report.database_only.contains(
+        &"database/objects/grants/functions/dbstate_slice2.account_label.account_id_integer.app_reader.sql"
+            .to_string()
+    ));
+}
+
+#[test]
 fn repository_schema_and_table_files_are_discovered() {
     let dir = create_temp_dir("compare-discover");
     init_git_repo(&dir);
@@ -1544,6 +1727,21 @@ fn repository_schema_and_table_files_are_discovered() {
         "CREATE TRIGGER sample_accounts_audit_trigger AFTER INSERT ON dbstate_slice2.other_accounts FOR EACH ROW EXECUTE FUNCTION dbstate_slice2.account_label(account_id);\n",
     )
     .expect("write same trigger name on different relation");
+    fs::write(
+        dir.join("database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql"),
+        render_grant_sql(&sample_inventory().grants[1]),
+    )
+    .expect("write public table grant");
+    fs::write(
+        dir.join("database/objects/grants/tables/dbstate_slice2.sample_accounts.app_reader.sql"),
+        "GRANT SELECT ON TABLE \"dbstate_slice2\".\"sample_accounts\" TO \"app_reader\";\n",
+    )
+    .expect("write second table grant");
+    fs::write(
+        dir.join("database/objects/grants/functions/dbstate_slice2.account_label.account_id_integer.app_reader.sql"),
+        render_grant_sql(&sample_inventory().grants[3]),
+    )
+    .expect("write function grant");
 
     let import = discover_repository_objects(&dir).expect("discover objects");
 
@@ -1572,6 +1770,15 @@ fn repository_schema_and_table_files_are_discovered() {
     assert!(import
         .objects
         .contains_key("trigger:dbstate_slice2.other_accounts.sample_accounts_audit_trigger"));
+    assert!(import
+        .objects
+        .contains_key("grant:table.dbstate_slice2.sample_accounts.public"));
+    assert!(import
+        .objects
+        .contains_key("grant:table.dbstate_slice2.sample_accounts.app_reader"));
+    assert!(import
+        .objects
+        .contains_key("grant:function.dbstate_slice2.account_label.account_id_integer.app_reader"));
     assert!(import.skipped.is_empty());
 }
 
@@ -1604,6 +1811,11 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
         "-- bad trigger\n",
     )
     .expect("write bad trigger file");
+    fs::write(
+        dir.join("database/objects/grants/functions/a.b.c.sql"),
+        "-- bad grant\n",
+    )
+    .expect("write bad grant file");
 
     let import = discover_repository_objects(&dir).expect("discover objects");
 
@@ -1625,6 +1837,9 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
     assert!(import
         .skipped
         .contains(&"database/objects/triggers/a.b.sql".to_string()));
+    assert!(import
+        .skipped
+        .contains(&"database/objects/grants/functions/a.b.c.sql".to_string()));
 }
 
 #[test]
@@ -3440,6 +3655,180 @@ fn release_candidate_selection_respects_selected_materialized_view_refs() {
 }
 
 #[test]
+fn repo_only_grant_release_generates_review_only_grant_sql() {
+    let dir = create_temp_dir("release-grant-create");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql"),
+        render_grant_sql(&sample_inventory().grants[1]),
+    )
+    .expect("write repo-only grant");
+    commit_all(&dir, "repo-only grant");
+    let mut target_inventory = sample_inventory();
+    target_inventory.grants.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["grant:table.dbstate_slice2.sample_accounts.public".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice32_grant",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.plan_items[0].operation_kind,
+        "grantPrivilegesReviewSql"
+    );
+    assert_eq!(report.plan_items[0].operation_label, "Grant Privileges");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice32_grant.sql")).expect("sql");
+    assert!(sql.contains("-- Review-only grant suggestion."));
+    assert!(sql.contains("-- DbState does not execute this SQL."));
+    assert!(sql.contains("GRANT SELECT ON TABLE \"dbstate_slice2\".\"sample_accounts\" TO PUBLIC;"));
+    assert!(!sql.contains("REVOKE"));
+    assert!(!sql.contains("WITH ADMIN OPTION"));
+}
+
+#[test]
+fn changed_grant_release_remains_manual_review_only() {
+    let dir = create_temp_dir("release-grant-changed");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql"),
+        "-- stale grant\nGRANT INSERT ON TABLE \"dbstate_slice2\".\"sample_accounts\" TO PUBLIC;\n",
+    )
+    .expect("write changed grant");
+    commit_all(&dir, "changed grant");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["grant:table.dbstate_slice2.sample_accounts.public".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice32_changed_grant",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].operation_kind, "manualReviewRequired");
+    assert!(report.plan_items[0]
+        .operation_explanation
+        .contains("changed grants are manual-review only"));
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice32_changed_grant.sql"))
+        .expect("sql");
+    assert!(sql.contains("changed grants are manual-review only"));
+    assert!(!sql
+        .lines()
+        .any(|line| line.trim_start().starts_with("REVOKE")));
+}
+
+#[test]
+fn database_only_grant_release_does_not_generate_revoke() {
+    let dir = create_temp_dir("release-grant-db-only");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    commit_all(&dir, "schema only");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["grant:table.dbstate_slice2.sample_accounts.public".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice32_database_only_grant",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].operation_kind, "databaseOnlyReview");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice32_database_only_grant.sql"))
+            .expect("sql");
+    assert!(sql.contains("grant exists only in target database"));
+    assert!(!sql
+        .lines()
+        .any(|line| line.trim_start().starts_with("REVOKE")));
+}
+
+#[test]
+fn release_candidate_selection_respects_selected_grant_refs() {
+    let dir = create_temp_dir("release-grant-selection");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/grants/schemas/dbstate_slice2.app_reader.sql"),
+        render_grant_sql(&sample_inventory().grants[0]),
+    )
+    .expect("write selected grant");
+    fs::write(
+        dir.join("database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql"),
+        render_grant_sql(&sample_inventory().grants[1]),
+    )
+    .expect("write unselected grant");
+    commit_all(&dir, "repo-only grants");
+    let mut target_inventory = sample_inventory();
+    target_inventory.grants.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["grant:schema.dbstate_slice2.app_reader".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice32_grant_selection",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.included_objects,
+        vec!["grant:schema.dbstate_slice2.app_reader".to_string()]
+    );
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice32_grant_selection.sql"))
+        .expect("sql");
+    assert!(sql.contains("GRANT USAGE ON SCHEMA \"dbstate_slice2\" TO \"app_reader\";"));
+    assert!(!sql.contains("sample_accounts"));
+}
+
+#[test]
 fn release_does_not_overwrite_existing_artifacts() {
     let dir = create_temp_dir("release-sequence");
     init_git_repo(&dir);
@@ -4991,6 +5380,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "database/objects/constraints/",
         "database/objects/functions/",
         "database/objects/triggers/",
+        "database/objects/grants/",
         "objectType: \"schema\"",
         "objectType: \"table\"",
         "objectType: \"extension\"",
@@ -5002,6 +5392,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "objectType: \"constraint\"",
         "objectType: \"function\"",
         "objectType: \"trigger\"",
+        "objectType: \"grant\"",
         "referenceDataRow",
         "rowMatchesFilter",
         "rowMatchesStatusFilter",
@@ -5020,6 +5411,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "data.constraints",
         "data.functions",
         "data.triggers",
+        "data.grants",
         "functionIdentitySlug",
         "updateCompareOptionLists",
         "updateTableOptions",
@@ -5040,6 +5432,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
     assert!(!html.contains("functions future"));
     assert!(!html.contains("triggers future"));
     assert!(!html.contains("materialized views future"));
+    assert!(!html.contains("grants future"));
     assert!(js.contains("label === \"Inspect\""));
     assert!(js.contains("label === \"Reference-data compare\""));
     assert!(js.contains("appendOption(select, \"referenceData\", \"Reference data\")"));
@@ -5324,6 +5717,30 @@ fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
     assert!(!materialized_view_response
         .body
         .contains("REFRESH MATERIALIZED VIEW"));
+
+    let grant_path = dir
+        .join("database")
+        .join("objects")
+        .join("grants")
+        .join("tables")
+        .join("core.accounts.app_reader.sql");
+    fs::write(
+        &grant_path,
+        "-- DbState PostgreSQL desired-state object\n-- Object type: grant\n-- Grant target kind: table\n-- Object name: core.accounts\n-- Grantee: app_reader\n\nGRANT SELECT ON TABLE \"core\".\"accounts\" TO \"app_reader\";\n",
+    )
+    .expect("write grant ddl");
+    commit_all(&dir, "add grant object");
+
+    let grant_body = r#"{ "scope": "all", "objectType": "grant", "schema": "core", "objectName": "table.core.accounts.app_reader", "relativePath": "database/objects/grants/tables/core.accounts.app_reader.sql" }"#;
+    let grant_response = service_response("POST", "/api/v1/postgres/object-ddl", grant_body, &dir);
+
+    assert_eq!(grant_response.status_code, 200, "{}", grant_response.body);
+    assert!(grant_response.body.contains("\"objectType\":\"grant\""));
+    assert!(grant_response.body.contains("GRANT SELECT ON TABLE"));
+    assert!(grant_response.body.contains("\"group\":\"Schema\""));
+    assert!(grant_response.body.contains("\"group\":\"Target Object\""));
+    assert!(grant_response.body.contains("\"group\":\"Grantee Role\""));
+    assert!(!grant_response.body.contains("REVOKE"));
 }
 
 #[test]
