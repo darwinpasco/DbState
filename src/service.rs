@@ -302,6 +302,15 @@ pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> Ser
         ("POST", "/api/v1/reference-data/status") => {
             service_reference_data_status_endpoint(body, cwd)
         }
+        ("POST", "/api/v1/reference-data/database-tables") => {
+            service_reference_data_database_tables_endpoint(body, cwd)
+        }
+        ("POST", "/api/v1/reference-data/export/preview") => {
+            service_reference_data_export_endpoint(body, cwd, false)
+        }
+        ("POST", "/api/v1/reference-data/export/write") => {
+            service_reference_data_export_endpoint(body, cwd, true)
+        }
         ("POST", "/api/v1/postgres/data-compare") => {
             service_reference_data_compare_endpoint(body, cwd)
         }
@@ -361,6 +370,9 @@ pub fn service_route_definitions() -> Vec<(&'static str, &'static str)> {
         ("POST", "/api/v1/postgres/compare"),
         ("POST", "/api/v1/postgres/plan"),
         ("POST", "/api/v1/reference-data/status"),
+        ("POST", "/api/v1/reference-data/database-tables"),
+        ("POST", "/api/v1/reference-data/export/preview"),
+        ("POST", "/api/v1/reference-data/export/write"),
         ("POST", "/api/v1/postgres/data-compare"),
         ("POST", "/api/v1/postgres/object-ddl"),
         ("POST", "/api/v1/postgres/repository-sync/preview"),
@@ -875,6 +887,102 @@ fn service_reference_data_status_endpoint(body: &str, cwd: &Path) -> ServiceHttp
     service_json_response(200, &reference_data_status(&workspace).to_json())
 }
 
+fn service_reference_data_database_tables_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
+    let command = "reference-data database-tables";
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, command, &error);
+    }
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, command, &error),
+        };
+    let connection = match resolve_service_postgres_connection(&request) {
+        Ok(Some(connection)) => connection,
+        Ok(None) => {
+            return service_error_response(
+                400,
+                command,
+                "Missing PostgreSQL connection URL. Provide a session URL, saved profile, or DBSTATE_POSTGRES_URL.",
+            )
+        }
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    match reference_data_database_tables_with_connection(&workspace, &connection.url) {
+        Ok(report) => service_json_response(200, &report.to_json()),
+        Err(error) => {
+            service_error_response(400, command, &redact_message(&error, &connection.url))
+        }
+    }
+}
+
+fn service_reference_data_export_endpoint(
+    body: &str,
+    cwd: &Path,
+    write_files: bool,
+) -> ServiceHttpResponse {
+    let command = if write_files {
+        "reference-data export write"
+    } else {
+        "reference-data export preview"
+    };
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, command, &error);
+    }
+    if write_files
+        && (request_bool(&request, "confirmReferenceDataWrite") != Some(true)
+            || request_string(&request, "confirmationText").as_deref()
+                != Some("WRITE REFERENCE DATA FILES"))
+    {
+        return service_error_response(
+            400,
+            command,
+            "Reference-data file write requires confirmReferenceDataWrite true and confirmationText WRITE REFERENCE DATA FILES.",
+        );
+    }
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, command, &error),
+        };
+    let connection = match resolve_service_postgres_connection(&request) {
+        Ok(Some(connection)) => connection,
+        Ok(None) => {
+            return service_error_response(
+                400,
+                command,
+                "Missing PostgreSQL connection URL. Provide a session URL, saved profile, or DBSTATE_POSTGRES_URL.",
+            )
+        }
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    let selections = match reference_data_export_selections_from_request(&request) {
+        Ok(selections) => selections,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    let result = if write_files {
+        reference_data_export_write_with_connection(&workspace, &connection.url, &selections)
+    } else {
+        reference_data_export_preview_with_connection(&workspace, &connection.url, &selections)
+    };
+    match result {
+        Ok(report) => service_json_response(200, &report.to_json()),
+        Err(error) => {
+            service_error_response(400, command, &redact_message(&error, &connection.url))
+        }
+    }
+}
+
 fn service_reference_data_compare_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
     let command = "data-compare postgres";
     let request = match parse_service_request(body) {
@@ -914,6 +1022,44 @@ fn service_reference_data_compare_endpoint(body: &str, cwd: &Path) -> ServiceHtt
             service_error_response(400, command, &redact_message(&error, &connection.url))
         }
     }
+}
+
+fn reference_data_export_selections_from_request(
+    request: &Value,
+) -> Result<Vec<ReferenceDataExportSelection>, String> {
+    let Some(Value::Sequence(values)) = mapping_get(request, "tables") else {
+        return Err("Reference-data export requires a tables array.".to_string());
+    };
+    let mut selections = Vec::new();
+    for value in values {
+        let Value::Mapping(mapping) = value else {
+            return Err("Reference-data export tables must be objects.".to_string());
+        };
+        let schema = mapping_string(mapping, "schema")
+            .ok_or_else(|| "Reference-data export table schema is required.".to_string())?;
+        let name = mapping_string(mapping, "name")
+            .ok_or_else(|| "Reference-data export table name is required.".to_string())?;
+        let key_columns = mapping_string_array(mapping, "keyColumns");
+        let versioned_columns = mapping_string_array(mapping, "versionedColumns");
+        let masked_columns = mapping_string_array(mapping, "maskedColumns");
+        if key_columns.is_empty() {
+            return Err(format!(
+                "Reference-data export table '{}.{}' requires keyColumns.",
+                schema, name
+            ));
+        }
+        selections.push(ReferenceDataExportSelection {
+            schema,
+            name,
+            key_columns,
+            versioned_columns,
+            masked_columns,
+        });
+    }
+    if selections.is_empty() {
+        return Err("Select at least one database table to export as reference data.".to_string());
+    }
+    Ok(selections)
 }
 
 fn reference_data_selection_from_request(
@@ -1830,6 +1976,29 @@ fn request_bool(request: &Value, key: &str) -> Option<bool> {
 
 fn request_string_array(request: &Value, key: &str) -> Vec<String> {
     match mapping_get(request, key) {
+        Some(Value::Sequence(values)) => values
+            .iter()
+            .filter_map(|value| match value {
+                Value::String(value) => Some(value.to_string()),
+                Value::Number(value) => Some(value.to_string()),
+                _ => None,
+            })
+            .collect(),
+        Some(Value::String(value)) => vec![value.to_string()],
+        _ => Vec::new(),
+    }
+}
+
+fn mapping_string(mapping: &Mapping, key: &str) -> Option<String> {
+    match mapping.get(Value::String(key.to_string())) {
+        Some(Value::String(value)) if !value.trim().is_empty() => Some(value.to_string()),
+        Some(Value::Number(value)) => Some(value.to_string()),
+        _ => None,
+    }
+}
+
+fn mapping_string_array(mapping: &Mapping, key: &str) -> Vec<String> {
+    match mapping.get(Value::String(key.to_string())) {
         Some(Value::Sequence(values)) => values
             .iter()
             .filter_map(|value| match value {

@@ -187,6 +187,87 @@ pub struct ReferenceDataConfiguredTableStatus {
 }
 
 #[derive(Debug, Clone)]
+pub struct ReferenceDataDatabaseTablesReport {
+    pub command: String,
+    pub success: bool,
+    pub repository_path: String,
+    pub git_root: Option<String>,
+    pub is_git_repository: bool,
+    pub branch: Option<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
+    pub database_type: String,
+    pub tables: Vec<ReferenceDataCandidateTable>,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceDataCandidateTable {
+    pub schema: String,
+    pub name: String,
+    pub table_name: String,
+    pub columns: Vec<ReferenceDataCandidateColumn>,
+    pub suggested_key_columns: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceDataCandidateColumn {
+    pub name: String,
+    pub data_type: String,
+    pub nullable: bool,
+    pub is_primary_key: bool,
+    pub is_unique: bool,
+    pub ordinal: i32,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceDataExportSelection {
+    pub schema: String,
+    pub name: String,
+    pub key_columns: Vec<String>,
+    pub versioned_columns: Vec<String>,
+    pub masked_columns: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceDataExportReport {
+    pub command: String,
+    pub success: bool,
+    pub repository_path: String,
+    pub git_root: Option<String>,
+    pub is_git_repository: bool,
+    pub branch: Option<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
+    pub database_type: String,
+    pub registry_path: String,
+    pub registry_yaml: String,
+    pub table_previews: Vec<ReferenceDataTableExportPreview>,
+    pub files_created: Vec<String>,
+    pub files_updated: Vec<String>,
+    pub files_unchanged: Vec<String>,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceDataTableExportPreview {
+    pub schema: String,
+    pub name: String,
+    pub table_name: String,
+    pub file: String,
+    pub yaml: String,
+    pub key_columns: Vec<String>,
+    pub versioned_columns: Vec<String>,
+    pub ignored_columns: Vec<String>,
+    pub masked_columns: Vec<String>,
+    pub row_count: usize,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
 pub struct ReferenceDataRegistry {
     pub(crate) version: i64,
     pub(crate) tables: Vec<ReferenceDataTableConfig>,
@@ -292,6 +373,644 @@ fn reference_data_config_status(
         ignored_columns: config.ignore_columns.clone(),
         masked_columns: config.masked_columns.clone(),
     }
+}
+
+pub fn reference_data_database_tables_with_connection(
+    cwd: &Path,
+    connection_url: &str,
+) -> Result<ReferenceDataDatabaseTablesReport, String> {
+    let project = status_report(cwd, CommandKind::RepoStatus);
+    let mut report = ReferenceDataDatabaseTablesReport {
+        command: "reference-data database-tables".to_string(),
+        success: false,
+        repository_path: project.repository_path.clone(),
+        git_root: project.git_root.clone(),
+        is_git_repository: project.is_git_repository,
+        branch: project.branch.clone(),
+        working_tree_status: project.working_tree_status,
+        is_dirty: project.is_dirty,
+        database_type: "postgresql".to_string(),
+        tables: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+    };
+    if !project.is_git_repository {
+        report
+            .errors
+            .push("Selected path is not inside a Git repository.".to_string());
+        return Ok(report);
+    }
+    if !is_postgres_connection_url(connection_url) {
+        report.errors.push(invalid_postgres_url_message());
+        return Ok(report);
+    }
+
+    let mut client = Client::connect(connection_url, NoTls)
+        .map_err(|error| redact_message(&error.to_string(), connection_url))?;
+    report.tables = reference_data_candidate_tables_from_postgres(&mut client)?;
+    report.success = true;
+    Ok(report)
+}
+
+pub fn reference_data_export_preview_with_connection(
+    cwd: &Path,
+    connection_url: &str,
+    selections: &[ReferenceDataExportSelection],
+) -> Result<ReferenceDataExportReport, String> {
+    reference_data_export_with_connection(cwd, connection_url, selections, false)
+}
+
+pub fn reference_data_export_write_with_connection(
+    cwd: &Path,
+    connection_url: &str,
+    selections: &[ReferenceDataExportSelection],
+) -> Result<ReferenceDataExportReport, String> {
+    reference_data_export_with_connection(cwd, connection_url, selections, true)
+}
+
+fn reference_data_export_with_connection(
+    cwd: &Path,
+    connection_url: &str,
+    selections: &[ReferenceDataExportSelection],
+    write_files: bool,
+) -> Result<ReferenceDataExportReport, String> {
+    let project = status_report(cwd, CommandKind::RepoStatus);
+    let mut report = ReferenceDataExportReport {
+        command: if write_files {
+            "reference-data export write".to_string()
+        } else {
+            "reference-data export preview".to_string()
+        },
+        success: false,
+        repository_path: project.repository_path.clone(),
+        git_root: project.git_root.clone(),
+        is_git_repository: project.is_git_repository,
+        branch: project.branch.clone(),
+        working_tree_status: project.working_tree_status,
+        is_dirty: project.is_dirty,
+        database_type: "postgresql".to_string(),
+        registry_path: "database/reference-data/dbstate.reference-data.yml".to_string(),
+        registry_yaml: String::new(),
+        table_previews: Vec::new(),
+        files_created: Vec::new(),
+        files_updated: Vec::new(),
+        files_unchanged: Vec::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+    };
+    if !project.is_git_repository {
+        report
+            .errors
+            .push("Selected path is not inside a Git repository.".to_string());
+        return Ok(report);
+    }
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+        report.errors.push(
+            "DbState PostgreSQL project structure is incomplete. Initialize the repository before exporting reference data."
+                .to_string(),
+        );
+        return Ok(report);
+    }
+    if write_files && project.is_dirty {
+        report.errors.push(
+            "Working tree has uncommitted changes. Reference-data file write requires a clean working tree."
+                .to_string(),
+        );
+        return Ok(report);
+    }
+    if selections.is_empty() {
+        report
+            .errors
+            .push("Select at least one database table to export as reference data.".to_string());
+        return Ok(report);
+    }
+    if !is_postgres_connection_url(connection_url) {
+        report.errors.push(invalid_postgres_url_message());
+        return Ok(report);
+    }
+
+    let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
+    let mut client = Client::connect(connection_url, NoTls)
+        .map_err(|error| redact_message(&error.to_string(), connection_url))?;
+    let existing_registry = read_reference_data_registry(&root).ok();
+    let mut combined_tables: BTreeMap<String, ReferenceDataTableConfig> = BTreeMap::new();
+    if let Some(registry) = existing_registry {
+        for table in registry.tables {
+            combined_tables.insert(table.name.clone(), table);
+        }
+    }
+
+    for selection in selections {
+        let preview = reference_data_export_table_preview(&mut client, selection)?;
+        let config = ReferenceDataTableConfig {
+            name: preview.table_name.clone(),
+            file: preview
+                .file
+                .strip_prefix("database/reference-data/")
+                .unwrap_or(&preview.file)
+                .to_string(),
+            key_columns: preview.key_columns.clone(),
+            ignore_columns: preview.ignored_columns.clone(),
+            masked_columns: preview.masked_columns.clone(),
+            allow_deletes: false,
+        };
+        if combined_tables
+            .insert(config.name.clone(), config)
+            .is_some()
+        {
+            report.warnings.push(format!(
+                "Existing reference-data registry entry for '{}' will be updated.",
+                preview.table_name
+            ));
+        }
+        report.table_previews.push(preview);
+    }
+
+    report.registry_yaml = render_reference_data_registry_yaml(&combined_tables);
+    if write_files {
+        write_reference_data_export_files(&root, &mut report)?;
+    }
+    report.success = report.errors.is_empty();
+    Ok(report)
+}
+
+fn reference_data_candidate_tables_from_postgres(
+    client: &mut Client,
+) -> Result<Vec<ReferenceDataCandidateTable>, String> {
+    let rows = client
+        .query(
+            "SELECT n.nspname,
+                    c.relname,
+                    a.attname,
+                    a.attnum::int,
+                    format_type(a.atttypid, a.atttypmod),
+                    NOT a.attnotnull,
+                    EXISTS (
+                        SELECT 1
+                        FROM pg_constraint con
+                        WHERE con.conrelid = c.oid
+                          AND con.contype = 'p'
+                          AND a.attnum = ANY(con.conkey)
+                    ) AS is_primary_key,
+                    EXISTS (
+                        SELECT 1
+                        FROM pg_index idx
+                        WHERE idx.indrelid = c.oid
+                          AND idx.indisunique
+                          AND a.attnum = ANY(idx.indkey)
+                    ) AS is_unique
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_attribute a ON a.attrelid = c.oid
+             WHERE c.relkind = 'r'
+               AND a.attnum > 0
+               AND NOT a.attisdropped
+               AND n.nspname NOT LIKE 'pg_%'
+               AND n.nspname <> 'information_schema'
+             ORDER BY n.nspname, c.relname, a.attnum",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL reference-data table metadata query failed.".to_string())?;
+
+    let mut tables: BTreeMap<String, ReferenceDataCandidateTable> = BTreeMap::new();
+    for row in rows {
+        let schema: String = row.get(0);
+        let name: String = row.get(1);
+        let table_name = format!("{schema}.{name}");
+        let column = ReferenceDataCandidateColumn {
+            name: row.get(2),
+            ordinal: row.get(3),
+            data_type: row.get(4),
+            nullable: row.get(5),
+            is_primary_key: row.get(6),
+            is_unique: row.get(7),
+        };
+        let table =
+            tables
+                .entry(table_name.clone())
+                .or_insert_with(|| ReferenceDataCandidateTable {
+                    schema: schema.clone(),
+                    name: name.clone(),
+                    table_name: table_name.clone(),
+                    columns: Vec::new(),
+                    suggested_key_columns: Vec::new(),
+                    warnings: Vec::new(),
+                });
+        if column.is_primary_key {
+            table.suggested_key_columns.push(column.name.clone());
+        }
+        table.columns.push(column);
+    }
+    Ok(tables.into_values().collect())
+}
+
+fn reference_data_export_table_preview(
+    client: &mut Client,
+    selection: &ReferenceDataExportSelection,
+) -> Result<ReferenceDataTableExportPreview, String> {
+    validate_export_selection_identity(selection)?;
+    let table_name = format!("{}.{}", selection.schema, selection.name);
+    let columns =
+        reference_data_table_columns_from_postgres(client, &selection.schema, &selection.name)?;
+    if columns.is_empty() {
+        return Err(format!(
+            "Selected reference-data export table '{}' was not found in PostgreSQL.",
+            table_name
+        ));
+    }
+    let column_names: Vec<String> = columns.iter().map(|column| column.name.clone()).collect();
+    validate_export_columns("keyColumns", &selection.key_columns, &column_names)?;
+    validate_export_columns(
+        "versionedColumns",
+        &selection.versioned_columns,
+        &column_names,
+    )?;
+    validate_export_columns("maskedColumns", &selection.masked_columns, &column_names)?;
+    if selection.key_columns.is_empty() {
+        return Err(format!(
+            "Reference-data export table '{}' must have at least one key column.",
+            table_name
+        ));
+    }
+    for key in &selection.key_columns {
+        if selection.masked_columns.contains(key) {
+            return Err(format!(
+                "Reference-data export table '{}' key column '{}' cannot be masked.",
+                table_name, key
+            ));
+        }
+    }
+    let mut versioned_columns = selection.versioned_columns.clone();
+    versioned_columns.sort();
+    versioned_columns.dedup();
+    let mut masked_columns = selection.masked_columns.clone();
+    masked_columns.sort();
+    masked_columns.dedup();
+
+    let mut compared_columns: BTreeSet<String> = selection.key_columns.iter().cloned().collect();
+    compared_columns.extend(versioned_columns.iter().cloned());
+    compared_columns.extend(masked_columns.iter().cloned());
+    let ignored_columns: Vec<String> = column_names
+        .iter()
+        .filter(|column| !compared_columns.contains(*column))
+        .cloned()
+        .collect();
+    let mut warnings = Vec::new();
+    if versioned_columns.is_empty() && masked_columns.is_empty() {
+        warnings.push(format!(
+            "Reference-data export table '{}' has no versioned columns; generated rows contain keys only.",
+            table_name
+        ));
+    }
+    if !masked_columns.is_empty() {
+        warnings.push(format!(
+            "Masked column values for '{}' are written as [masked] placeholders; raw database values are not exported.",
+            table_name
+        ));
+    }
+    let row_count = reference_data_table_row_count(client, &selection.schema, &selection.name)?;
+    if row_count > 1000 {
+        warnings.push(format!(
+            "Reference-data export table '{}' has {row_count} rows. Review generated YAML before committing.",
+            table_name
+        ));
+    }
+    let rows = reference_data_export_rows_from_postgres(
+        client,
+        selection,
+        &versioned_columns,
+        &masked_columns,
+    )?;
+    let file = reference_data_table_output_file(&selection.schema, &selection.name)?;
+    let yaml = render_reference_data_table_yaml(&table_name, &rows);
+    Ok(ReferenceDataTableExportPreview {
+        schema: selection.schema.clone(),
+        name: selection.name.clone(),
+        table_name,
+        file,
+        yaml,
+        key_columns: selection.key_columns.clone(),
+        versioned_columns,
+        ignored_columns,
+        masked_columns,
+        row_count,
+        warnings,
+    })
+}
+
+fn reference_data_table_columns_from_postgres(
+    client: &mut Client,
+    schema: &str,
+    table: &str,
+) -> Result<Vec<ReferenceDataCandidateColumn>, String> {
+    let rows = client
+        .query(
+            "SELECT a.attname,
+                    a.attnum::int,
+                    format_type(a.atttypid, a.atttypmod),
+                    NOT a.attnotnull,
+                    EXISTS (
+                        SELECT 1
+                        FROM pg_constraint con
+                        WHERE con.conrelid = c.oid
+                          AND con.contype = 'p'
+                          AND a.attnum = ANY(con.conkey)
+                    ) AS is_primary_key,
+                    EXISTS (
+                        SELECT 1
+                        FROM pg_index idx
+                        WHERE idx.indrelid = c.oid
+                          AND idx.indisunique
+                          AND a.attnum = ANY(idx.indkey)
+                    ) AS is_unique
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_attribute a ON a.attrelid = c.oid
+             WHERE c.relkind = 'r'
+               AND n.nspname = $1
+               AND c.relname = $2
+               AND a.attnum > 0
+               AND NOT a.attisdropped
+             ORDER BY a.attnum",
+            &[&schema, &table],
+        )
+        .map_err(|_| {
+            format!(
+                "PostgreSQL reference-data column metadata query failed for '{schema}.{table}'."
+            )
+        })?;
+    Ok(rows
+        .into_iter()
+        .map(|row| ReferenceDataCandidateColumn {
+            name: row.get(0),
+            ordinal: row.get(1),
+            data_type: row.get(2),
+            nullable: row.get(3),
+            is_primary_key: row.get(4),
+            is_unique: row.get(5),
+        })
+        .collect())
+}
+
+fn reference_data_table_row_count(
+    client: &mut Client,
+    schema: &str,
+    table: &str,
+) -> Result<usize, String> {
+    let sql = format!(
+        "SELECT count(*)::bigint FROM {}.{}",
+        quote_postgres_identifier(schema),
+        quote_postgres_identifier(table)
+    );
+    let row = client.query_one(&sql, &[]).map_err(|_| {
+        format!("PostgreSQL reference-data row count query failed for '{schema}.{table}'.")
+    })?;
+    let count: i64 = row.get(0);
+    Ok(count.max(0) as usize)
+}
+
+fn reference_data_export_rows_from_postgres(
+    client: &mut Client,
+    selection: &ReferenceDataExportSelection,
+    versioned_columns: &[String],
+    masked_columns: &[String],
+) -> Result<Vec<BTreeMap<String, Option<String>>>, String> {
+    let mut selected_columns: BTreeSet<String> = selection.key_columns.iter().cloned().collect();
+    selected_columns.extend(versioned_columns.iter().cloned());
+    let selected_columns: Vec<String> = selected_columns
+        .into_iter()
+        .filter(|column| !masked_columns.contains(column))
+        .collect();
+    let select_list = selected_columns
+        .iter()
+        .map(|column| {
+            format!(
+                "{}::text AS {}",
+                quote_postgres_identifier(column),
+                quote_postgres_identifier(column)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    let order_by = selection
+        .key_columns
+        .iter()
+        .map(|column| quote_postgres_identifier(column))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let sql = format!(
+        "SELECT {select_list} FROM {}.{} ORDER BY {order_by}",
+        quote_postgres_identifier(&selection.schema),
+        quote_postgres_identifier(&selection.name)
+    );
+    let rows = client.query(&sql, &[]).map_err(|_| {
+        format!(
+            "PostgreSQL reference-data export SELECT failed for '{}.{}'.",
+            selection.schema, selection.name
+        )
+    })?;
+    let mut output = Vec::new();
+    for row in rows {
+        let mut values = BTreeMap::new();
+        for key in &selection.key_columns {
+            let value: Option<String> = row.try_get(key.as_str()).map_err(|_| {
+                format!(
+                    "Could not read key column '{}' from '{}.{}'.",
+                    key, selection.schema, selection.name
+                )
+            })?;
+            values.insert(key.clone(), value);
+        }
+        for column in versioned_columns {
+            if masked_columns.contains(column) {
+                continue;
+            }
+            let value: Option<String> = row.try_get(column.as_str()).map_err(|_| {
+                format!(
+                    "Could not read versioned column '{}' from '{}.{}'.",
+                    column, selection.schema, selection.name
+                )
+            })?;
+            values.insert(column.clone(), value);
+        }
+        for column in masked_columns {
+            values.insert(column.clone(), Some("[masked]".to_string()));
+        }
+        output.push(values);
+    }
+    Ok(output)
+}
+
+fn validate_export_selection_identity(
+    selection: &ReferenceDataExportSelection,
+) -> Result<(), String> {
+    safe_file_component(&selection.schema)?;
+    safe_file_component(&selection.name)?;
+    if selection.schema.trim().is_empty() || selection.name.trim().is_empty() {
+        return Err("Reference-data export tables require non-empty schema and name.".to_string());
+    }
+    Ok(())
+}
+
+fn validate_export_columns(
+    field: &str,
+    values: &[String],
+    available_columns: &[String],
+) -> Result<(), String> {
+    let mut seen = BTreeSet::new();
+    for value in values {
+        if !seen.insert(value) {
+            return Err(format!("{field} contains duplicate column '{value}'."));
+        }
+        if !available_columns.contains(value) {
+            return Err(format!("{field} contains unknown column '{value}'."));
+        }
+    }
+    Ok(())
+}
+
+fn reference_data_table_output_file(schema: &str, table: &str) -> Result<String, String> {
+    Ok(format!(
+        "database/reference-data/tables/{}.{}.yml",
+        safe_file_component(schema)?,
+        safe_file_component(table)?
+    ))
+}
+
+fn render_reference_data_registry_yaml(
+    tables: &BTreeMap<String, ReferenceDataTableConfig>,
+) -> String {
+    let mut yaml = String::from("version: 1\ntables:\n");
+    if tables.is_empty() {
+        return "version: 1\ntables: []\n".to_string();
+    }
+    for config in tables.values() {
+        let (schema, name) = split_schema_qualified_name(&config.name)
+            .unwrap_or_else(|_| ("".to_string(), config.name.clone()));
+        yaml.push_str(&format!("  - schema: {}\n", yaml_plain_or_quoted(&schema)));
+        yaml.push_str(&format!("    name: {}\n", yaml_plain_or_quoted(&name)));
+        yaml.push_str("    keyColumns:\n");
+        for column in &config.key_columns {
+            yaml.push_str(&format!("      - {}\n", yaml_plain_or_quoted(column)));
+        }
+        yaml.push_str("    ignoredColumns:");
+        if config.ignore_columns.is_empty() {
+            yaml.push_str(" []\n");
+        } else {
+            yaml.push('\n');
+            for column in &config.ignore_columns {
+                yaml.push_str(&format!("      - {}\n", yaml_plain_or_quoted(column)));
+            }
+        }
+        yaml.push_str("    maskedColumns:");
+        if config.masked_columns.is_empty() {
+            yaml.push_str(" []\n");
+        } else {
+            yaml.push('\n');
+            for column in &config.masked_columns {
+                yaml.push_str(&format!("      - {}\n", yaml_plain_or_quoted(column)));
+            }
+        }
+    }
+    yaml
+}
+
+fn render_reference_data_table_yaml(
+    table_name: &str,
+    rows: &[BTreeMap<String, Option<String>>],
+) -> String {
+    if rows.is_empty() {
+        return format!(
+            "version: 1\ntable: {}\nrows: []\n",
+            yaml_plain_or_quoted(table_name)
+        );
+    }
+    let mut yaml = format!(
+        "version: 1\ntable: {}\nrows:\n",
+        yaml_plain_or_quoted(table_name)
+    );
+    for row in rows {
+        yaml.push_str("  -");
+        let mut first = true;
+        for (column, value) in row {
+            if first {
+                yaml.push_str(&format!(
+                    " {}: {}\n",
+                    yaml_plain_or_quoted(column),
+                    yaml_scalar(value.as_deref())
+                ));
+                first = false;
+            } else {
+                yaml.push_str(&format!(
+                    "    {}: {}\n",
+                    yaml_plain_or_quoted(column),
+                    yaml_scalar(value.as_deref())
+                ));
+            }
+        }
+    }
+    yaml
+}
+
+fn write_reference_data_export_files(
+    root: &Path,
+    report: &mut ReferenceDataExportReport,
+) -> Result<(), String> {
+    let reference_root = root.join("database/reference-data");
+    let tables_root = reference_root.join("tables");
+    fs::create_dir_all(&tables_root)
+        .map_err(|error| format!("Could not create database/reference-data/tables: {error}"))?;
+    let registry_yaml = report.registry_yaml.clone();
+    write_reference_data_file(
+        root,
+        "database/reference-data/dbstate.reference-data.yml",
+        &registry_yaml,
+        report,
+    )?;
+    for preview in report.table_previews.clone() {
+        write_reference_data_file(root, &preview.file, &preview.yaml, report)?;
+    }
+    Ok(())
+}
+
+fn write_reference_data_file(
+    root: &Path,
+    relative_path: &str,
+    content: &str,
+    report: &mut ReferenceDataExportReport,
+) -> Result<(), String> {
+    if relative_path.contains("..")
+        || relative_path.contains('\\')
+        || relative_path.starts_with('/')
+        || relative_path.contains(':')
+        || !relative_path.starts_with("database/reference-data/")
+    {
+        return Err(format!(
+            "Reference-data export path must stay under database/reference-data/: {relative_path}"
+        ));
+    }
+    let target = root.join(relative_path);
+    if let Some(parent) = target.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("Could not create parent for {relative_path}: {error}"))?;
+    }
+    let existing = fs::read_to_string(&target).ok();
+    match existing {
+        Some(existing) if existing == content => {
+            report.files_unchanged.push(relative_path.to_string());
+        }
+        Some(_) => {
+            fs::write(&target, content)
+                .map_err(|error| format!("Could not write {relative_path}: {error}"))?;
+            report.files_updated.push(relative_path.to_string());
+        }
+        None => {
+            fs::write(&target, content)
+                .map_err(|error| format!("Could not write {relative_path}: {error}"))?;
+            report.files_created.push(relative_path.to_string());
+        }
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone)]
@@ -1055,6 +1774,37 @@ fn yaml_value_to_reference_string(value: &Value) -> Result<Option<String>, Strin
     }
 }
 
+fn yaml_scalar(value: Option<&str>) -> String {
+    match value {
+        None => "null".to_string(),
+        Some(value)
+            if value.parse::<i64>().is_ok()
+                || value.parse::<f64>().is_ok()
+                || value == "true"
+                || value == "false" =>
+        {
+            value.to_string()
+        }
+        Some(value) => yaml_plain_or_quoted(value),
+    }
+}
+
+fn yaml_plain_or_quoted(value: &str) -> String {
+    if value.is_empty()
+        || value.starts_with('[')
+        || value.contains(':')
+        || value.contains('#')
+        || value.contains('"')
+        || value.contains('\'')
+        || value.chars().any(char::is_whitespace)
+        || matches!(value, "null" | "true" | "false" | "~")
+    {
+        format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
+    } else {
+        value.to_string()
+    }
+}
+
 fn expect_mapping<'a>(value: &'a Value, context: &str) -> Result<&'a Mapping, String> {
     match value {
         Value::Mapping(mapping) => Ok(mapping),
@@ -1295,6 +2045,137 @@ fn write_reference_data_configured_table_array_field(
         write_json_array_field(json, "keyColumns", &value.key_columns);
         write_json_array_field(json, "ignoredColumns", &value.ignored_columns);
         write_json_array_field(json, "maskedColumns", &value.masked_columns);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+impl ReferenceDataDatabaseTablesReport {
+    pub fn to_json(&self) -> String {
+        let mut json = String::new();
+        json.push('{');
+        write_json_string_field(&mut json, "command", &self.command, true);
+        write_json_bool_field(&mut json, "success", self.success);
+        write_repository_context_fields(
+            &mut json,
+            &self.repository_path,
+            self.git_root.as_deref(),
+            self.is_git_repository,
+            self.branch.as_deref(),
+            self.working_tree_status,
+            self.is_dirty,
+        );
+        write_json_string_field(&mut json, "databaseType", &self.database_type, false);
+        write_reference_data_candidate_table_array_field(&mut json, "tables", &self.tables);
+        write_json_array_field(&mut json, "warnings", &self.warnings);
+        write_json_array_field(&mut json, "errors", &self.errors);
+        json.push('}');
+        json
+    }
+}
+
+fn write_reference_data_candidate_table_array_field(
+    json: &mut String,
+    name: &str,
+    values: &[ReferenceDataCandidateTable],
+) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schema", &value.schema, true);
+        write_json_string_field(json, "name", &value.name, false);
+        write_json_string_field(json, "tableName", &value.table_name, false);
+        write_reference_data_candidate_column_array_field(json, "columns", &value.columns);
+        write_json_array_field(json, "suggestedKeyColumns", &value.suggested_key_columns);
+        write_json_array_field(json, "warnings", &value.warnings);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+fn write_reference_data_candidate_column_array_field(
+    json: &mut String,
+    name: &str,
+    values: &[ReferenceDataCandidateColumn],
+) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "name", &value.name, true);
+        write_json_string_field(json, "dataType", &value.data_type, false);
+        write_json_bool_field(json, "nullable", value.nullable);
+        write_json_bool_field(json, "isPrimaryKey", value.is_primary_key);
+        write_json_bool_field(json, "isUnique", value.is_unique);
+        write_json_i32_field(json, "ordinal", value.ordinal, false);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+impl ReferenceDataExportReport {
+    pub fn to_json(&self) -> String {
+        let mut json = String::new();
+        json.push('{');
+        write_json_string_field(&mut json, "command", &self.command, true);
+        write_json_bool_field(&mut json, "success", self.success);
+        write_repository_context_fields(
+            &mut json,
+            &self.repository_path,
+            self.git_root.as_deref(),
+            self.is_git_repository,
+            self.branch.as_deref(),
+            self.working_tree_status,
+            self.is_dirty,
+        );
+        write_json_string_field(&mut json, "databaseType", &self.database_type, false);
+        write_json_string_field(&mut json, "registryPath", &self.registry_path, false);
+        write_json_string_field(&mut json, "registryYaml", &self.registry_yaml, false);
+        write_reference_data_export_table_array_field(
+            &mut json,
+            "tablePreviews",
+            &self.table_previews,
+        );
+        write_json_array_field(&mut json, "filesCreated", &self.files_created);
+        write_json_array_field(&mut json, "filesUpdated", &self.files_updated);
+        write_json_array_field(&mut json, "filesUnchanged", &self.files_unchanged);
+        write_json_array_field(&mut json, "warnings", &self.warnings);
+        write_json_array_field(&mut json, "errors", &self.errors);
+        json.push('}');
+        json
+    }
+}
+
+fn write_reference_data_export_table_array_field(
+    json: &mut String,
+    name: &str,
+    values: &[ReferenceDataTableExportPreview],
+) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schema", &value.schema, true);
+        write_json_string_field(json, "name", &value.name, false);
+        write_json_string_field(json, "tableName", &value.table_name, false);
+        write_json_string_field(json, "file", &value.file, false);
+        write_json_string_field(json, "yaml", &value.yaml, false);
+        write_json_array_field(json, "keyColumns", &value.key_columns);
+        write_json_array_field(json, "versionedColumns", &value.versioned_columns);
+        write_json_array_field(json, "ignoredColumns", &value.ignored_columns);
+        write_json_array_field(json, "maskedColumns", &value.masked_columns);
+        write!(json, ",\"rowCount\":{}", value.row_count).ok();
+        write_json_array_field(json, "warnings", &value.warnings);
         json.push('}');
     }
     json.push(']');

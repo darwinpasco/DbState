@@ -5430,6 +5430,9 @@ fn slice11_service_routes_include_only_approved_endpoints() {
         ("POST", "/api/v1/postgres/compare"),
         ("POST", "/api/v1/postgres/plan"),
         ("POST", "/api/v1/reference-data/status"),
+        ("POST", "/api/v1/reference-data/database-tables"),
+        ("POST", "/api/v1/reference-data/export/preview"),
+        ("POST", "/api/v1/reference-data/export/write"),
         ("POST", "/api/v1/postgres/data-compare"),
         ("POST", "/api/v1/postgres/object-ddl"),
         ("POST", "/api/v1/postgres/repository-sync/preview"),
@@ -5442,7 +5445,7 @@ fn slice11_service_routes_include_only_approved_endpoints() {
     }
 
     for (_, path) in routes {
-        assert!(!path.contains("export"));
+        assert!(!path.contains("/api/v1/postgres/export"));
         assert!(!path.contains("/api/v1/postgres/sync"));
         assert!(!path.contains("apply"));
     }
@@ -5647,6 +5650,9 @@ fn slice12_ui_javascript_calls_only_approved_endpoints() {
         "/api/v1/postgres/compare",
         "/api/v1/postgres/plan",
         "/api/v1/reference-data/status",
+        "/api/v1/reference-data/database-tables",
+        "/api/v1/reference-data/export/preview",
+        "/api/v1/reference-data/export/write",
         "/api/v1/postgres/data-compare",
         "/api/v1/postgres/object-ddl",
         "/api/v1/postgres/repository-sync/preview",
@@ -6245,6 +6251,143 @@ fn slice34_reference_data_compare_ui_is_enabled_and_read_only() {
 }
 
 #[test]
+fn slice34a_reference_data_export_ui_contract_is_present() {
+    let html = ui_html();
+    let js = ui_js();
+    let combined = format!("{html}\n{js}");
+
+    for expected in [
+        "Schema Compare: Repository to Database",
+        "Schema Compare: Database to Repository",
+        "Reference Data Compare: Repository to Database",
+        "Reference Data Compare: Database to Repository",
+        "schemaRepoToDatabase",
+        "schemaDatabaseToRepository",
+        "referenceDataRepoToDatabase",
+        "referenceDataDatabaseToRepository",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "missing direction-explicit workflow mode {expected}"
+        );
+    }
+
+    for expected in [
+        "Reference Data: Database to Repository",
+        "Load database tables",
+        "reference-data-database-tables",
+        "Selected key count",
+        "Versioned columns",
+        "Masked columns",
+        "Rows",
+        "Selected Table Detail",
+        "key column",
+        "versioned columns",
+        "Ignored columns are derived",
+        "masked columns",
+        "Preview Reference YAML",
+        "Write Reference Data Files",
+        "WRITE REFERENCE DATA FILES",
+        "reference-data-export-table-checkbox",
+        "reference-data-export-columns",
+        "reference-data-export-preview",
+        "/api/v1/reference-data/database-tables",
+        "/api/v1/reference-data/export/preview",
+        "/api/v1/reference-data/export/write",
+        "confirmReferenceDataWrite",
+        "sourceKind: \"PostgreSQL database\"",
+        "targetKind: \"Repository reference-data\"",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "missing Slice 34A UI contract text {expected}"
+        );
+    }
+
+    assert!(combined.contains("Refresh Database Inventory"));
+    assert!(!combined.contains("PostgreSQL Inspect Only"));
+    assert!(!combined.contains("<option value=\"inspect\">"));
+    assert!(
+        html.find("id=\"reference-data-panel\"").unwrap()
+            < html.find("id=\"reference-data-export-panel\"").unwrap(),
+        "reference-data export workflow should be separated after the compare panel"
+    );
+    assert!(
+        html.find("id=\"reference-data-export-panel\"").unwrap()
+            < html.find("id=\"repository-sync-controls\"").unwrap(),
+        "reference-data export workflow should not be nested in schema repository sync controls"
+    );
+    assert!(!combined.contains("Sync to Database"));
+    assert!(!combined.contains("Apply data changes"));
+    assert!(!combined.contains("Execute Reference Data"));
+    assert!(!combined.contains("Edit Reference Data Row"));
+    assert!(!combined.contains("Delete Reference Data Row"));
+}
+
+#[test]
+fn reference_data_export_write_requires_confirmation() {
+    let dir = create_temp_dir("reference-data-export-confirmation");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let base_body = format!(
+        r#"{{
+  "repositoryPath": "{}",
+  "postgresUrl": "postgres://user:secret@example.invalid/db",
+  "tables": [
+    {{
+      "schema": "public",
+      "name": "country",
+      "keyColumns": ["country_id"],
+      "versionedColumns": ["country"],
+      "maskedColumns": []
+    }}
+  ]
+}}"#,
+        escape_json(&display_path(&dir))
+    );
+
+    let missing = service_response(
+        "POST",
+        "/api/v1/reference-data/export/write",
+        &base_body,
+        &dir,
+    );
+    assert_eq!(missing.status_code, 400);
+    assert!(missing.body.contains("WRITE REFERENCE DATA FILES"));
+    assert!(!missing.body.contains("secret"));
+    assert!(!missing.body.contains("postgres://"));
+    assert!(!dir
+        .join("database/reference-data/tables/public.country.yml")
+        .exists());
+}
+
+#[test]
+fn reference_data_database_tables_endpoint_redacts_connection_errors() {
+    let dir = create_temp_dir("reference-data-database-tables-redaction");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let body = format!(
+        r#"{{
+  "repositoryPath": "{}",
+  "postgresUrl": "postgres://user:secret@/db"
+}}"#,
+        escape_json(&display_path(&dir))
+    );
+
+    let response = service_response(
+        "POST",
+        "/api/v1/reference-data/database-tables",
+        &body,
+        &dir,
+    );
+
+    assert_eq!(response.status_code, 400);
+    assert!(!response.body.contains("secret"));
+    assert!(!response.body.contains("postgres://"));
+}
+
+#[test]
 fn slice15_service_routes_and_write_confirmation_are_present() {
     let routes = service_route_definitions();
     assert!(routes.contains(&("POST", "/api/v1/postgres/object-ddl")));
@@ -6733,7 +6876,7 @@ fn slice15_ui_database_to_repository_workflow_contract_is_present() {
             "confirmationText",
             "data-standard-operation-action",
             "standardOperationAllowed",
-            "Compare is not available in Database to Repository mode. Use Preview Repository Sync.",
+            "Compare is not available in Schema Compare: Database to Repository mode. Use Preview Repository Sync.",
             "copyRedactedJson",
             "jsonViewer.textContent",
             "Database to Repository Preview",
@@ -6750,7 +6893,8 @@ fn slice15_ui_database_to_repository_workflow_contract_is_present() {
             "sourceContext: \"repository\"",
             "targetContext: \"connection\"",
             "targetContext: \"catalog\"",
-            "Repository configured reference data",
+            "Repository reference-data",
+            "PostgreSQL target",
             "Read-only catalog view",
             "DbState captures supported PostgreSQL database state into the selected repository after preview and explicit confirmation.",
             "DbState compares repository desired state to PostgreSQL through read-only service operations.",
@@ -6808,7 +6952,11 @@ fn slice15_ui_database_to_repository_workflow_contract_is_present() {
     assert!(js.contains(
         "Selected result belongs to a different workflow. Run the current workflow again."
     ));
-    let direction_index = js.rfind("if (isDatabaseToRepositoryMode(mode))").unwrap();
+    let direction_function_index = js.find("function directionForWorkflowMode(mode)").unwrap();
+    let direction_index = js[direction_function_index..]
+        .find("if (isSchemaDatabaseToRepositoryMode(mode))")
+        .map(|offset| direction_function_index + offset)
+        .unwrap();
     let direction_block = &js[direction_index..direction_index + 360];
     assert!(direction_block.contains("sourceType: \"Database\""));
     assert!(direction_block.contains("targetType: \"Repository\""));
