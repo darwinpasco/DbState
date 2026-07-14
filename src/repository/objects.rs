@@ -9,6 +9,7 @@ pub(crate) enum RepositoryObjectType {
     Sequence,
     Index,
     View,
+    MaterializedView,
     Constraint,
     Function,
     Trigger,
@@ -58,6 +59,10 @@ pub(crate) enum ObjectRef {
         schema: String,
         view: String,
     },
+    MaterializedView {
+        schema: String,
+        materialized_view: String,
+    },
     Constraint {
         schema: String,
         table: String,
@@ -79,7 +84,7 @@ impl ObjectRef {
     pub(crate) fn parse(value: &str) -> Result<Self, String> {
         let Some((object_type, identity)) = value.split_once(':') else {
             return Err(format!(
-                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, or trigger:<schema>.<relation>.<trigger>."
+                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, materializedView:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, or trigger:<schema>.<relation>.<trigger>."
             ));
         };
         match object_type {
@@ -143,6 +148,14 @@ impl ObjectRef {
                 let (schema, view) = parse_two_part_object_ref(value, identity, "view")?;
                 Ok(Self::View { schema, view })
             }
+            "materializedView" => {
+                let (schema, materialized_view) =
+                    parse_two_part_object_ref(value, identity, "materializedView")?;
+                Ok(Self::MaterializedView {
+                    schema,
+                    materialized_view,
+                })
+            }
             "constraint" => {
                 let parts: Vec<&str> = identity.split('.').collect();
                 if parts.len() != 3 || parts.iter().any(|part| part.trim().is_empty()) {
@@ -192,7 +205,7 @@ impl ObjectRef {
                 })
             }
             _ => Err(format!(
-                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, or trigger:<schema>.<relation>.<trigger>."
+                "Invalid object reference '{value}'. Use schema:<schema>, table:<schema>.<table>, extension:<name>, enum:<schema>.<name>, sequence:<schema>.<name>, index:<schema>.<table>.<name>, view:<schema>.<name>, materializedView:<schema>.<name>, constraint:<schema>.<table>.<name>, function:<schema>.<function>.<signature>, or trigger:<schema>.<relation>.<trigger>."
             )),
         }
     }
@@ -210,6 +223,10 @@ impl ObjectRef {
                 index,
             } => format!("index:{schema}.{table}.{index}"),
             Self::View { schema, view } => format!("view:{schema}.{view}"),
+            Self::MaterializedView {
+                schema,
+                materialized_view,
+            } => format!("materializedView:{schema}.{materialized_view}"),
             Self::Constraint {
                 schema,
                 table,
@@ -239,6 +256,7 @@ impl ObjectRef {
             Self::Sequence { .. } => "sequence",
             Self::Index { .. } => "index",
             Self::View { .. } => "view",
+            Self::MaterializedView { .. } => "materializedView",
             Self::Constraint { .. } => "constraint",
             Self::Function { .. } => "function",
             Self::Trigger { .. } => "trigger",
@@ -252,6 +270,7 @@ impl ObjectRef {
             Self::Enum { schema, .. }
             | Self::Sequence { schema, .. }
             | Self::View { schema, .. }
+            | Self::MaterializedView { schema, .. }
             | Self::Function { schema, .. }
             | Self::Trigger { schema, .. } => Some(Self::Schema(schema.clone())),
             Self::Index { schema, .. } | Self::Constraint { schema, .. } => {
@@ -342,6 +361,17 @@ pub(crate) fn object_ref_from_relative_path(relative_path: &str) -> Result<Objec
             ));
         };
         return Ok(ObjectRef::View { schema, view });
+    }
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/materialized-views/") {
+        let Some((schema, materialized_view)) = table_name_from_file(file_name) else {
+            return Err(format!(
+                "Invalid materialized view desired-state file path: {relative_path}"
+            ));
+        };
+        return Ok(ObjectRef::MaterializedView {
+            schema,
+            materialized_view,
+        });
     }
     if let Some(file_name) = relative_path.strip_prefix("database/objects/functions/") {
         let Some((schema, function, signature)) = three_part_name_from_file(file_name) else {
@@ -444,6 +474,17 @@ pub(crate) fn view_file_path(schema: &str, view: &str) -> Result<String, String>
         "database/objects/views/{}.{}.sql",
         safe_file_component(schema)?,
         safe_file_component(view)?
+    ))
+}
+
+pub(crate) fn materialized_view_file_path(
+    schema: &str,
+    materialized_view: &str,
+) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/materialized-views/{}.{}.sql",
+        safe_file_component(schema)?,
+        safe_file_component(materialized_view)?
     ))
 }
 
@@ -569,6 +610,9 @@ pub(crate) fn object_key(object: &DesiredStateObject) -> String {
             &object.object_name,
         ),
         RepositoryObjectType::View => view_key(&object.schema_name, &object.object_name),
+        RepositoryObjectType::MaterializedView => {
+            materialized_view_key(&object.schema_name, &object.object_name)
+        }
         RepositoryObjectType::Constraint => constraint_key(
             &object.schema_name,
             object.parent_name.as_deref().unwrap_or(""),
@@ -609,6 +653,10 @@ pub(crate) fn index_key(schema: &str, table: &str, index: &str) -> String {
 
 pub(crate) fn view_key(schema: &str, view: &str) -> String {
     format!("view:{schema}.{view}")
+}
+
+pub(crate) fn materialized_view_key(schema: &str, materialized_view: &str) -> String {
+    format!("materializedView:{schema}.{materialized_view}")
 }
 
 pub(crate) fn constraint_key(schema: &str, table: &str, constraint: &str) -> String {

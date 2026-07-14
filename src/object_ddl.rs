@@ -2,13 +2,14 @@ use crate::git::git_root;
 use crate::postgres::{
     inspect_postgres, invalid_postgres_url_message, is_postgres_connection_url,
     render_constraint_sql, render_enum_sql, render_extension_sql, render_function_sql,
-    render_index_sql, render_schema_sql, render_sequence_sql, render_table_sql, render_trigger_sql,
-    render_view_sql, ColumnInfo, ConstraintInfo, FunctionInfo, IndexInfo, TriggerInfo,
+    render_index_sql, render_materialized_view_sql, render_schema_sql, render_sequence_sql,
+    render_table_sql, render_trigger_sql, render_view_sql, ColumnInfo, ConstraintInfo,
+    FunctionInfo, IndexInfo, TriggerInfo,
 };
 use crate::repository::{
     enum_file_path, extension_file_path, function_identity_slug, index_file_path,
-    safe_file_component, schema_file_path, sequence_file_path, table_file_path, trigger_file_path,
-    view_file_path,
+    materialized_view_file_path, safe_file_component, schema_file_path, sequence_file_path,
+    table_file_path, trigger_file_path, view_file_path,
 };
 use crate::service::{
     parse_service_request, request_string, resolve_service_postgres_connection,
@@ -50,6 +51,7 @@ pub(crate) fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttp
             | "sequence"
             | "index"
             | "view"
+            | "materializedView"
             | "constraint"
             | "function"
             | "trigger"
@@ -204,6 +206,7 @@ fn default_object_relative_path(
             }
         }
         "view" => view_file_path(schema, object_name),
+        "materializedView" => materialized_view_file_path(schema, object_name),
         "function" => {
             let parts: Vec<&str> = object_name.split('.').collect();
             if parts.len() == 2 {
@@ -317,6 +320,34 @@ fn repository_full_context_ddl(
                 "Comments",
                 "Not available in Private Beta",
                 "Trigger comment rendering is deferred.",
+            ));
+        }
+        if object_type == "materializedView" {
+            related.push(RelatedObjectSummary::new(
+                "Schema",
+                schema,
+                "Materialized view schema",
+            ));
+            let index_files = repository_index_files_for_table(root, schema, object_name)?;
+            if index_files.is_empty() {
+                related.push(RelatedObjectSummary::new(
+                    "Indexes",
+                    "No related repository index files found.",
+                    "Not available in repository context",
+                ));
+            } else {
+                for (relative_path, index_name, _content) in index_files {
+                    related.push(RelatedObjectSummary::new(
+                        "Indexes",
+                        &index_name,
+                        &relative_path,
+                    ));
+                }
+            }
+            related.push(RelatedObjectSummary::new(
+                "Comments",
+                "Not available in Private Beta",
+                "Materialized view comment rendering is deferred.",
             ));
         }
         notes.push("Full context is the same as object-only DDL for this object type.".to_string());
@@ -543,6 +574,9 @@ fn database_full_context_ddl(
                 object_name,
                 relative_path,
             )?,
+            "materializedView" => {
+                database_materialized_view_related_objects(connection_url, schema, object_name)?
+            }
             _ => Vec::new(),
         };
         return Ok((
@@ -681,6 +715,7 @@ fn validate_repository_object_relative_path(relative_path: &str) -> Result<(), S
         || relative_path.starts_with("database/objects/sequences/")
         || relative_path.starts_with("database/objects/indexes/")
         || relative_path.starts_with("database/objects/views/")
+        || relative_path.starts_with("database/objects/materialized-views/")
         || relative_path.starts_with("database/objects/functions/")
         || relative_path.starts_with("database/objects/triggers/")
         || relative_path.starts_with("database/objects/constraints/primary-keys/")
@@ -773,6 +808,13 @@ fn database_object_ddl(
             .iter()
             .find(|candidate| candidate.schema_name == schema && candidate.view_name == object_name)
             .map(render_view_sql)),
+        "materializedView" => Ok(inventory
+            .materialized_views
+            .iter()
+            .find(|candidate| {
+                candidate.schema_name == schema && candidate.materialized_view_name == object_name
+            })
+            .map(render_materialized_view_sql)),
         "function" => {
             Ok(
                 find_function_for_object(&inventory.functions, schema, object_name, relative_path)
@@ -947,6 +989,55 @@ fn database_function_related_objects(
         "Comments",
         "Not available in Private Beta",
         "Function comment rendering is deferred.",
+    ));
+    Ok(related)
+}
+
+fn database_materialized_view_related_objects(
+    connection_url: &str,
+    schema: &str,
+    object_name: &str,
+) -> Result<Vec<RelatedObjectSummary>, String> {
+    if !is_postgres_connection_url(connection_url) {
+        return Err(invalid_postgres_url_message());
+    }
+    let inventory =
+        inspect_postgres(connection_url).map_err(|error| redact_message(&error, connection_url))?;
+    if !inventory.materialized_views.iter().any(|candidate| {
+        candidate.schema_name == schema && candidate.materialized_view_name == object_name
+    }) {
+        return Ok(Vec::new());
+    }
+    let mut related = vec![RelatedObjectSummary::new(
+        "Schema",
+        schema,
+        "Materialized view schema",
+    )];
+    let mut indexes: Vec<&IndexInfo> = inventory
+        .indexes
+        .iter()
+        .filter(|index| index.schema_name == schema && index.table_name == object_name)
+        .collect();
+    indexes.sort_by(|left, right| left.index_name.cmp(&right.index_name));
+    if indexes.is_empty() {
+        related.push(RelatedObjectSummary::new(
+            "Indexes",
+            "No related database indexes found.",
+            "Not available in database context",
+        ));
+    } else {
+        for index in indexes {
+            related.push(RelatedObjectSummary::new(
+                "Indexes",
+                &index.index_name,
+                &index.definition,
+            ));
+        }
+    }
+    related.push(RelatedObjectSummary::new(
+        "Comments",
+        "Not available in Private Beta",
+        "Materialized view comment rendering is deferred.",
     ));
     Ok(related)
 }

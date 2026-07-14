@@ -114,7 +114,6 @@ Release artifacts remain review-only.
 - policies
 - roles
 - ownership
-- materialized views
 - partitioning details
 - row-level security
 - durable comments as first-class objects

@@ -344,6 +344,7 @@ pub fn plan_postgres_with_inventory(
                 | ObjectRef::Sequence { .. }
                 | ObjectRef::Index { .. }
                 | ObjectRef::View { .. }
+                | ObjectRef::MaterializedView { .. }
                 | ObjectRef::Constraint { .. }
                 | ObjectRef::Function { .. }
                 | ObjectRef::Trigger { .. } => String::new(),
@@ -539,6 +540,23 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                 ],
             };
         }
+        if matches!(input.object_ref, ObjectRef::MaterializedView { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "createMaterializedViewReviewSql".to_string(),
+                operation_label: "Create Materialized View".to_string(),
+                safety_badge: "Review SQL".to_string(),
+                safety_level: "reviewOnly".to_string(),
+                operation_explanation:
+                    "DbState can generate review-only CREATE MATERIALIZED VIEW SQL for this new repository materialized view. DbState does not execute SQL or refresh materialized views."
+                        .to_string(),
+                operation_reasons: vec![
+                    "Materialized view exists in repository desired state and is missing from the target database."
+                        .to_string(),
+                    "DbState does not generate DROP MATERIALIZED VIEW or REFRESH MATERIALIZED VIEW."
+                        .to_string(),
+                ],
+            };
+        }
         return PlanOperationMetadata {
             operation_kind: "createReviewSql".to_string(),
             operation_label: "Review SQL".to_string(),
@@ -594,6 +612,22 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                         .to_string(),
                 operation_reasons: vec![
                     "DROP TRIGGER generation is not available in Private Beta.".to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::MaterializedView { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "databaseOnlyReview".to_string(),
+                operation_label: "Database Only".to_string(),
+                safety_badge: "Database Only".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Materialized view exists only in the target database. DbState will not generate destructive SQL to remove database-only materialized views and does not refresh materialized views."
+                        .to_string(),
+                operation_reasons: vec![
+                    "DROP MATERIALIZED VIEW generation is not available in Private Beta."
+                        .to_string(),
+                    "REFRESH MATERIALIZED VIEW is not available in DbState.".to_string(),
                 ],
             };
         }
@@ -662,6 +696,21 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                         .to_string(),
                 operation_reasons: vec![
                     "DbState does not generate DROP TRIGGER, ALTER TRIGGER, or replacement trigger SQL for changed triggers."
+                        .to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::MaterializedView { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "manualReviewRequired".to_string(),
+                operation_label: "Manual Review".to_string(),
+                safety_badge: "Manual Review".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Materialized view differs, but changed materialized views are manual-review only in this version."
+                        .to_string(),
+                operation_reasons: vec![
+                    "DbState does not generate DROP MATERIALIZED VIEW, replacement materialized view SQL, or REFRESH MATERIALIZED VIEW for changed materialized views."
                         .to_string(),
                 ],
             };

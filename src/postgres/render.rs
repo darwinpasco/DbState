@@ -1,6 +1,6 @@
 use crate::postgres::inspect::{
-    ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, IndexInfo, SequenceInfo,
-    TriggerInfo, ViewInfo,
+    ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, IndexInfo,
+    MaterializedViewInfo, SequenceInfo, TriggerInfo, ViewInfo,
 };
 use std::fmt::Write as _;
 
@@ -194,6 +194,45 @@ pub fn render_view_sql(view: &ViewInfo) -> String {
     )
     .ok();
     writeln!(sql, "{};", view.definition.trim().trim_end_matches(';')).ok();
+    sql
+}
+
+pub fn render_materialized_view_sql(materialized_view: &MaterializedViewInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: materializedView").ok();
+    writeln!(
+        sql,
+        "-- Object name: {}.{}",
+        materialized_view.schema_name, materialized_view.materialized_view_name
+    )
+    .ok();
+    if let Some(is_populated) = materialized_view.is_populated {
+        writeln!(sql, "-- Observed populated: {is_populated}").ok();
+    }
+    if let Some(tablespace) = &materialized_view.tablespace {
+        writeln!(sql, "-- Tablespace observed: {tablespace}").ok();
+    }
+    writeln!(
+        sql,
+        "-- Desired-state review SQL uses WITH NO DATA; DbState does not refresh materialized views."
+    )
+    .ok();
+    writeln!(sql).ok();
+    writeln!(
+        sql,
+        "CREATE MATERIALIZED VIEW {}.{} AS",
+        quote_postgres_identifier(&materialized_view.schema_name),
+        quote_postgres_identifier(&materialized_view.materialized_view_name)
+    )
+    .ok();
+    writeln!(
+        sql,
+        "{}",
+        materialized_view.definition.trim().trim_end_matches(';')
+    )
+    .ok();
+    writeln!(sql, "WITH NO DATA;").ok();
     sql
 }
 

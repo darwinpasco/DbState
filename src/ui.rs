@@ -249,6 +249,7 @@ const UI_HTML: &str = r#"<!doctype html>
           <label><input type="checkbox" checked disabled> tables</label>
           <label><input type="checkbox" disabled> indexes future</label>
           <label><input type="checkbox" disabled> views future</label>
+          <label><input type="checkbox" checked disabled> materialized views</label>
           <label><input type="checkbox" checked disabled> functions</label>
           <label><input type="checkbox" checked disabled> triggers</label>
           <label><input type="checkbox" disabled> grants future</label>
@@ -2289,6 +2290,16 @@ const UI_JS: &str = r#"(function () {
         };
       }
     }
+    if (normalized.indexOf("database/objects/materialized-views/") >= 0) {
+      const dot = fileBase.indexOf(".");
+      if (dot > 0) {
+        return {
+          objectType: "materializedView",
+          schema: fileBase.slice(0, dot),
+          name: fileBase.slice(dot + 1)
+        };
+      }
+    }
     if (normalized.indexOf("database/objects/functions/") >= 0) {
       const parts = fileBase.split(".");
       if (parts.length >= 3) {
@@ -2365,6 +2376,10 @@ const UI_JS: &str = r#"(function () {
       const identity = splitIdentity(text);
       return { objectType: "view", schema: identity.schema, name: identity.name };
     }
+    if (text.indexOf("materializedView:") === 0) {
+      const identity = splitIdentity(text);
+      return { objectType: "materializedView", schema: identity.schema, name: identity.name };
+    }
     if (text.indexOf("constraint:") === 0) {
       const identity = text.slice("constraint:".length);
       const parts = identity.split(".");
@@ -2406,7 +2421,7 @@ const UI_JS: &str = r#"(function () {
     if (text === "reference table") {
       return "referenceDataTable";
     }
-    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "constraint", "function", "trigger", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
+    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "materializedView", "constraint", "function", "trigger", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
       return text;
     }
     return text || "unknown";
@@ -2587,6 +2602,22 @@ const UI_JS: &str = r#"(function () {
             objectType: "view",
             schema: item.schemaName,
             name: item.viewName,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: item
+          });
+        });
+      }
+      if (Array.isArray(data.materializedViews)) {
+        data.materializedViews.forEach(function (item) {
+          rows.push({
+            objectRef: "materializedView:" + item.schemaName + "." + item.materializedViewName,
+            objectType: "materializedView",
+            schema: item.schemaName,
+            name: item.materializedViewName,
             status: "inspected",
             operation: "",
             warnings: [],

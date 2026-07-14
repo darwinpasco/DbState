@@ -71,6 +71,15 @@ pub struct ViewInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MaterializedViewInfo {
+    pub schema_name: String,
+    pub materialized_view_name: String,
+    pub definition: String,
+    pub is_populated: Option<bool>,
+    pub tablespace: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ConstraintInfo {
     pub schema_name: String,
     pub table_name: String,
@@ -119,6 +128,7 @@ pub struct InspectionCounts {
     pub sequences: usize,
     pub indexes: usize,
     pub views: usize,
+    pub materialized_views: usize,
     pub constraints: usize,
     pub functions: usize,
     pub triggers: usize,
@@ -138,6 +148,7 @@ pub struct InspectionReport {
     pub sequences: Vec<SequenceInfo>,
     pub indexes: Vec<IndexInfo>,
     pub views: Vec<ViewInfo>,
+    pub materialized_views: Vec<MaterializedViewInfo>,
     pub constraints: Vec<ConstraintInfo>,
     pub functions: Vec<FunctionInfo>,
     pub triggers: Vec<TriggerInfo>,
@@ -183,6 +194,7 @@ pub(crate) fn inspect_postgres_scoped_command(
             report.sequences = inventory.sequences;
             report.indexes = inventory.indexes;
             report.views = inventory.views;
+            report.materialized_views = inventory.materialized_views;
             report.constraints = inventory.constraints;
             report.functions = inventory.functions;
             report.triggers = inventory.triggers;
@@ -200,6 +212,7 @@ pub(crate) fn inspect_postgres_scoped_command(
                 sequences: report.sequences.len(),
                 indexes: report.indexes.len(),
                 views: report.views.len(),
+                materialized_views: report.materialized_views.len(),
                 constraints: report.constraints.len(),
                 functions: report.functions.len(),
                 triggers: report.triggers.len(),
@@ -235,6 +248,9 @@ fn apply_inspection_scope(
         report.sequences.retain(|item| item.schema_name == schema);
         report.indexes.retain(|item| item.schema_name == schema);
         report.views.retain(|item| item.schema_name == schema);
+        report
+            .materialized_views
+            .retain(|item| item.schema_name == schema);
         report.constraints.retain(|item| item.schema_name == schema);
         report.functions.retain(|item| item.schema_name == schema);
         report.triggers.retain(|item| item.schema_name == schema);
@@ -272,6 +288,7 @@ fn apply_inspection_scope(
         report.enums.clear();
         report.sequences.clear();
         report.views.clear();
+        report.materialized_views.clear();
         report
             .indexes
             .retain(|item| item.schema_name == schema && item.table_name == table_name);
@@ -431,7 +448,7 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
              JOIN pg_catalog.pg_class idx ON idx.oid = i.indexrelid
              JOIN pg_catalog.pg_class tbl ON tbl.oid = i.indrelid
              JOIN pg_catalog.pg_namespace ns ON ns.oid = tbl.relnamespace
-             WHERE tbl.relkind IN ('r', 'p')
+             WHERE tbl.relkind IN ('r', 'p', 'm')
                AND ns.nspname <> 'pg_catalog'
                AND ns.nspname <> 'information_schema'
                AND ns.nspname NOT LIKE 'pg_toast%'
@@ -461,6 +478,28 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
             &[],
         )
         .map_err(|_| "PostgreSQL schema inspection failed while reading views.".to_string())?;
+
+    let materialized_view_rows = client
+        .query(
+            "SELECT n.nspname::text,
+                    c.relname::text,
+                    pg_catalog.pg_get_viewdef(c.oid, true)::text,
+                    c.relispopulated::bool,
+                    tblspc.spcname::text
+             FROM pg_catalog.pg_class c
+             JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+             LEFT JOIN pg_catalog.pg_tablespace tblspc ON tblspc.oid = c.reltablespace
+             WHERE c.relkind = 'm'
+               AND n.nspname <> 'pg_catalog'
+               AND n.nspname <> 'information_schema'
+               AND n.nspname NOT LIKE 'pg_toast%'
+               AND n.nspname NOT LIKE 'pg_%'
+             ORDER BY n.nspname, c.relname",
+            &[],
+        )
+        .map_err(|_| {
+            "PostgreSQL schema inspection failed while reading materialized views.".to_string()
+        })?;
 
     let constraint_rows = client
         .query(
@@ -658,6 +697,17 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         });
     }
 
+    let mut materialized_views = Vec::new();
+    for row in materialized_view_rows {
+        materialized_views.push(MaterializedViewInfo {
+            schema_name: try_get_catalog_string(&row, 0, "materialized view schema")?,
+            materialized_view_name: try_get_catalog_string(&row, 1, "materialized view name")?,
+            definition: try_get_catalog_string(&row, 2, "materialized view definition")?,
+            is_populated: try_get_catalog_optional_bool(&row, 3, "materialized view populated")?,
+            tablespace: try_get_catalog_optional_string(&row, 4, "materialized view tablespace")?,
+        });
+    }
+
     let mut constraints = Vec::new();
     for row in constraint_rows {
         let constraint_type = match try_get_catalog_string(&row, 3, "constraint type")?.as_str() {
@@ -728,6 +778,7 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         sequences,
         indexes,
         views,
+        materialized_views,
         constraints,
         functions,
         triggers,
@@ -764,6 +815,16 @@ fn try_get_catalog_optional_i64(
     })
 }
 
+fn try_get_catalog_optional_bool(
+    row: &::postgres::Row,
+    index: usize,
+    field: &str,
+) -> Result<Option<bool>, String> {
+    row.try_get(index).map_err(|error| {
+        format!("PostgreSQL schema inspection failed while decoding {field}: {error}")
+    })
+}
+
 fn try_get_catalog_bool(row: &::postgres::Row, index: usize, field: &str) -> Result<bool, String> {
     row.try_get(index).map_err(|error| {
         format!("PostgreSQL schema inspection failed while decoding {field}: {error}")
@@ -794,6 +855,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             "sequences".to_string(),
             "indexes".to_string(),
             "views".to_string(),
+            "materializedViews".to_string(),
             "constraints".to_string(),
             "functions".to_string(),
             "triggers".to_string(),
@@ -806,6 +868,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
         sequences: Vec::new(),
         indexes: Vec::new(),
         views: Vec::new(),
+        materialized_views: Vec::new(),
         constraints: Vec::new(),
         functions: Vec::new(),
         triggers: Vec::new(),
@@ -818,6 +881,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             sequences: 0,
             indexes: 0,
             views: 0,
+            materialized_views: 0,
             constraints: 0,
             functions: 0,
             triggers: 0,
@@ -857,6 +921,12 @@ impl InspectionReport {
         writeln!(text, "Sequence count: {}", self.counts.sequences).ok();
         writeln!(text, "Index count: {}", self.counts.indexes).ok();
         writeln!(text, "View count: {}", self.counts.views).ok();
+        writeln!(
+            text,
+            "Materialized view count: {}",
+            self.counts.materialized_views
+        )
+        .ok();
         writeln!(text, "Constraint count: {}", self.counts.constraints).ok();
         writeln!(text, "Function count: {}", self.counts.functions).ok();
         writeln!(text, "Trigger count: {}", self.counts.triggers).ok();
@@ -907,6 +977,15 @@ impl InspectionReport {
         writeln!(text, "Views:").ok();
         for view in &self.views {
             writeln!(text, "  - {}.{}", view.schema_name, view.view_name).ok();
+        }
+        writeln!(text, "Materialized views:").ok();
+        for materialized_view in &self.materialized_views {
+            writeln!(
+                text,
+                "  - {}.{}",
+                materialized_view.schema_name, materialized_view.materialized_view_name
+            )
+            .ok();
         }
         writeln!(text, "Constraints:").ok();
         for constraint in &self.constraints {
@@ -962,6 +1041,11 @@ impl InspectionReport {
         write_sequence_array_field(&mut json, "sequences", &self.sequences);
         write_index_array_field(&mut json, "indexes", &self.indexes);
         write_view_array_field(&mut json, "views", &self.views);
+        write_materialized_view_array_field(
+            &mut json,
+            "materializedViews",
+            &self.materialized_views,
+        );
         write_constraint_array_field(&mut json, "constraints", &self.constraints);
         write_function_array_field(&mut json, "functions", &self.functions);
         write_trigger_array_field(&mut json, "triggers", &self.triggers);
