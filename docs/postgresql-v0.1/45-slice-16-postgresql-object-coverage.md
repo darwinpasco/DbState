@@ -198,11 +198,10 @@ The following remain deferred:
 - default privileges
 - role membership grants
 - column-level privileges
-- policies
 - roles
 - ownership
 - partitioning details
-- row-level security
+- table-level RLS enable/force state changes
 - full dependency graph
 - full SQL parser
 - object-type-specific CLI `--type`

@@ -109,6 +109,16 @@ fn local_postgres_fixture_inspection_is_read_only_and_redacted() {
             && grant.grantee == "PUBLIC"
             && grant.privileges == vec!["SELECT".to_string()]
     }));
+    assert!(inventory.rls_policies.iter().any(|policy| {
+        policy.schema_name == "dbstate_slice2"
+            && policy.table_name == "sample_accounts"
+            && policy.policy_name == "sample_accounts_public_read"
+            && policy.command == "SELECT"
+            && policy.policy_kind == "PERMISSIVE"
+            && policy.roles == vec!["PUBLIC".to_string()]
+            && policy.using_expression.as_deref() == Some("true")
+            && policy.table_rls_enabled == Some(true)
+    }));
 
     let report = inspect_postgres_command(Some(url.clone()), None);
     let json = report.to_json();

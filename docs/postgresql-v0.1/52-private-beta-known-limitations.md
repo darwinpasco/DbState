@@ -62,6 +62,7 @@ Supported beta object types:
 - regular table and view triggers
 - materialized views
 - explicit object grants for schemas, tables, views, materialized views, sequences, and functions
+- RLS policies on supported user-schema tables
 
 Deferred object types and details:
 
@@ -70,11 +71,10 @@ Deferred object types and details:
 - default privileges
 - role membership grants
 - column-level privileges
-- policies
 - roles
 - ownership
 - partitioning details
-- row-level security
+- table-level RLS enable/force state changes
 - durable comments as first-class objects
 - full dependency graph
 - full SQL parser

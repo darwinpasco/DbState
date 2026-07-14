@@ -1,6 +1,6 @@
 use crate::postgres::inspect::{
     ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, GrantInfo, IndexInfo,
-    MaterializedViewInfo, SequenceInfo, TriggerInfo, ViewInfo,
+    MaterializedViewInfo, RlsPolicyInfo, SequenceInfo, TriggerInfo, ViewInfo,
 };
 use std::fmt::Write as _;
 
@@ -398,6 +398,105 @@ pub fn render_grant_sql(grant: &GrantInfo) -> String {
         .ok();
     }
     sql
+}
+
+pub fn render_rls_policy_sql(policy: &RlsPolicyInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: rlsPolicy").ok();
+    writeln!(
+        sql,
+        "-- Object name: {}.{}.{}",
+        policy.schema_name, policy.table_name, policy.policy_name
+    )
+    .ok();
+    if let Some(enabled) = policy.table_rls_enabled {
+        writeln!(sql, "-- Table RLS enabled observed: {enabled}").ok();
+    }
+    if let Some(forced) = policy.table_rls_forced {
+        writeln!(sql, "-- Table RLS forced observed: {forced}").ok();
+    }
+    writeln!(
+        sql,
+        "-- Table RLS state is informational only; DbState does not enable, disable, or force RLS."
+    )
+    .ok();
+    writeln!(sql).ok();
+    writeln!(
+        sql,
+        "CREATE POLICY {}",
+        quote_postgres_identifier(&policy.policy_name)
+    )
+    .ok();
+    writeln!(
+        sql,
+        "ON {}.{}",
+        quote_postgres_identifier(&policy.schema_name),
+        quote_postgres_identifier(&policy.table_name)
+    )
+    .ok();
+    writeln!(sql, "AS {}", policy.policy_kind.to_ascii_uppercase()).ok();
+    writeln!(sql, "FOR {}", policy.command.to_ascii_uppercase()).ok();
+    let mut statement_tail = vec![format!(
+        "TO {}",
+        ordered_rls_policy_roles(policy.roles.clone())
+            .iter()
+            .map(|role| rls_policy_role_sql(role))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )];
+    if let Some(expression) = policy
+        .using_expression
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        statement_tail.push(format!("USING ({expression})"));
+    }
+    if let Some(expression) = policy
+        .with_check_expression
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    {
+        statement_tail.push(format!("WITH CHECK ({expression})"));
+    }
+    let last_tail_index = statement_tail.len().saturating_sub(1);
+    for (index, clause) in statement_tail.iter().enumerate() {
+        if index == last_tail_index {
+            writeln!(sql, "{clause};").ok();
+        } else {
+            writeln!(sql, "{clause}").ok();
+        }
+    }
+    sql
+}
+
+pub(crate) fn ordered_rls_policy_roles(roles: Vec<String>) -> Vec<String> {
+    let mut roles = roles;
+    roles.sort_by(|left, right| {
+        rls_policy_role_rank(left)
+            .cmp(&rls_policy_role_rank(right))
+            .then(left.cmp(right))
+    });
+    roles.dedup();
+    roles
+}
+
+fn rls_policy_role_rank(role: &str) -> u8 {
+    if role.eq_ignore_ascii_case("PUBLIC") {
+        0
+    } else {
+        1
+    }
+}
+
+fn rls_policy_role_sql(role: &str) -> String {
+    if role.eq_ignore_ascii_case("PUBLIC") {
+        "PUBLIC".to_string()
+    } else {
+        quote_postgres_identifier(role)
+    }
 }
 
 pub(crate) fn ordered_grant_privileges(target_kind: &str, privileges: Vec<String>) -> Vec<String> {

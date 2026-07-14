@@ -1,3 +1,4 @@
+use crate::postgres::render_rls_policy_sql;
 use crate::repository::objects::*;
 use crate::repository::sync::ExportSelection;
 use crate::*;
@@ -25,6 +26,7 @@ pub(crate) fn discover_repository_objects(root: &Path) -> Result<RepositoryImpor
     discover_trigger_files(root, &mut import)?;
     discover_constraint_files(root, &mut import)?;
     discover_grant_files(root, &mut import)?;
+    discover_rls_policy_files(root, &mut import)?;
     import.skipped.sort();
     import.skipped.dedup();
     Ok(import)
@@ -408,6 +410,48 @@ fn discover_grant_files(root: &Path, import: &mut RepositoryImport) -> Result<()
     Ok(())
 }
 
+fn discover_rls_policy_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    let dir = root.join("database/objects/rls-policies");
+    for entry in fs::read_dir(&dir)
+        .map_err(|error| format!("Could not read database/objects/rls-policies: {error}"))?
+    {
+        let entry =
+            entry.map_err(|error| format!("Could not read RLS policy file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("database/objects/rls-policies/{file_name}");
+        let Some((schema, table, policy)) = three_part_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&schema).is_err()
+            || safe_file_component(&table).is_err()
+            || safe_file_component(&policy).is_err()
+        {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        import.objects.insert(
+            rls_policy_key(&schema, &table, &policy),
+            DesiredStateObject {
+                object_type: RepositoryObjectType::RlsPolicy,
+                schema_name: schema,
+                table_name: Some(table.clone()),
+                object_name: policy,
+                parent_name: Some(table),
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
+}
+
 fn discover_one_part_object_files(
     root: &Path,
     import: &mut RepositoryImport,
@@ -558,6 +602,7 @@ pub(crate) fn render_database_objects_for_selection(
     let mut function_names = Vec::new();
     let mut trigger_names = Vec::new();
     let mut grant_names = Vec::new();
+    let mut rls_policy_names = Vec::new();
     match selection {
         ExportSelection::All => {
             include_extensions = true;
@@ -628,6 +673,13 @@ pub(crate) fn render_database_objects_for_selection(
                     item.object_name.clone(),
                     item.identity_arguments.clone(),
                     item.grantee.clone(),
+                )
+            }));
+            rls_policy_names.extend(inventory.rls_policies.iter().map(|item| {
+                (
+                    item.schema_name.clone(),
+                    item.table_name.clone(),
+                    item.policy_name.clone(),
                 )
             }));
         }
@@ -748,6 +800,19 @@ pub(crate) fn render_database_objects_for_selection(
                         )
                     }),
             );
+            rls_policy_names.extend(
+                inventory
+                    .rls_policies
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.table_name.clone(),
+                            item.policy_name.clone(),
+                        )
+                    }),
+            );
         }
         ExportSelection::Table { schema, table } => {
             if inventory.tables.iter().any(|candidate| {
@@ -815,6 +880,19 @@ pub(crate) fn render_database_objects_for_selection(
                         )
                     }),
             );
+            rls_policy_names.extend(
+                inventory
+                    .rls_policies
+                    .iter()
+                    .filter(|item| item.schema_name == *schema && item.table_name == *table)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.table_name.clone(),
+                            item.policy_name.clone(),
+                        )
+                    }),
+            );
         }
     }
 
@@ -840,6 +918,8 @@ pub(crate) fn render_database_objects_for_selection(
     trigger_names.dedup();
     grant_names.sort();
     grant_names.dedup();
+    rls_policy_names.sort();
+    rls_policy_names.dedup();
 
     for schema in schema_names {
         let relative_path = schema_file_path(&schema)?;
@@ -1069,6 +1149,26 @@ pub(crate) fn render_database_objects_for_selection(
         };
         objects.insert(object_key(&object), object);
     }
+    for (schema, table, policy_name) in rls_policy_names {
+        let Some(policy) = inventory.rls_policies.iter().find(|item| {
+            item.schema_name == schema
+                && item.table_name == table
+                && item.policy_name == policy_name
+        }) else {
+            continue;
+        };
+        let relative_path = rls_policy_file_path(&schema, &table, &policy_name)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::RlsPolicy,
+            schema_name: schema.clone(),
+            table_name: Some(table.clone()),
+            object_name: policy_name.clone(),
+            parent_name: Some(table),
+            relative_path,
+            content: render_rls_policy_sql(policy),
+        };
+        objects.insert(object_key(&object), object);
+    }
     for (schema, table, constraint_name) in constraint_names {
         let Some(constraint) = inventory.constraints.iter().find(|item| {
             item.schema_name == schema
@@ -1118,7 +1218,9 @@ pub(crate) fn select_repository_objects(
                             && object.parent_name.as_deref() == Some(table.as_str())
                         || object.object_type == RepositoryObjectType::Grant
                             && object.parent_name.as_deref() == Some("table")
-                            && object.table_name.as_deref() == Some(table.as_str()))
+                            && object.table_name.as_deref() == Some(table.as_str())
+                        || object.object_type == RepositoryObjectType::RlsPolicy
+                            && object.parent_name.as_deref() == Some(table.as_str()))
             }
         };
         if include {

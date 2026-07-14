@@ -253,6 +253,7 @@ const UI_HTML: &str = r#"<!doctype html>
           <label><input type="checkbox" checked disabled> functions</label>
           <label><input type="checkbox" checked disabled> triggers</label>
           <label><input type="checkbox" checked disabled> grants</label>
+          <label><input type="checkbox" checked disabled> RLS policies</label>
         </div>
         <div class="button-row">
           <button type="button" data-action="inspect" data-standard-operation-action>Inspect</button>
@@ -2105,7 +2106,7 @@ const UI_JS: &str = r#"(function () {
     select.options[0].value = "all";
     appendOption(select, "schema", "Schema");
     appendOption(select, "table", "Table");
-    ["extension", "enum", "sequence", "index", "view", "constraint", "function", "trigger", "grant"].forEach(function (type) {
+    ["extension", "enum", "sequence", "index", "view", "constraint", "function", "trigger", "grant", "rlsPolicy"].forEach(function (type) {
       if (rows.some(function (row) { return row.objectType === type; })) {
         appendOption(select, type, type.charAt(0).toUpperCase() + type.slice(1));
       }
@@ -2366,6 +2367,17 @@ const UI_JS: &str = r#"(function () {
         };
       }
     }
+    if (normalized.indexOf("database/objects/rls-policies/") >= 0) {
+      const parts = fileBase.split(".");
+      if (parts.length >= 3) {
+        return {
+          objectType: "rlsPolicy",
+          schema: parts[0],
+          name: parts.slice(1).join("."),
+          parentName: parts[1]
+        };
+      }
+    }
     return null;
   }
 
@@ -2442,6 +2454,13 @@ const UI_JS: &str = r#"(function () {
         return { objectType: "grant", schema: parts[1] || "", name: identity, parentName: parts[0] };
       }
     }
+    if (text.indexOf("rlsPolicy:") === 0) {
+      const identity = text.slice("rlsPolicy:".length);
+      const parts = identity.split(".");
+      if (parts.length >= 3) {
+        return { objectType: "rlsPolicy", schema: parts[0], name: parts.slice(1).join("."), parentName: parts[1] };
+      }
+    }
     return null;
   }
 
@@ -2462,7 +2481,7 @@ const UI_JS: &str = r#"(function () {
     if (text === "reference table") {
       return "referenceDataTable";
     }
-    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "materializedView", "constraint", "function", "trigger", "grant", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
+    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "materializedView", "constraint", "function", "trigger", "grant", "rlsPolicy", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
       return text;
     }
     return text || "unknown";
@@ -2734,6 +2753,23 @@ const UI_JS: &str = r#"(function () {
             schema: item.schemaName,
             name: item.targetKind + "." + targetIdentity,
             parentName: item.targetKind,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: item
+          });
+        });
+      }
+      if (Array.isArray(data.rlsPolicies)) {
+        data.rlsPolicies.forEach(function (item) {
+          rows.push({
+            objectRef: "rlsPolicy:" + item.schemaName + "." + item.tableName + "." + item.policyName,
+            objectType: "rlsPolicy",
+            schema: item.schemaName,
+            name: item.tableName + "." + item.policyName,
+            parentName: item.tableName,
             status: "inspected",
             operation: "",
             warnings: [],

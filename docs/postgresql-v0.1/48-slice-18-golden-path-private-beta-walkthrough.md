@@ -164,7 +164,7 @@ Expected result:
 - A non-production `pagila` database exists.
 - Pagila tables, relationships, indexes, views, functions, and sample data are loaded.
 
-Durable first-class constraint, regular-function, regular table/view trigger, materialized-view, and explicit object-grant coverage is available in the current beta. Procedures, aggregates, window functions, event triggers, comments, default privileges, and row-level security remain deferred or unavailable review context.
+Durable first-class constraint, regular-function, regular table/view trigger, materialized-view, explicit object-grant, and RLS policy coverage is available in the current beta. Procedures, aggregates, window functions, event triggers, comments, default privileges, and table-level RLS enable/force state changes remain deferred or unavailable review context.
 
 ## 5. Create Fresh Private Beta Demo Git Repository
 

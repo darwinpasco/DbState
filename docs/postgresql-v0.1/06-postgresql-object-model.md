@@ -85,6 +85,7 @@ Examples:
 - Trigger depends on trigger function.
 - Materialized view depends on base objects.
 - Grant depends on role and object.
+- RLS policy depends on target table and referenced roles.
 
 Critical missing dependencies should block script generation by default.
 
@@ -94,7 +95,6 @@ Some object details may be deferred if they cannot be safely normalized in v0.1.
 
 Potential deferred areas:
 
-- RLS policies.
 - Publications and subscriptions.
 - Event triggers.
 - Domains.
@@ -102,6 +102,7 @@ Potential deferred areas:
 - Operator classes and families.
 - Full-text search objects.
 - Extension-owned object management.
+- Table-level RLS enable/force state changes.
 
 ## Known PostgreSQL Edge Cases
 
@@ -123,4 +124,4 @@ Potential deferred areas:
 - Handling of extension-owned objects.
 - Handling of partitions.
 - Whether object comments are included in v0.1.
-- Whether RLS policies are included or deferred.
+- Whether table-level RLS enable/force state is surfaced only as metadata or later modeled as a separate review object.

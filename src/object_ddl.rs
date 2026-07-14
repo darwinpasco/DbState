@@ -2,15 +2,15 @@ use crate::git::git_root;
 use crate::postgres::{
     inspect_postgres, invalid_postgres_url_message, is_postgres_connection_url,
     render_constraint_sql, render_enum_sql, render_extension_sql, render_function_sql,
-    render_grant_sql, render_index_sql, render_materialized_view_sql, render_schema_sql,
-    render_sequence_sql, render_table_sql, render_trigger_sql, render_view_sql, ColumnInfo,
-    ConstraintInfo, FunctionInfo, GrantInfo, IndexInfo, TriggerInfo,
+    render_grant_sql, render_index_sql, render_materialized_view_sql, render_rls_policy_sql,
+    render_schema_sql, render_sequence_sql, render_table_sql, render_trigger_sql, render_view_sql,
+    ColumnInfo, ConstraintInfo, FunctionInfo, GrantInfo, IndexInfo, RlsPolicyInfo, TriggerInfo,
 };
 use crate::repository::{
     enum_file_path, extension_file_path, function_identity_slug, index_file_path,
-    materialized_view_file_path, object_ref_from_relative_path, safe_file_component,
-    schema_file_path, sequence_file_path, table_file_path, trigger_file_path, view_file_path,
-    ObjectRef,
+    materialized_view_file_path, object_ref_from_relative_path, rls_policy_file_path,
+    safe_file_component, schema_file_path, sequence_file_path, table_file_path, trigger_file_path,
+    view_file_path, ObjectRef,
 };
 use crate::service::{
     parse_service_request, request_string, resolve_service_postgres_connection,
@@ -57,6 +57,7 @@ pub(crate) fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttp
             | "function"
             | "trigger"
             | "grant"
+            | "rlsPolicy"
     ) {
         return service_json_response(
             200,
@@ -226,6 +227,14 @@ fn default_object_relative_path(
             Err("Constraint DDL detail requires a release/result relativePath.".to_string())
         }
         "grant" => Err("Grant DDL detail requires a release/result relativePath.".to_string()),
+        "rlsPolicy" => {
+            let parts: Vec<&str> = object_name.split('.').collect();
+            if parts.len() == 2 {
+                rls_policy_file_path(schema, parts[0], parts[1])
+            } else {
+                Err("RLS policy DDL detail requires objectName as table.policy.".to_string())
+            }
+        }
         "trigger" => {
             let parts: Vec<&str> = object_name.split('.').collect();
             if parts.len() == 2 {
@@ -379,6 +388,40 @@ fn repository_full_context_ddl(
                         grantee,
                         "Informational role dependency",
                     ));
+                }
+            }
+        }
+        if object_type == "rlsPolicy" {
+            related.push(RelatedObjectSummary::new(
+                "Schema",
+                schema,
+                "RLS policy schema",
+            ));
+            if let Some((table, _policy)) =
+                rls_policy_identity_from_name_or_path(object_name, _relative_path)
+            {
+                related.push(RelatedObjectSummary::new(
+                    "Target Table",
+                    &table,
+                    "RLS policy target table",
+                ));
+            }
+            if let Some(ddl) = object_only_ddl {
+                if let Some(roles) = ddl
+                    .lines()
+                    .find_map(|line| line.strip_prefix("TO ").map(str::trim))
+                {
+                    for role in roles
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|role| !role.is_empty())
+                    {
+                        related.push(RelatedObjectSummary::new(
+                            "Role",
+                            role.trim_matches('"'),
+                            "Informational role dependency",
+                        ));
+                    }
                 }
             }
         }
@@ -610,6 +653,12 @@ fn database_full_context_ddl(
                 database_materialized_view_related_objects(connection_url, schema, object_name)?
             }
             "grant" => database_grant_related_objects(connection_url, relative_path)?,
+            "rlsPolicy" => database_rls_policy_related_objects(
+                connection_url,
+                schema,
+                object_name,
+                relative_path,
+            )?,
             _ => Vec::new(),
         };
         return Ok((
@@ -757,6 +806,7 @@ fn validate_repository_object_relative_path(relative_path: &str) -> Result<(), S
         || relative_path.starts_with("database/objects/grants/materialized-views/")
         || relative_path.starts_with("database/objects/grants/sequences/")
         || relative_path.starts_with("database/objects/grants/functions/")
+        || relative_path.starts_with("database/objects/rls-policies/")
         || relative_path.starts_with("database/objects/constraints/primary-keys/")
         || relative_path.starts_with("database/objects/constraints/unique-constraints/")
         || relative_path.starts_with("database/objects/constraints/foreign-keys/")
@@ -869,6 +919,13 @@ fn database_object_ddl(
         "grant" => {
             Ok(find_grant_for_object(&inventory.grants, relative_path).map(render_grant_sql))
         }
+        "rlsPolicy" => Ok(find_rls_policy_for_object(
+            &inventory.rls_policies,
+            schema,
+            object_name,
+            relative_path,
+        )
+        .map(render_rls_policy_sql)),
         "constraint" => {
             let constraint_name = object_name
                 .rsplit_once('.')
@@ -918,6 +975,40 @@ fn find_grant_for_object<'a>(
                 .as_deref()
                 == Some(grantee.as_str())
     })
+}
+
+fn find_rls_policy_for_object<'a>(
+    policies: &'a [RlsPolicyInfo],
+    schema: &str,
+    object_name: &str,
+    relative_path: Option<&str>,
+) -> Option<&'a RlsPolicyInfo> {
+    let (table_name, policy_name) =
+        rls_policy_identity_from_name_or_path(object_name, relative_path)?;
+    policies.iter().find(|candidate| {
+        candidate.schema_name == schema
+            && candidate.table_name == table_name
+            && candidate.policy_name == policy_name
+    })
+}
+
+fn rls_policy_identity_from_name_or_path(
+    object_name: &str,
+    relative_path: Option<&str>,
+) -> Option<(String, String)> {
+    if let Some(path) = relative_path {
+        let file_name = path.strip_prefix("database/objects/rls-policies/")?;
+        let stem = file_name.strip_suffix(".sql")?;
+        let parts: Vec<&str> = stem.split('.').collect();
+        if parts.len() == 3 && !parts.iter().any(|part| part.is_empty()) {
+            return Some((parts[1].to_string(), parts[2].to_string()));
+        }
+    }
+    let parts: Vec<&str> = object_name.split('.').collect();
+    if parts.len() == 2 && !parts.iter().any(|part| part.is_empty()) {
+        return Some((parts[0].to_string(), parts[1].to_string()));
+    }
+    None
 }
 
 fn find_trigger_for_object<'a>(
@@ -1148,6 +1239,54 @@ fn database_grant_related_objects(
             "Grantor Role",
             grantor,
             "Observed grantor",
+        ));
+    }
+    Ok(related)
+}
+
+fn database_rls_policy_related_objects(
+    connection_url: &str,
+    schema: &str,
+    object_name: &str,
+    relative_path: Option<&str>,
+) -> Result<Vec<RelatedObjectSummary>, String> {
+    if !is_postgres_connection_url(connection_url) {
+        return Err(invalid_postgres_url_message());
+    }
+    let inventory =
+        inspect_postgres(connection_url).map_err(|error| redact_message(&error, connection_url))?;
+    let Some(policy) =
+        find_rls_policy_for_object(&inventory.rls_policies, schema, object_name, relative_path)
+    else {
+        return Ok(Vec::new());
+    };
+    let mut related = vec![
+        RelatedObjectSummary::new("Schema", &policy.schema_name, "RLS policy schema"),
+        RelatedObjectSummary::new(
+            "Target Table",
+            &policy.table_name,
+            "RLS policy target table",
+        ),
+    ];
+    for role in &policy.roles {
+        related.push(RelatedObjectSummary::new(
+            "Role",
+            role,
+            "Informational role dependency",
+        ));
+    }
+    if let Some(enabled) = policy.table_rls_enabled {
+        related.push(RelatedObjectSummary::new(
+            "Table RLS State",
+            &enabled.to_string(),
+            "Observed RLS enabled state; informational only",
+        ));
+    }
+    if let Some(forced) = policy.table_rls_forced {
+        related.push(RelatedObjectSummary::new(
+            "Table RLS State",
+            &forced.to_string(),
+            "Observed RLS forced state; informational only",
         ));
     }
     Ok(related)

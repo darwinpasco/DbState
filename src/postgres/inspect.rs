@@ -132,6 +132,20 @@ pub struct GrantInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RlsPolicyInfo {
+    pub schema_name: String,
+    pub table_name: String,
+    pub policy_name: String,
+    pub command: String,
+    pub policy_kind: String,
+    pub roles: Vec<String>,
+    pub using_expression: Option<String>,
+    pub with_check_expression: Option<String>,
+    pub table_rls_enabled: Option<bool>,
+    pub table_rls_forced: Option<bool>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InspectionCounts {
     pub schemas: usize,
     pub tables: usize,
@@ -146,6 +160,7 @@ pub struct InspectionCounts {
     pub functions: usize,
     pub triggers: usize,
     pub grants: usize,
+    pub rls_policies: usize,
 }
 
 #[derive(Debug, Clone)]
@@ -167,6 +182,7 @@ pub struct InspectionReport {
     pub functions: Vec<FunctionInfo>,
     pub triggers: Vec<TriggerInfo>,
     pub grants: Vec<GrantInfo>,
+    pub rls_policies: Vec<RlsPolicyInfo>,
     pub counts: InspectionCounts,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
@@ -214,6 +230,7 @@ pub(crate) fn inspect_postgres_scoped_command(
             report.functions = inventory.functions;
             report.triggers = inventory.triggers;
             report.grants = inventory.grants;
+            report.rls_policies = inventory.rls_policies;
             if let Err(error) = apply_inspection_scope(&mut report, schema, table) {
                 report.success = false;
                 report.errors.push(error);
@@ -233,6 +250,7 @@ pub(crate) fn inspect_postgres_scoped_command(
                 functions: report.functions.len(),
                 triggers: report.triggers.len(),
                 grants: report.grants.len(),
+                rls_policies: report.rls_policies.len(),
             };
             report.success = true;
         }
@@ -272,6 +290,9 @@ fn apply_inspection_scope(
         report.functions.retain(|item| item.schema_name == schema);
         report.triggers.retain(|item| item.schema_name == schema);
         report.grants.retain(|item| item.schema_name == schema);
+        report
+            .rls_policies
+            .retain(|item| item.schema_name == schema);
         report.inspection_scope = vec![format!("schema:{schema}")];
         return Ok(());
     }
@@ -322,6 +343,9 @@ fn apply_inspection_scope(
                 && item.object_name.as_deref() == Some(table_name)
                 && item.target_kind == "table"
         });
+        report
+            .rls_policies
+            .retain(|item| item.schema_name == schema && item.table_name == table_name);
         report.inspection_scope = vec![format!("table:{schema}.{table_name}")];
     }
 
@@ -714,6 +738,56 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         )
         .map_err(|_| "PostgreSQL schema inspection failed while reading grants.".to_string())?;
 
+    let rls_policy_rows = client
+        .query(
+            "SELECT ns.nspname::text,
+                    rel.relname::text,
+                    pol.polname::text,
+                    CASE pol.polcmd
+                        WHEN '*' THEN 'ALL'
+                        WHEN 'r' THEN 'SELECT'
+                        WHEN 'a' THEN 'INSERT'
+                        WHEN 'w' THEN 'UPDATE'
+                        WHEN 'd' THEN 'DELETE'
+                        ELSE pol.polcmd::text
+                    END::text,
+                    CASE WHEN pol.polpermissive THEN 'PERMISSIVE' ELSE 'RESTRICTIVE' END::text,
+                    COALESCE(
+                        array_agg(
+                            CASE WHEN role_item.role_oid = 0 THEN 'PUBLIC' ELSE role_item.rolname END::text
+                            ORDER BY
+                                CASE WHEN role_item.role_oid = 0 THEN 0 ELSE 1 END,
+                                CASE WHEN role_item.role_oid = 0 THEN 'PUBLIC' ELSE role_item.rolname END
+                        ) FILTER (WHERE role_item.role_oid IS NOT NULL),
+                        ARRAY[]::text[]
+                    ),
+                    pg_catalog.pg_get_expr(pol.polqual, pol.polrelid)::text,
+                    pg_catalog.pg_get_expr(pol.polwithcheck, pol.polrelid)::text,
+                    rel.relrowsecurity::bool,
+                    rel.relforcerowsecurity::bool
+             FROM pg_catalog.pg_policy pol
+             JOIN pg_catalog.pg_class rel ON rel.oid = pol.polrelid
+             JOIN pg_catalog.pg_namespace ns ON ns.oid = rel.relnamespace
+             LEFT JOIN LATERAL (
+                 SELECT role_oid::oid, roles.rolname::text
+                 FROM unnest(pol.polroles) AS policy_roles(role_oid)
+                 LEFT JOIN pg_catalog.pg_roles roles ON roles.oid = policy_roles.role_oid
+             ) role_item ON true
+             WHERE rel.relkind IN ('r', 'p')
+               AND ns.nspname <> 'pg_catalog'
+               AND ns.nspname <> 'information_schema'
+               AND ns.nspname NOT LIKE 'pg_toast%'
+               AND ns.nspname NOT LIKE 'pg_%'
+             GROUP BY ns.nspname, rel.relname, pol.polname, pol.polcmd, pol.polpermissive,
+                      pol.polqual, pol.polwithcheck, pol.polrelid,
+                      rel.relrowsecurity, rel.relforcerowsecurity
+             ORDER BY ns.nspname, rel.relname, pol.polname",
+            &[],
+        )
+        .map_err(|_| {
+            "PostgreSQL schema inspection failed while reading RLS policies.".to_string()
+        })?;
+
     let schemas = schema_rows
         .into_iter()
         .map(|row| SchemaInfo { name: row.get(0) })
@@ -954,6 +1028,34 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
             ))
     });
 
+    let mut rls_policies = Vec::new();
+    for row in rls_policy_rows {
+        rls_policies.push(RlsPolicyInfo {
+            schema_name: try_get_catalog_string(&row, 0, "RLS policy schema")?,
+            table_name: try_get_catalog_string(&row, 1, "RLS policy table")?,
+            policy_name: try_get_catalog_string(&row, 2, "RLS policy name")?,
+            command: try_get_catalog_string(&row, 3, "RLS policy command")?,
+            policy_kind: try_get_catalog_string(&row, 4, "RLS policy kind")?,
+            roles: crate::postgres::render::ordered_rls_policy_roles(try_get_catalog_string_array(
+                &row,
+                5,
+                "RLS policy roles",
+            )?),
+            using_expression: try_get_catalog_optional_string(
+                &row,
+                6,
+                "RLS policy using expression",
+            )?,
+            with_check_expression: try_get_catalog_optional_string(
+                &row,
+                7,
+                "RLS policy with check expression",
+            )?,
+            table_rls_enabled: try_get_catalog_optional_bool(&row, 8, "RLS enabled state")?,
+            table_rls_forced: try_get_catalog_optional_bool(&row, 9, "RLS forced state")?,
+        });
+    }
+
     Ok(PostgresInventory {
         schemas,
         tables,
@@ -968,6 +1070,7 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         functions,
         triggers,
         grants,
+        rls_policies,
     })
 }
 
@@ -1046,6 +1149,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             "functions".to_string(),
             "triggers".to_string(),
             "grants".to_string(),
+            "rlsPolicies".to_string(),
         ],
         schemas: Vec::new(),
         tables: Vec::new(),
@@ -1060,6 +1164,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
         functions: Vec::new(),
         triggers: Vec::new(),
         grants: Vec::new(),
+        rls_policies: Vec::new(),
         counts: InspectionCounts {
             schemas: 0,
             tables: 0,
@@ -1074,6 +1179,7 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             functions: 0,
             triggers: 0,
             grants: 0,
+            rls_policies: 0,
         },
         warnings: Vec::new(),
         errors: Vec::new(),
@@ -1120,6 +1226,7 @@ impl InspectionReport {
         writeln!(text, "Function count: {}", self.counts.functions).ok();
         writeln!(text, "Trigger count: {}", self.counts.triggers).ok();
         writeln!(text, "Grant count: {}", self.counts.grants).ok();
+        writeln!(text, "RLS policy count: {}", self.counts.rls_policies).ok();
         writeln!(text, "Schemas:").ok();
         for schema in &self.schemas {
             writeln!(text, "  - {}", schema.name).ok();
@@ -1223,6 +1330,15 @@ impl InspectionReport {
             )
             .ok();
         }
+        writeln!(text, "RLS policies:").ok();
+        for policy in &self.rls_policies {
+            writeln!(
+                text,
+                "  - {}.{}.{} ({})",
+                policy.schema_name, policy.table_name, policy.policy_name, policy.command
+            )
+            .ok();
+        }
         for warning in &self.warnings {
             writeln!(text, "Warning: {warning}").ok();
         }
@@ -1256,6 +1372,7 @@ impl InspectionReport {
         write_function_array_field(&mut json, "functions", &self.functions);
         write_trigger_array_field(&mut json, "triggers", &self.triggers);
         write_grant_array_field(&mut json, "grants", &self.grants);
+        write_rls_policy_array_field(&mut json, "rlsPolicies", &self.rls_policies);
         write_counts_field(&mut json, "counts", &self.counts);
         write_json_array_field(&mut json, "warnings", &self.warnings);
         write_json_array_field(&mut json, "errors", &self.errors);
