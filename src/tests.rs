@@ -4727,6 +4727,35 @@ fn reference_registry_parser_accepts_valid_configured_table() {
 }
 
 #[test]
+fn reference_registry_parser_accepts_slice34_setup_aliases() {
+    let yaml = "tables:
+  - schema: public
+    name: countries
+    keyColumns:
+      - country_code
+    ignoredColumns:
+      - updated_at
+    maskedColumns: []
+";
+
+    let registry = parse_reference_data_registry(yaml).expect("registry aliases");
+
+    assert_eq!(registry.version, 1);
+    assert_eq!(registry.tables.len(), 1);
+    assert_eq!(registry.tables[0].name, "public.countries");
+    assert_eq!(registry.tables[0].file, "tables/public.countries.yml");
+    assert_eq!(
+        registry.tables[0].key_columns,
+        vec!["country_code".to_string()]
+    );
+    assert_eq!(
+        registry.tables[0].ignore_columns,
+        vec!["updated_at".to_string()]
+    );
+    assert!(registry.tables[0].masked_columns.is_empty());
+}
+
+#[test]
 fn reference_registry_parser_rejects_missing_key() {
     let yaml = "version: 1
 tables:
@@ -4736,6 +4765,145 @@ tables:
     let error = parse_reference_data_registry(yaml).expect_err("missing key");
 
     assert!(error.contains("missing required field 'key'"));
+}
+
+#[test]
+fn reference_data_status_endpoint_reports_missing_valid_and_invalid_registry() {
+    let missing = create_temp_dir("reference-data-status-missing");
+    init_git_repo(&missing);
+    fs::create_dir_all(missing.join("database/reference-data/tables")).expect("create ref dirs");
+
+    let missing_response =
+        service_response("POST", "/api/v1/reference-data/status", "{}", &missing);
+    assert_eq!(missing_response.status_code, 200);
+    assert!(missing_response
+        .body
+        .contains("\"status\":\"missingRegistry\""));
+    assert!(missing_response.body.contains("\"repositoryPathUsed\""));
+    assert!(missing_response.body.contains("\"registryExists\":false"));
+    assert!(missing_response
+        .body
+        .contains("Reference-data registry was not found"));
+    assert!(missing_response.body.contains("\"configuredTables\":[]"));
+
+    let valid = create_temp_dir("reference-data-status-valid");
+    init_git_repo(&valid);
+    create_complete_structure(&valid);
+    fs::write(
+        valid.join("database/reference-data/dbstate.reference-data.yml"),
+        valid_reference_registry_yaml(),
+    )
+    .expect("write registry");
+    let valid_response = service_response("POST", "/api/v1/reference-data/status", "{}", &valid);
+    assert_eq!(valid_response.status_code, 200);
+    assert!(valid_response.body.contains("\"success\":true"));
+    assert!(valid_response.body.contains("\"status\":\"ready\""));
+    assert!(valid_response.body.contains("\"registryExists\":true"));
+    assert!(valid_response.body.contains("\"repositoryPathUsed\""));
+    assert!(valid_response.body.contains("\"schema\":\"dbstate_ref\""));
+    assert!(valid_response.body.contains("\"name\":\"payment_methods\""));
+    assert!(valid_response.body.contains("\"keyColumns\":[\"code\"]"));
+    assert!(valid_response
+        .body
+        .contains("\"ignoredColumns\":[\"updated_at\"]"));
+    assert!(valid_response
+        .body
+        .contains("\"maskedColumns\":[\"secret_note\"]"));
+
+    let invalid = create_temp_dir("reference-data-status-invalid");
+    init_git_repo(&invalid);
+    create_complete_structure(&invalid);
+    fs::write(
+        invalid.join("database/reference-data/dbstate.reference-data.yml"),
+        "tables:\n  - name: public.bad\n",
+    )
+    .expect("write invalid registry");
+    let invalid_response =
+        service_response("POST", "/api/v1/reference-data/status", "{}", &invalid);
+    assert_eq!(invalid_response.status_code, 200);
+    assert!(invalid_response.body.contains("\"success\":false"));
+    assert!(invalid_response
+        .body
+        .contains("\"status\":\"invalidRegistry\""));
+    assert!(invalid_response
+        .body
+        .contains("missing required field 'key'"));
+    assert!(!invalid_response.body.contains("postgres://"));
+}
+
+#[test]
+fn reference_data_status_endpoint_uses_provided_repository_path() {
+    let fallback = create_temp_dir("reference-data-status-fallback");
+    init_git_repo(&fallback);
+    fs::create_dir_all(fallback.join("database/reference-data/tables")).expect("fallback dirs");
+
+    let selected = create_temp_dir("reference-data-status-selected");
+    init_git_repo(&selected);
+    create_complete_structure(&selected);
+    fs::write(
+        selected.join("database/reference-data/dbstate.reference-data.yml"),
+        valid_reference_registry_yaml(),
+    )
+    .expect("write selected registry");
+    let body = format!(r#"{{ "repositoryPath": "{}" }}"#, display_path(&selected));
+
+    let response = service_response("POST", "/api/v1/reference-data/status", &body, &fallback);
+
+    assert_eq!(response.status_code, 200);
+    assert!(response.body.contains("\"success\":true"));
+    assert!(response.body.contains("\"registryExists\":true"));
+    assert!(response.body.contains("\"status\":\"ready\""));
+    assert!(response
+        .body
+        .contains("\"registryPath\":\"database/reference-data/dbstate.reference-data.yml\""));
+    assert!(response.body.contains(&escape_json(&display_path(
+        &selected.canonicalize().unwrap()
+    ))));
+    assert!(!response
+        .body
+        .contains("Reference-data registry was not found"));
+    assert!(!response
+        .body
+        .contains(&escape_json(&display_path(&fallback))));
+}
+
+#[test]
+fn service_data_compare_selected_tables_are_safely_validated() {
+    let dir = create_temp_dir("reference-data-service-selected-tables");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/reference-data/dbstate.reference-data.yml"),
+        valid_reference_registry_yaml(),
+    )
+    .expect("write registry");
+
+    let empty = service_response(
+        "POST",
+        "/api/v1/postgres/data-compare",
+        r#"{ "postgresUrl": "postgres://user:secret@example.invalid/db", "selectedTables": [] }"#,
+        &dir,
+    );
+    assert_eq!(empty.status_code, 400);
+    assert!(empty
+        .body
+        .contains("Select at least one configured reference-data table"));
+    assert!(!empty.body.contains("secret"));
+    assert!(!empty.body.contains("postgres://"));
+
+    let unconfigured = service_response(
+        "POST",
+        "/api/v1/postgres/data-compare",
+        r#"{ "postgresUrl": "postgres://user:secret@example.invalid/db", "selectedTables": ["public.not_configured"] }"#,
+        &dir,
+    );
+    assert_eq!(unconfigured.status_code, 200);
+    assert!(unconfigured.body.contains("\"success\":false"));
+    assert!(unconfigured
+        .body
+        .contains("Selected reference-data table is not configured"));
+    assert!(!unconfigured.body.contains("secret"));
+    assert!(!unconfigured.body.contains("postgres://"));
 }
 
 #[test]
@@ -4776,6 +4944,114 @@ fn reference_table_file_parser_accepts_valid_rows() {
 }
 
 #[test]
+fn reference_table_file_parser_accepts_canonical_key_values_rows() {
+    let registry = parse_reference_data_registry(
+        "version: 1
+tables:
+  - schema: public
+    name: country
+    keyColumns:
+      - country_id
+    ignoredColumns:
+      - last_update
+    maskedColumns: []
+",
+    )
+    .expect("registry");
+    let config = registry.tables[0].clone();
+    let yaml = "version: 1
+table: public.country
+rows:
+  - key:
+      country_id: 1
+    values:
+      country_id: 1
+      country: Afghanistan
+      last_update: \"2006-02-15 09:44:00+00\"
+  - key:
+      country_id: 2
+    values:
+      country_id: 2
+      country: Algeria
+      last_update: \"2006-02-15 09:44:00+00\"
+";
+
+    let state = parse_reference_data_table_state(yaml, &config).expect("canonical state");
+
+    assert_eq!(state.table_name, "public.country");
+    assert_eq!(state.key_columns, vec!["country_id".to_string()]);
+    assert_eq!(state.rows.len(), 2);
+    assert_eq!(
+        reference_row_key(&state.rows[0], &config.key_columns).expect("row key"),
+        "country_id=1"
+    );
+}
+
+#[test]
+fn reference_table_file_parser_accepts_scalar_key_rows() {
+    let registry = parse_reference_data_registry(
+        "version: 1
+tables:
+  - schema: public
+    name: country
+    keyColumns:
+      - country_id
+",
+    )
+    .expect("registry");
+    let config = registry.tables[0].clone();
+    let yaml = "version: 1
+table: public.country
+rows:
+  - key: \"1\"
+    values:
+      country: Afghanistan
+  - key: \"2\"
+    values:
+      country: Algeria
+";
+
+    let state = parse_reference_data_table_state(yaml, &config).expect("scalar key state");
+
+    assert_eq!(
+        reference_row_key(&state.rows[0], &config.key_columns).expect("row key"),
+        "country_id=1"
+    );
+    assert_eq!(
+        state.rows[0].values.get("country").cloned().flatten(),
+        Some("Afghanistan".to_string())
+    );
+}
+
+#[test]
+fn reference_table_file_parser_accepts_flat_row_alias_from_registry_keys() {
+    let registry = parse_reference_data_registry(
+        "version: 1
+tables:
+  - schema: public
+    name: country
+    keyColumns:
+      - country_id
+",
+    )
+    .expect("registry");
+    let config = registry.tables[0].clone();
+    let yaml = "version: 1
+table: public.country
+rows:
+  - country_id: 1
+    country: Afghanistan
+";
+
+    let state = parse_reference_data_table_state(yaml, &config).expect("flat row alias");
+
+    assert_eq!(
+        reference_row_key(&state.rows[0], &config.key_columns).expect("row key"),
+        "country_id=1"
+    );
+}
+
+#[test]
 fn reference_table_file_parser_rejects_duplicate_row_keys() {
     let (config, _) = reference_config_and_state();
     let yaml = "table: dbstate_ref.payment_methods
@@ -4789,6 +5065,60 @@ rows:
     let error = parse_reference_data_table_state(yaml, &config).expect_err("duplicate key");
 
     assert!(error.contains("duplicate row key"));
+}
+
+#[test]
+fn reference_table_file_parser_missing_key_error_names_file_and_row() {
+    let registry = parse_reference_data_registry(
+        "version: 1
+tables:
+  - schema: public
+    name: country
+    keyColumns:
+      - country_id
+",
+    )
+    .expect("registry");
+    let config = registry.tables[0].clone();
+    let yaml = "version: 1
+table: public.country
+rows:
+  - values:
+      country_id: 1
+      country: Afghanistan
+";
+
+    let error = parse_reference_data_table_state(yaml, &config).expect_err("missing key");
+
+    assert!(error.contains("database/reference-data/tables/public.country.yml"));
+    assert!(error.contains("row 1"));
+    assert!(error.contains("missing required field 'key'"));
+    assert!(error.contains("Expected row format: key + values"));
+}
+
+#[test]
+fn reference_table_file_parser_missing_table_error_names_file_and_hint() {
+    let registry = parse_reference_data_registry(
+        "version: 1
+tables:
+  - schema: public
+    name: country
+    keyColumns:
+      - country_id
+",
+    )
+    .expect("registry");
+    let config = registry.tables[0].clone();
+    let yaml = "version: 1
+rows: []
+";
+
+    let error = parse_reference_data_table_state(yaml, &config).expect_err("missing table");
+
+    assert!(error.contains("database/reference-data/tables/public.country.yml"));
+    assert!(error.contains("table"));
+    assert!(error.contains("non-empty string") || error.contains("missing required field 'table'"));
+    assert!(error.contains("Expected top-level field 'table: public.country'"));
 }
 
 #[test]
@@ -5099,6 +5429,7 @@ fn slice11_service_routes_include_only_approved_endpoints() {
         ("POST", "/api/v1/postgres/inspect"),
         ("POST", "/api/v1/postgres/compare"),
         ("POST", "/api/v1/postgres/plan"),
+        ("POST", "/api/v1/reference-data/status"),
         ("POST", "/api/v1/postgres/data-compare"),
         ("POST", "/api/v1/postgres/object-ddl"),
         ("POST", "/api/v1/postgres/repository-sync/preview"),
@@ -5315,6 +5646,7 @@ fn slice12_ui_javascript_calls_only_approved_endpoints() {
         "/api/v1/postgres/inspect",
         "/api/v1/postgres/compare",
         "/api/v1/postgres/plan",
+        "/api/v1/reference-data/status",
         "/api/v1/postgres/data-compare",
         "/api/v1/postgres/object-ddl",
         "/api/v1/postgres/repository-sync/preview",
@@ -5732,9 +6064,16 @@ fn slice13b_results_grid_usability_contract_is_present() {
     assert!(!html.contains("<option value=\"referenceData\">Reference data</option>"));
     assert!(html.contains("<select id=\"compare-schema\">"));
     assert!(html.contains("<select id=\"compare-table\">"));
-    assert!(html.contains("<select id=\"data-table\" disabled>"));
+    assert!(html.contains("<select id=\"data-table\">"));
     assert!(html.contains("Run Inspect first to populate schema and table lists."));
-    assert!(html.contains("reference-data compare are out-of-scope"));
+    assert!(html.contains("Reference-data compare is read-only."));
+    assert!(html.contains("database/reference-data/dbstate.reference-data.yml"));
+    assert!(html.contains("database/reference-data/tables/"));
+    assert!(html.contains("keyColumns:"));
+    assert!(html.contains("ignoredColumns:"));
+    assert!(html.contains("reference-data-configured-tables"));
+    assert!(html.contains("reference-data-selected-count"));
+    assert!(html.contains("Reference-Data Row Detail"));
     assert!(!html.contains("placeholder=\"dbstate_slice2\""));
     assert!(!html.contains("placeholder=\"schema.table\""));
     assert!(!html.contains("table:dbstate_slice2.sample_accounts"));
@@ -5814,6 +6153,11 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "updateCompareOptionLists",
         "updateTableOptions",
         "updateReferenceDataOptions",
+        "updateReferenceDataConfiguredTables",
+        "renderReferenceDataConfiguredTables",
+        "referenceDataSelectedTables",
+        "selectedTables",
+        "referenceDataStatus",
         "updateObjectTypeFilterOptions",
         "columnsForSelectedTable",
         "projectStructureGuidance",
@@ -5834,9 +6178,70 @@ fn slice13b_results_grid_usability_contract_is_present() {
     assert!(!html.contains("RLS policies future"));
     assert!(js.contains("label === \"Inspect\""));
     assert!(js.contains("label === \"Reference-data compare\""));
+    assert!(js.contains("label === \"Reference-data status\""));
     assert!(js.contains("appendOption(select, \"referenceData\", \"Reference data\")"));
+    assert!(html.contains("Run Reference Data Compare"));
+    assert!(!js.contains("Reference-Data Compare Is Out of Scope"));
     assert!(!js.contains("service:response"));
     assert!(!js.contains("objectType: \"service\""));
+}
+
+#[test]
+fn slice34_reference_data_compare_ui_is_enabled_and_read_only() {
+    let html = ui_html();
+    let js = ui_js();
+    let combined = format!("{html}\n{js}");
+
+    for expected in [
+        "Reference-Data Compare",
+        "reference-data-compare-panel",
+        "reference-data-status",
+        "configured reference-data tables",
+        "Key columns",
+        "Ignored columns",
+        "Masked columns",
+        "reference-data-table-checkbox",
+        "reference-data-selected-count",
+        "Select all",
+        "Clear selection",
+        "Reference-Data Row Detail",
+        "database/reference-data/dbstate.reference-data.yml",
+        "database/reference-data/tables/public.country.yml",
+        "Canonical table file format",
+        "Simplified supported format",
+        "derives row keys from registry",
+        "table: public.country",
+        "key:",
+        "values:",
+        "country_id: 1",
+        "country: Afghanistan",
+        "keyColumns:",
+        "ignoredColumns:",
+        "maskedColumns: []",
+        "DbState does not insert, update, delete, merge, or apply data changes",
+        "Only tables listed in",
+        "Masked columns remain masked",
+        "[masked]",
+        "ignored for comparison",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "missing Slice 34 UI contract text {expected}"
+        );
+    }
+
+    assert!(combined.contains("/api/v1/reference-data/status"));
+    assert!(combined.contains("selectedTables"));
+    assert!(combined.contains("renderReferenceDataConfiguredTables"));
+    assert!(combined.contains("renderReferenceDataRowDetail"));
+    assert!(combined.contains("state.referenceDataSelectedTables"));
+    assert!(!combined.contains("Reference-Data Compare Is Out of Scope"));
+    assert!(!combined.contains("reference-data compare is out-of-scope"));
+    assert!(
+        !combined.contains("data-action=\"data-compare\" data-standard-operation-action disabled")
+    );
+    assert!(!combined.contains("Sync to Database"));
+    assert!(!combined.contains("Apply data changes"));
 }
 
 #[test]
