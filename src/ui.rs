@@ -103,10 +103,10 @@ const UI_HTML: &str = r#"<!doctype html>
         <div class="subsection">
           <h3>Workflow Mode</h3>
           <select id="workflow-mode" data-testid="workflow-mode">
-            <option value="inspect">PostgreSQL Inspect Only</option>
-            <option value="compare">Repository to Database Compare</option>
-            <option value="databaseToRepository">Database to Repository Compare</option>
-            <option value="data">Reference-Data Compare</option>
+            <option value="schemaRepoToDatabase">Schema Compare: Repository to Database</option>
+            <option value="schemaDatabaseToRepository">Schema Compare: Database to Repository</option>
+            <option value="referenceDataRepoToDatabase">Reference Data Compare: Repository to Database</option>
+            <option value="referenceDataDatabaseToRepository">Reference Data Compare: Database to Repository</option>
           </select>
         </div>
         <div class="split-pane">
@@ -256,7 +256,7 @@ const UI_HTML: &str = r#"<!doctype html>
           <label><input type="checkbox" checked disabled> RLS policies</label>
         </div>
         <div class="button-row">
-          <button type="button" data-action="inspect" data-standard-operation-action>Inspect</button>
+          <button type="button" data-action="inspect" data-standard-operation-action>Refresh Database Inventory</button>
           <button type="button" data-action="compare" data-standard-operation-action>Run Compare</button>
           <button type="button" data-action="plan" data-standard-operation-action>Run Plan</button>
           <button type="button" data-action="data-compare" data-standard-operation-action>Run Reference Data Compare</button>
@@ -314,11 +314,55 @@ rows:
   - country_id: 1
     country: Afghanistan
     last_update: "2006-02-15 09:44:00+00"
-</pre>
+            </pre>
           </details>
         </section>
+        <section class="subsection" id="reference-data-export-panel" data-testid="reference-data-export-panel" hidden>
+          <h3>Reference Data: Database to Repository</h3>
+          <p class="note">Choose database tables that should be managed as reference data. DbState writes YAML files to the repository only. It does not modify PostgreSQL.</p>
+          <div class="button-row">
+            <button type="button" data-action="reference-data-load-database-tables" data-testid="reference-data-load-database-tables">Load database tables</button>
+            <button type="button" data-action="reference-data-preview-yaml" data-testid="reference-data-preview-yaml">Preview Reference YAML</button>
+            <button type="button" data-action="reference-data-write-yaml" data-testid="reference-data-write-yaml" disabled>Write Reference Data Files</button>
+            <span id="reference-data-export-selected-count" data-testid="reference-data-export-selected-count">0 selected for export</span>
+          </div>
+          <label for="reference-data-export-search">Table search
+            <input id="reference-data-export-search" type="text" autocomplete="off" placeholder="public.country">
+          </label>
+          <div class="table-wrap">
+            <table class="results-grid" aria-label="Reference-data database tables" data-testid="reference-data-database-tables">
+              <thead>
+                <tr><th>Select</th><th>Schema</th><th>Table</th><th>Suggested key</th><th>Selected key count</th><th>Versioned columns</th><th>Masked columns</th><th>Rows</th></tr>
+              </thead>
+              <tbody id="reference-data-database-tables-body">
+                <tr><td colspan="8">Load database tables to choose reference-data exports.</td></tr>
+              </tbody>
+            </table>
+          </div>
+          <section class="subsection" id="reference-data-export-detail" data-testid="reference-data-export-detail">
+            <h4>Selected Table Detail</h4>
+            <p class="note">Select key columns, versioned columns, and optional masked columns. Ignored columns are derived from columns not selected as key, versioned, or masked.</p>
+            <dl class="summary-list compact" id="reference-data-export-detail-summary"></dl>
+            <div class="table-wrap">
+              <table class="results-grid" aria-label="Reference-data export columns" data-testid="reference-data-export-columns">
+                <thead>
+                  <tr><th>Column</th><th>Type</th><th>Nullable</th><th>PK</th><th>Unique</th><th>Key</th><th>Versioned</th><th>Masked</th></tr>
+                </thead>
+                <tbody id="reference-data-export-columns-body">
+                  <tr><td colspan="8">Select a database table to configure columns.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </section>
+          <label for="reference-data-write-confirmation">Typed confirmation
+            <input id="reference-data-write-confirmation" type="text" autocomplete="off">
+          </label>
+          <p class="note">Type WRITE REFERENCE DATA FILES to enable repository YAML writes.</p>
+          <dl class="summary-list compact" id="reference-data-export-summary" data-testid="reference-data-export-summary"></dl>
+          <pre id="reference-data-export-preview" data-testid="reference-data-export-preview">Preview generated registry and table YAML here.</pre>
+        </section>
         <div id="repository-sync-controls" class="subsection" hidden>
-          <h3>Database to Repository Compare</h3>
+          <h3>Schema Compare: Database to Repository</h3>
           <p class="note">Preview reads PostgreSQL and the selected repository without writing files. Write repository changes writes only under the selected repository's database/objects/ paths, requires a clean working tree, and never changes PostgreSQL.</p>
           <label for="repository-write-confirmation">Typed confirmation
             <input id="repository-write-confirmation" type="text" autocomplete="off">
@@ -476,7 +520,7 @@ rows:
       <section class="workflow-panel" id="step-release-plan">
         <div class="panel-heading">
           <h2>Release Plan</h2>
-          <p>Generate reviewable release artifacts for Repository to Database Compare only.</p>
+          <p>Generate reviewable release artifacts for Schema Compare: Repository to Database only.</p>
         </div>
         <div id="release-plan-not-applicable" class="issue-item" hidden></div>
         <div id="release-plan-content">
@@ -1473,6 +1517,9 @@ const UI_JS: &str = r#"(function () {
     compare: "/api/v1/postgres/compare",
     plan: "/api/v1/postgres/plan",
     referenceDataStatus: "/api/v1/reference-data/status",
+    referenceDataDatabaseTables: "/api/v1/reference-data/database-tables",
+    referenceDataExportPreview: "/api/v1/reference-data/export/preview",
+    referenceDataExportWrite: "/api/v1/reference-data/export/write",
     dataCompare: "/api/v1/postgres/data-compare",
     objectDdl: "/api/v1/postgres/object-ddl",
     repositorySyncPreview: "/api/v1/postgres/repository-sync/preview",
@@ -1497,6 +1544,9 @@ const UI_JS: &str = r#"(function () {
     referenceDataTables: [],
     referenceDataConfiguredTables: [],
     referenceDataSelectedTables: new Set(),
+    referenceDataDatabaseTables: [],
+    referenceDataExportSelections: {},
+    referenceDataExportActiveTable: "",
     profiles: [],
     directoryRoots: [],
     directoryCurrentPath: "",
@@ -1691,13 +1741,19 @@ const UI_JS: &str = r#"(function () {
   }
 
   function standardOperationAllowed(actionLabel) {
-    if (!isDatabaseToRepositoryMode(currentWorkflowMode())) {
+    const mode = currentWorkflowMode();
+    if (isSchemaRepositoryToDatabaseMode(mode) && actionLabel !== "Reference-data compare") {
+      return true;
+    }
+    if (isReferenceDataRepositoryToDatabaseMode(mode) && actionLabel === "Reference-data compare") {
       return true;
     }
     clearOperationResults("Workflow mode changed. Run an operation to load results.");
-    const message = actionLabel === "Compare"
-      ? "Compare is not available in Database to Repository mode. Use Preview Repository Sync."
-      : actionLabel + " is not available in Database to Repository mode. Use Preview Repository Sync.";
+    const message = isSchemaDatabaseToRepositoryMode(mode)
+      ? (actionLabel === "Compare"
+        ? "Compare is not available in Schema Compare: Database to Repository mode. Use Preview Repository Sync."
+        : actionLabel + " is not available in Schema Compare: Database to Repository mode. Use Preview Repository Sync.")
+      : actionLabel + " is not available in this reference-data workflow mode.";
     responseSummary.textContent = message;
     return false;
   }
@@ -1915,17 +1971,26 @@ const UI_JS: &str = r#"(function () {
   }
 
   function updateWorkflowModePanels() {
-    const selectedMode = value("workflow-mode") || "inspect";
+    const selectedMode = value("workflow-mode") || "schemaRepoToDatabase";
     const mode = selectedMode;
     state.previousWorkflowMode = mode;
     const layout = workflowLayout(mode);
-    byId("repository-sync-controls").hidden = !isDatabaseToRepositoryMode(mode);
-    byId("reference-data-panel").hidden = mode !== "data";
+    const schemaRepoToDatabase = isSchemaRepositoryToDatabaseMode(mode);
+    const schemaDatabaseToRepository = isSchemaDatabaseToRepositoryMode(mode);
+    const referenceDataRepoToDatabase = isReferenceDataRepositoryToDatabaseMode(mode);
+    const referenceDataDatabaseToRepository = isReferenceDataDatabaseToRepositoryMode(mode);
+    byId("repository-sync-controls").hidden = !schemaDatabaseToRepository;
+    byId("reference-data-panel").hidden = !referenceDataRepoToDatabase;
+    byId("reference-data-export-panel").hidden = !referenceDataDatabaseToRepository;
     document.querySelectorAll("[data-standard-operation-action]").forEach(function (button) {
-      const disabledForDbToRepo = isDatabaseToRepositoryMode(mode);
-      const isDataCompare = button.dataset.action === "data-compare";
-      button.hidden = disabledForDbToRepo || (mode === "data" ? !isDataCompare : isDataCompare);
-      button.disabled = disabledForDbToRepo;
+      const action = button.dataset.action;
+      if (action === "data-compare") {
+        button.hidden = !referenceDataRepoToDatabase;
+        button.disabled = !referenceDataRepoToDatabase;
+      } else {
+        button.hidden = !schemaRepoToDatabase;
+        button.disabled = !schemaRepoToDatabase;
+      }
     });
     byId("source-target-description").textContent = layout.description;
     byId("source-kind").textContent = layout.sourceKind;
@@ -1939,7 +2004,7 @@ const UI_JS: &str = r#"(function () {
   }
 
   function workflowLayout(mode) {
-    if (isDatabaseToRepositoryMode(mode)) {
+    if (isSchemaDatabaseToRepositoryMode(mode)) {
       return {
         description: "DbState captures supported PostgreSQL database state into the selected repository after preview and explicit confirmation.",
         sourceKind: "PostgreSQL database",
@@ -1961,15 +2026,26 @@ const UI_JS: &str = r#"(function () {
         targetContext: "catalog"
       };
     }
-    if (mode === "data") {
+    if (isReferenceDataRepositoryToDatabaseMode(mode)) {
       return {
         description: "DbState compares configured repository reference data to PostgreSQL through read-only service operations.",
-        sourceKind: "Repository configured reference data",
+        sourceKind: "Repository reference-data",
         sourceType: "Repository",
         sourceContext: "repository",
-        targetKind: "PostgreSQL database",
+        targetKind: "PostgreSQL target",
         targetType: "Database",
         targetContext: "connection"
+      };
+    }
+    if (isReferenceDataDatabaseToRepositoryMode(mode)) {
+      return {
+        description: "DbState exports explicitly selected PostgreSQL table data into repository reference-data YAML files only after typed confirmation.",
+        sourceKind: "PostgreSQL database",
+        sourceType: "Database",
+        sourceContext: "connection",
+        targetKind: "Repository reference-data",
+        targetType: "Repository",
+        targetContext: "repository"
       };
     }
     return {
@@ -2240,6 +2316,224 @@ const UI_JS: &str = r#"(function () {
     updateReferenceDataSelectedCount();
   }
 
+  function updateReferenceDataDatabaseTables(data) {
+    state.referenceDataDatabaseTables = Array.isArray(data.tables) ? data.tables.slice() : [];
+    state.referenceDataDatabaseTables.sort(function (left, right) {
+      return textOrEmpty(left.tableName).localeCompare(textOrEmpty(right.tableName));
+    });
+    state.referenceDataExportSelections = {};
+    state.referenceDataExportActiveTable = "";
+    renderReferenceDataDatabaseTables();
+    renderReferenceDataExportDetail(null);
+  }
+
+  function defaultReferenceDataExportSelection(table) {
+    const columns = Array.isArray(table.columns) ? table.columns : [];
+    const suggested = Array.isArray(table.suggestedKeyColumns) && table.suggestedKeyColumns.length
+      ? table.suggestedKeyColumns.slice()
+      : columns.length ? [columns[0].name] : [];
+    const versioned = columns.map(function (column) {
+      return column.name;
+    }).filter(function (column) {
+      return suggested.indexOf(column) < 0;
+    });
+    return {
+      schema: table.schema,
+      name: table.name,
+      keyColumns: suggested,
+      versionedColumns: versioned,
+      maskedColumns: []
+    };
+  }
+
+  function selectedReferenceDataExportTables() {
+    return Object.keys(state.referenceDataExportSelections).sort().map(function (tableName) {
+      return state.referenceDataExportSelections[tableName];
+    });
+  }
+
+  function renderReferenceDataDatabaseTables() {
+    const body = byId("reference-data-database-tables-body");
+    body.innerHTML = "";
+    const filter = textOrEmpty(value("reference-data-export-search")).toLowerCase();
+    const tables = state.referenceDataDatabaseTables.filter(function (table) {
+      return !filter || textOrEmpty(table.tableName).toLowerCase().indexOf(filter) >= 0;
+    });
+    if (!tables.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 8;
+      td.textContent = state.referenceDataDatabaseTables.length ? "No database tables match the filter." : "Load database tables to choose reference-data exports.";
+      tr.appendChild(td);
+      body.appendChild(tr);
+      updateReferenceDataExportSelectedCount();
+      return;
+    }
+    tables.forEach(function (table) {
+      const tr = document.createElement("tr");
+      const tableName = table.tableName;
+      const checkbox = document.createElement("input");
+      checkbox.type = "checkbox";
+      checkbox.checked = !!state.referenceDataExportSelections[tableName];
+      checkbox.setAttribute("data-testid", "reference-data-export-table-checkbox");
+      checkbox.addEventListener("change", function () {
+        if (checkbox.checked) {
+          state.referenceDataExportSelections[tableName] = defaultReferenceDataExportSelection(table);
+          state.referenceDataExportActiveTable = tableName;
+          renderReferenceDataExportDetail(table);
+        } else {
+          delete state.referenceDataExportSelections[tableName];
+          if (state.referenceDataExportActiveTable === tableName) {
+            state.referenceDataExportActiveTable = "";
+            renderReferenceDataExportDetail(null);
+          }
+        }
+        updateReferenceDataExportSelectedCount();
+        renderReferenceDataDatabaseTables();
+      });
+      const selectCell = document.createElement("td");
+      selectCell.appendChild(checkbox);
+      tr.appendChild(selectCell);
+      const currentSelection = state.referenceDataExportSelections[tableName] || defaultReferenceDataExportSelection(table);
+      [table.schema,
+        table.name,
+        (table.suggestedKeyColumns || []).join(", ") || "none",
+        (currentSelection.keyColumns || []).length,
+        (currentSelection.versionedColumns || []).length,
+        (currentSelection.maskedColumns || []).length,
+        table.rowCount == null ? "not counted" : table.rowCount
+      ].forEach(function (value) {
+        const td = document.createElement("td");
+        td.textContent = textOrEmpty(value);
+        tr.appendChild(td);
+      });
+      tr.addEventListener("click", function (event) {
+        if (event.target !== checkbox) {
+          state.referenceDataExportActiveTable = tableName;
+          renderReferenceDataExportDetail(table);
+        }
+      });
+      body.appendChild(tr);
+    });
+    updateReferenceDataExportSelectedCount();
+  }
+
+  function updateReferenceDataExportSelectedCount() {
+    const count = selectedReferenceDataExportTables().length;
+    byId("reference-data-export-selected-count").textContent = count + " selected for export";
+    updateReferenceDataWriteButton();
+  }
+
+  function renderReferenceDataExportDetail(table) {
+    const body = byId("reference-data-export-columns-body");
+    body.innerHTML = "";
+    if (!table) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 8;
+      td.textContent = "Select a database table to configure columns.";
+      tr.appendChild(td);
+      body.appendChild(tr);
+      updateSummary("reference-data-export-detail-summary", { table: "none" });
+      return;
+    }
+    const selection = state.referenceDataExportSelections[table.tableName] || defaultReferenceDataExportSelection(table);
+    const columns = Array.isArray(table.columns) ? table.columns : [];
+    const selected = new Set([].concat(selection.keyColumns, selection.versionedColumns, selection.maskedColumns));
+    const ignored = columns.map(function (column) {
+      return column.name;
+    }).filter(function (column) {
+      return !selected.has(column);
+    });
+    updateSummary("reference-data-export-detail-summary", {
+      table: table.tableName,
+      keyColumns: selection.keyColumns.join(", ") || "none",
+      versionedColumns: selection.versionedColumns.join(", ") || "none",
+      ignoredColumns: ignored.join(", ") || "none",
+      maskedColumns: selection.maskedColumns.join(", ") || "none"
+    });
+    columns.forEach(function (column) {
+      const tr = document.createElement("tr");
+      [column.name, column.dataType, column.nullable ? "yes" : "no", column.isPrimaryKey ? "yes" : "no", column.isUnique ? "yes" : "no"].forEach(function (value) {
+        const td = document.createElement("td");
+        td.textContent = textOrEmpty(value);
+        tr.appendChild(td);
+      });
+      [["keyColumns", "Key"], ["versionedColumns", "Versioned"], ["maskedColumns", "Masked"]].forEach(function (entry) {
+        const field = entry[0];
+        const td = document.createElement("td");
+        const checkbox = document.createElement("input");
+        checkbox.type = "checkbox";
+        checkbox.checked = selection[field].indexOf(column.name) >= 0;
+        checkbox.setAttribute("data-testid", "reference-data-export-" + field);
+        checkbox.addEventListener("change", function () {
+          updateReferenceDataColumnSelection(table, column.name, field, checkbox.checked);
+        });
+        td.appendChild(checkbox);
+        tr.appendChild(td);
+      });
+      body.appendChild(tr);
+    });
+  }
+
+  function updateReferenceDataColumnSelection(table, columnName, field, checked) {
+    const tableName = table.tableName;
+    const selection = state.referenceDataExportSelections[tableName] || defaultReferenceDataExportSelection(table);
+    ["keyColumns", "versionedColumns", "maskedColumns"].forEach(function (name) {
+      selection[name] = selection[name].filter(function (value) {
+        return value !== columnName;
+      });
+    });
+    if (checked) {
+      selection[field].push(columnName);
+    }
+    state.referenceDataExportSelections[tableName] = selection;
+    renderReferenceDataExportDetail(table);
+    updateReferenceDataExportSelectedCount();
+  }
+
+  function referenceDataExportBody(writeFiles) {
+    const tables = selectedReferenceDataExportTables();
+    if (!tables.length) {
+      throw new Error("Select at least one database table to export as reference data.");
+    }
+    const body = attachWorkspacePath(attachConnection({ tables: tables }));
+    if (writeFiles) {
+      body.confirmReferenceDataWrite = true;
+      body.confirmationText = value("reference-data-write-confirmation");
+    }
+    return body;
+  }
+
+  function updateReferenceDataWriteButton() {
+    const button = document.querySelector("[data-action='reference-data-write-yaml']");
+    if (!button) {
+      return;
+    }
+    button.disabled = value("reference-data-write-confirmation") !== "WRITE REFERENCE DATA FILES" || selectedReferenceDataExportTables().length === 0;
+  }
+
+  function renderReferenceDataExportPreview(data) {
+    const preview = byId("reference-data-export-preview");
+    const chunks = [];
+    if (data.registryYaml) {
+      chunks.push('# database/reference-data/dbstate.reference-data.yml\n' + data.registryYaml);
+    }
+    if (Array.isArray(data.tablePreviews)) {
+      data.tablePreviews.forEach(function (table) {
+        chunks.push('# ' + table.file + '\n' + table.yaml);
+      });
+    }
+    preview.textContent = chunks.length ? chunks.join('\n') : "Preview generated registry and table YAML here.";
+    updateSummary("reference-data-export-summary", {
+      success: data.success,
+      filesCreated: Array.isArray(data.filesCreated) ? data.filesCreated.length : 0,
+      filesUpdated: Array.isArray(data.filesUpdated) ? data.filesUpdated.length : 0,
+      filesUnchanged: Array.isArray(data.filesUnchanged) ? data.filesUnchanged.length : 0,
+      warnings: Array.isArray(data.warnings) ? data.warnings.join("; ") : ""
+    });
+  }
+
   function updateReferenceDataSelectedCount() {
     const count = state.referenceDataSelectedTables.size;
     byId("reference-data-selected-count").textContent = count + " selected";
@@ -2257,7 +2551,8 @@ const UI_JS: &str = r#"(function () {
         appendOption(select, type, type.charAt(0).toUpperCase() + type.slice(1));
       }
     });
-    const hasReferenceData = value("workflow-mode") === "data" || label === "Reference-data compare" || rows.some(function (row) {
+    const mode = value("workflow-mode");
+    const hasReferenceData = isReferenceDataRepositoryToDatabaseMode(mode) || isReferenceDataDatabaseToRepositoryMode(mode) || label === "Reference-data compare" || rows.some(function (row) {
       return row.objectType === "referenceDataTable" || row.objectType === "referenceDataRow";
     });
     if (hasReferenceData) {
@@ -2996,12 +3291,15 @@ const UI_JS: &str = r#"(function () {
       return "inspect";
     }
     if (label === "Database to Repository Preview" || label === "Database to Repository Write") {
-      return "databaseToRepository";
+      return "schemaDatabaseToRepository";
     }
     if (label === "Reference-data compare") {
-      return "data";
+      return "referenceDataRepoToDatabase";
     }
-    return "compare";
+    if (label === "Reference-data database tables" || label === "Reference-data export preview" || label === "Reference-data export write") {
+      return "referenceDataDatabaseToRepository";
+    }
+    return "schemaRepoToDatabase";
   }
 
   function rowMatchesObjectTypeFilter(row) {
@@ -3637,25 +3935,53 @@ const UI_JS: &str = r#"(function () {
     if (!mode) {
       mode = workflowModeForOperation(operation);
     }
-    if (mode === "compare" && row && isDatabaseToRepositoryRow(row)) {
-      mode = "databaseToRepository";
+    if (isSchemaRepositoryToDatabaseMode(mode) && row && isDatabaseToRepositoryRow(row)) {
+      mode = "schemaDatabaseToRepository";
     }
     return directionForWorkflowMode(mode);
   }
 
   function isDatabaseToRepositoryMode(mode) {
-    return mode === "databaseToRepository" || mode === "dbToRepo";
+    return isSchemaDatabaseToRepositoryMode(mode);
+  }
+
+  function isSchemaRepositoryToDatabaseMode(mode) {
+    return mode === "schemaRepoToDatabase" || mode === "compare";
+  }
+
+  function isSchemaDatabaseToRepositoryMode(mode) {
+    return mode === "schemaDatabaseToRepository" || mode === "databaseToRepository" || mode === "dbToRepo";
+  }
+
+  function isReferenceDataRepositoryToDatabaseMode(mode) {
+    return mode === "referenceDataRepoToDatabase" || mode === "data";
+  }
+
+  function isReferenceDataDatabaseToRepositoryMode(mode) {
+    return mode === "referenceDataDatabaseToRepository";
   }
 
   function currentWorkflowMode() {
-    return value("workflow-mode") || "inspect";
+    return value("workflow-mode") || "schemaRepoToDatabase";
   }
 
   function workflowModesMatch(rowMode, selectedMode) {
-    if (isDatabaseToRepositoryMode(rowMode) && isDatabaseToRepositoryMode(selectedMode)) {
+    if (rowMode === "inspect" && isSchemaRepositoryToDatabaseMode(selectedMode)) {
       return true;
     }
-    return textOrEmpty(rowMode || "inspect") === textOrEmpty(selectedMode || "inspect");
+    if (isSchemaRepositoryToDatabaseMode(rowMode) && isSchemaRepositoryToDatabaseMode(selectedMode)) {
+      return true;
+    }
+    if (isSchemaDatabaseToRepositoryMode(rowMode) && isSchemaDatabaseToRepositoryMode(selectedMode)) {
+      return true;
+    }
+    if (isReferenceDataRepositoryToDatabaseMode(rowMode) && isReferenceDataRepositoryToDatabaseMode(selectedMode)) {
+      return true;
+    }
+    if (isReferenceDataDatabaseToRepositoryMode(rowMode) && isReferenceDataDatabaseToRepositoryMode(selectedMode)) {
+      return true;
+    }
+    return textOrEmpty(rowMode || "schemaRepoToDatabase") === textOrEmpty(selectedMode || "schemaRepoToDatabase");
   }
 
   function rowMatchesCurrentWorkflow(row) {
@@ -3687,7 +4013,7 @@ const UI_JS: &str = r#"(function () {
         targetDdlSide: ""
       };
     }
-    if (isDatabaseToRepositoryMode(mode)) {
+    if (isSchemaDatabaseToRepositoryMode(mode)) {
       return {
         sourceLabel: "PostgreSQL database",
         sourceType: "Database",
@@ -3697,14 +4023,24 @@ const UI_JS: &str = r#"(function () {
         targetDdlSide: "repository"
       };
     }
-    if (mode === "data") {
+    if (isReferenceDataRepositoryToDatabaseMode(mode)) {
       return {
-        sourceLabel: "Repository configured reference data",
+        sourceLabel: "Repository reference-data",
         sourceType: "Repository",
-        targetLabel: "PostgreSQL database",
+        targetLabel: "PostgreSQL target",
         targetType: "Database",
         sourceDdlSide: "repository",
         targetDdlSide: "database"
+      };
+    }
+    if (isReferenceDataDatabaseToRepositoryMode(mode)) {
+      return {
+        sourceLabel: "PostgreSQL database",
+        sourceType: "Database",
+        targetLabel: "Repository reference-data",
+        targetType: "Repository",
+        sourceDdlSide: "database",
+        targetDdlSide: "repository"
       };
     }
     return {
@@ -4308,12 +4644,16 @@ const UI_JS: &str = r#"(function () {
     const mode = currentWorkflowMode();
     const notApplicable = byId("release-plan-not-applicable");
     const content = byId("release-plan-content");
-    if (mode !== "compare") {
+    if (!isSchemaRepositoryToDatabaseMode(mode)) {
       content.hidden = true;
       notApplicable.hidden = false;
-      notApplicable.textContent = isDatabaseToRepositoryMode(mode)
-        ? "Release Plan is not used for Database to Repository Compare. This workflow writes selected PostgreSQL object definitions into repository files under database/objects/. Use Results → Write Selected Repository Changes."
-        : "Release artifacts are generated from Repository to Database Compare. Run Repository to Database Compare first.";
+      if (isSchemaDatabaseToRepositoryMode(mode)) {
+        notApplicable.textContent = "Release Plan is not used for Schema Compare: Database to Repository. This workflow writes selected PostgreSQL object definitions into repository files under database/objects/. Use Results → Write Selected Repository Changes.";
+      } else if (isReferenceDataRepositoryToDatabaseMode(mode)) {
+        notApplicable.textContent = "Release Plan is not used for Reference Data Compare: Repository to Database. Reference-data compare is read-only and does not generate DML.";
+      } else {
+        notApplicable.textContent = "Release Plan is not used for Reference Data Compare: Database to Repository. This workflow writes selected YAML files under database/reference-data/ after typed confirmation.";
+      }
       return;
     }
     content.hidden = false;
@@ -4322,7 +4662,7 @@ const UI_JS: &str = r#"(function () {
     syncReleaseSelectionWithCandidates(includedRows);
     updateReleaseSelectionSummary(includedRows);
     updateSummary("release-context", {
-      workflowMode: "Repository to Database Compare",
+      workflowMode: "Schema Compare: Repository to Database",
       source: "Repository desired state",
       target: "PostgreSQL database",
       latestResult: state.lastOperation || "none",
@@ -4356,7 +4696,7 @@ const UI_JS: &str = r#"(function () {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
       td.colSpan = 10;
-      td.textContent = "No selected result rows yet. Run Repository to Database Compare or Plan, then check rows in Results.";
+      td.textContent = "No selected result rows yet. Run Schema Compare: Repository to Database or Plan, then check rows in Results.";
       tr.appendChild(td);
       body.appendChild(tr);
     } else {
@@ -4504,6 +4844,15 @@ const UI_JS: &str = r#"(function () {
       }
       if (label === "Reference-data compare" || label === "Reference-data status") {
         updateReferenceDataOptions(data);
+      }
+      if (label === "Reference-data database tables") {
+        updateReferenceDataDatabaseTables(data);
+      }
+      if (label === "Reference-data YAML preview" || label === "Reference-data YAML write") {
+        renderReferenceDataExportPreview(data);
+      }
+      if (label === "Reference-data YAML write" && data.success) {
+        requestJson(approvedEndpoints.referenceDataStatus, attachWorkspacePath({})).then(updateReferenceDataOptions).catch(function () {});
       }
       const rows = rowsFromResponse(data, label);
       updateObjectTypeFilterOptions(rows, label);
@@ -4760,6 +5109,36 @@ const UI_JS: &str = r#"(function () {
   document.querySelector("[data-action='reference-data-clear-selection']").addEventListener("click", function () {
     state.referenceDataSelectedTables = new Set();
     renderReferenceDataConfiguredTables();
+  });
+
+  byId("reference-data-export-search").addEventListener("input", renderReferenceDataDatabaseTables);
+  byId("reference-data-write-confirmation").addEventListener("input", updateReferenceDataWriteButton);
+
+  document.querySelector("[data-action='reference-data-load-database-tables']").addEventListener("click", function () {
+    try {
+      run("Reference-data database tables", approvedEndpoints.referenceDataDatabaseTables, attachWorkspacePath(attachConnection({})), { step: "compare-options" });
+    } catch (error) {
+      responseSummary.textContent = "Reference-data database tables: " + error.message;
+    }
+  });
+
+  document.querySelector("[data-action='reference-data-preview-yaml']").addEventListener("click", function () {
+    try {
+      run("Reference-data YAML preview", approvedEndpoints.referenceDataExportPreview, referenceDataExportBody(false), { step: "compare-options" });
+    } catch (error) {
+      responseSummary.textContent = "Reference-data YAML preview: " + error.message;
+    }
+  });
+
+  document.querySelector("[data-action='reference-data-write-yaml']").addEventListener("click", function () {
+    try {
+      if (value("reference-data-write-confirmation") !== "WRITE REFERENCE DATA FILES") {
+        throw new Error("Type WRITE REFERENCE DATA FILES before writing reference-data YAML files.");
+      }
+      run("Reference-data YAML write", approvedEndpoints.referenceDataExportWrite, referenceDataExportBody(true), { step: "compare-options" });
+    } catch (error) {
+      responseSummary.textContent = "Reference-data YAML write: " + error.message;
+    }
   });
 
   document.querySelector("[data-action='repository-sync-preview']").addEventListener("click", function () {

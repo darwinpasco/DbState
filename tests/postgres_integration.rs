@@ -6,8 +6,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use dbstate::{
     compare_postgres_with_inventory, data_compare_postgres_with_connection,
     export_postgres_with_inventory, inspect_postgres, inspect_postgres_command,
-    plan_postgres_with_inventory, release_postgres_with_inventory, render_schema_sql,
-    render_table_sql, sync_postgres_with_inventory, ExportSelection, PlanSelection,
+    plan_postgres_with_inventory, reference_data_database_tables_with_connection,
+    reference_data_export_preview_with_connection, reference_data_export_write_with_connection,
+    release_postgres_with_inventory, render_schema_sql, render_table_sql,
+    sync_postgres_with_inventory, ExportSelection, PlanSelection, ReferenceDataExportSelection,
     ReferenceDataSelection,
 };
 use postgres::{Client, NoTls};
@@ -967,6 +969,110 @@ rows:
     assert!(!repo
         .join("database/releases/0001_data_compare.sql")
         .exists());
+}
+
+#[test]
+fn local_postgres_fixture_reference_data_export_writes_repo_yaml_only() {
+    let Some(url) = std::env::var("DBSTATE_TEST_POSTGRES_URL")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+    else {
+        eprintln!("skipping PostgreSQL integration test: DBSTATE_TEST_POSTGRES_URL is not set");
+        return;
+    };
+    let _fixture_guard = lock_postgres_fixture();
+    assert_safe_test_url(&url);
+
+    let mut client =
+        Client::connect(&url, NoTls).expect("connect to local disposable test database");
+    client
+        .batch_execute(REFERENCE_DATA_FIXTURE_SQL)
+        .expect("apply test-only reference-data fixture SQL");
+
+    let repo = disposable_git_repo();
+    let metadata = reference_data_database_tables_with_connection(&repo, &url)
+        .expect("reference-data database tables");
+    assert!(metadata.success, "{:?}", metadata.errors);
+    let table = metadata
+        .tables
+        .iter()
+        .find(|table| table.table_name == "dbstate_ref.payment_methods")
+        .expect("payment methods metadata");
+    assert_eq!(table.suggested_key_columns, vec!["code".to_string()]);
+    assert!(table
+        .columns
+        .iter()
+        .any(|column| column.name == "code" && column.is_primary_key));
+
+    let selection = ReferenceDataExportSelection {
+        schema: "dbstate_ref".to_string(),
+        name: "payment_methods".to_string(),
+        key_columns: vec!["code".to_string()],
+        versioned_columns: vec![
+            "name".to_string(),
+            "is_active".to_string(),
+            "sort_order".to_string(),
+        ],
+        masked_columns: vec!["secret_note".to_string()],
+    };
+    let preview = reference_data_export_preview_with_connection(
+        &repo,
+        &url,
+        std::slice::from_ref(&selection),
+    )
+    .expect("reference-data export preview");
+    assert!(preview.success, "{:?}", preview.errors);
+    assert!(preview
+        .registry_yaml
+        .contains("name: payment_methods\n    keyColumns:\n      - code"));
+    assert!(preview.registry_yaml.contains("      - updated_at"));
+    assert!(preview.registry_yaml.contains("      - secret_note"));
+    let table_yaml = &preview.table_previews[0].yaml;
+    assert!(table_yaml.contains("table: dbstate_ref.payment_methods"));
+    assert!(table_yaml.contains("code: CARD"));
+    assert!(table_yaml.contains("secret_note: \"[masked]\""));
+    assert!(!table_yaml.contains("slice8-db-secret"));
+
+    let write = reference_data_export_write_with_connection(&repo, &url, &[selection])
+        .expect("reference-data export write");
+    assert!(write.success, "{:?}", write.errors);
+    assert!(write
+        .files_updated
+        .contains(&"database/reference-data/dbstate.reference-data.yml".to_string()));
+    assert!(write
+        .files_created
+        .contains(&"database/reference-data/tables/dbstate_ref.payment_methods.yml".to_string()));
+    assert!(!repo
+        .join("database/releases")
+        .join("reference-data.sql")
+        .exists());
+
+    let written_table = std::fs::read_to_string(
+        repo.join("database/reference-data/tables/dbstate_ref.payment_methods.yml"),
+    )
+    .expect("read exported table yaml");
+    assert!(written_table.contains("secret_note: \"[masked]\""));
+    assert!(!written_table.contains("slice8-db-secret"));
+
+    run_git(&repo, &["add", "."]);
+    run_git(
+        &repo,
+        &[
+            "-c",
+            "user.email=dbstate@example.invalid",
+            "-c",
+            "user.name=DbState Test",
+            "commit",
+            "-m",
+            "export reference data",
+        ],
+    );
+    let compare = data_compare_postgres_with_connection(&repo, &url, &ReferenceDataSelection::All)
+        .expect("compare exported reference data");
+    assert!(compare.success, "{:?}", compare.errors);
+    assert_eq!(compare.counts.repo_only, 0);
+    assert_eq!(compare.counts.database_only, 0);
+    assert!(!compare.to_json().contains("slice8-db-secret"));
 }
 
 fn assert_safe_test_url(url: &str) {

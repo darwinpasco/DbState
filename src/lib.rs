@@ -101,8 +101,11 @@ pub use crate::postgres::{
     SequenceInfo, TableInfo, TriggerInfo, ViewInfo,
 };
 pub use crate::reference_data::{
-    compare_reference_data_table, data_compare_postgres_with_connection, reference_data_status,
-    ReferenceDataCompareCounts, ReferenceDataCompareReport, ReferenceDataConfiguredTableStatus,
+    compare_reference_data_table, data_compare_postgres_with_connection,
+    reference_data_database_tables_with_connection, reference_data_export_preview_with_connection,
+    reference_data_export_write_with_connection, reference_data_status, ReferenceDataCompareCounts,
+    ReferenceDataCompareReport, ReferenceDataConfiguredTableStatus,
+    ReferenceDataDatabaseTablesReport, ReferenceDataExportReport, ReferenceDataExportSelection,
     ReferenceDataRegistry, ReferenceDataRow, ReferenceDataSelection, ReferenceDataStatusReport,
     ReferenceDataTableConfig, ReferenceDataTableState, ReferenceRowCompareResult,
     ReferenceTableCompareResult,
