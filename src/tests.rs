@@ -10,7 +10,8 @@ use crate::release::empty_release_report;
 use crate::release::release_postgres_command;
 use crate::repository::discovery::discover_repository_objects;
 use crate::repository::objects::{
-    constraint_file_path, function_file_path, function_identity_slug, trigger_file_path,
+    constraint_file_path, function_file_path, function_identity_slug, materialized_view_file_path,
+    trigger_file_path,
 };
 use crate::repository::{
     compare_postgres_command, ensure_database_object_path, enum_file_path, export_postgres_command,
@@ -185,6 +186,15 @@ fn sample_inventory() -> PostgresInventory {
                 definition:
                     " SELECT sample_accounts.account_id,\n    sample_accounts.account_code\n   FROM dbstate_slice2.sample_accounts"
                         .to_string(),
+            }],
+            materialized_views: vec![MaterializedViewInfo {
+                schema_name: "dbstate_slice2".to_string(),
+                materialized_view_name: "account_summary".to_string(),
+                definition:
+                    " SELECT sample_accounts.account_id,\n    sample_accounts.account_code\n   FROM dbstate_slice2.sample_accounts"
+                        .to_string(),
+                is_populated: Some(false),
+                tablespace: None,
             }],
             constraints: vec![
                 ConstraintInfo {
@@ -679,6 +689,13 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
             view_name: "open_orders".to_string(),
             definition: " SELECT orders.id FROM app.orders".to_string(),
         }],
+        materialized_views: vec![MaterializedViewInfo {
+            schema_name: "app".to_string(),
+            materialized_view_name: "order_summary".to_string(),
+            definition: " SELECT orders.id FROM app.orders".to_string(),
+            is_populated: Some(false),
+            tablespace: None,
+        }],
         constraints: vec![
             ConstraintInfo {
                 schema_name: "app".to_string(),
@@ -776,6 +793,11 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
     assert_eq!(inventory.sequences[0].sequence_name, "orders_id_seq");
     assert_eq!(inventory.indexes[0].index_name, "orders_created_at_idx");
     assert_eq!(inventory.views[0].view_name, "open_orders");
+    assert_eq!(inventory.materialized_views.len(), 1);
+    assert_eq!(
+        inventory.materialized_views[0].materialized_view_name,
+        "order_summary"
+    );
     assert_eq!(inventory.constraints.len(), 4);
     assert_eq!(inventory.constraints[0].constraint_type, "primaryKey");
     assert_eq!(inventory.constraints[1].constraint_type, "uniqueConstraint");
@@ -807,6 +829,9 @@ fn deferred_object_types_are_explicit() {
         .deferred_object_types
         .contains(&"indexes".to_string()));
     assert!(!report.deferred_object_types.contains(&"views".to_string()));
+    assert!(!report
+        .deferred_object_types
+        .contains(&"materializedViews".to_string()));
     assert!(!report
         .deferred_object_types
         .contains(&"primaryKeys".to_string()));
@@ -865,6 +890,10 @@ fn export_paths_stay_under_database_objects() {
         "database/objects/views/core.active_payments.sql"
     );
     assert_eq!(
+        materialized_view_file_path("core", "active_payments").expect("materialized view path"),
+        "database/objects/materialized-views/core.active_payments.sql"
+    );
+    assert_eq!(
         constraint_file_path("primaryKey", "core", "payments", "payments_pkey")
             .expect("primary key path"),
         "database/objects/constraints/primary-keys/core.payments.payments_pkey.sql"
@@ -909,6 +938,7 @@ fn export_paths_stay_under_database_objects() {
     assert!(table_file_path("core", "bad/name").is_err());
     assert!(function_file_path("core", "bad/name", "integer").is_err());
     assert!(trigger_file_path("core", "payments", "bad/name").is_err());
+    assert!(materialized_view_file_path("core", "bad/name").is_err());
     assert!(ensure_database_object_path("database/releases/bad.sql").is_err());
 }
 
@@ -954,6 +984,22 @@ fn generated_slice16_object_sql_is_deterministic() {
         .contains("CREATE UNIQUE INDEX sample_accounts_account_code_idx"));
     assert!(render_view_sql(&inventory.views[0])
         .contains("CREATE VIEW \"dbstate_slice2\".\"active_accounts\" AS"));
+    assert!(
+        render_materialized_view_sql(&inventory.materialized_views[0])
+            .contains("CREATE MATERIALIZED VIEW \"dbstate_slice2\".\"account_summary\" AS")
+    );
+    assert!(
+        render_materialized_view_sql(&inventory.materialized_views[0]).contains("WITH NO DATA;")
+    );
+    assert!(render_materialized_view_sql(&inventory.materialized_views[0]).ends_with(";\n"));
+    assert!(
+        !render_materialized_view_sql(&inventory.materialized_views[0])
+            .contains("DROP MATERIALIZED VIEW")
+    );
+    assert!(
+        !render_materialized_view_sql(&inventory.materialized_views[0])
+            .contains("REFRESH MATERIALIZED VIEW")
+    );
     assert!(render_constraint_sql(&inventory.constraints[0]).contains(
         "ALTER TABLE \"dbstate_slice2\".\"sample_accounts\"\n    ADD CONSTRAINT \"sample_accounts_pkey\" PRIMARY KEY (account_id);"
     ));
@@ -1131,6 +1177,9 @@ fn actual_export_creates_schema_and_table_files() {
         .join("database/objects/tables/dbstate_slice2.sample_accounts.sql")
         .is_file());
     assert!(dir
+        .join("database/objects/materialized-views/dbstate_slice2.account_summary.sql")
+        .is_file());
+    assert!(dir
         .join("database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql")
         .is_file());
     assert!(dir
@@ -1176,6 +1225,9 @@ fn sync_dry_run_creates_or_updates_no_files() {
     assert!(report.planned_creates.contains(
         &"database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
             .to_string()
+    ));
+    assert!(report.planned_creates.contains(
+        &"database/objects/materialized-views/dbstate_slice2.account_summary.sql".to_string()
     ));
     assert!(report.planned_creates.contains(
         &"database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql"
@@ -1251,6 +1303,9 @@ fn sync_creates_added_object_files() {
             .to_string()
     ));
     assert!(report.created_files.contains(
+        &"database/objects/materialized-views/dbstate_slice2.account_summary.sql".to_string()
+    ));
+    assert!(report.created_files.contains(
         &"database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql"
             .to_string()
     ));
@@ -1258,6 +1313,9 @@ fn sync_creates_added_object_files() {
         .join(
             "database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql",
         )
+        .is_file());
+    assert!(dir
+        .join("database/objects/materialized-views/dbstate_slice2.account_summary.sql")
         .is_file());
 }
 
@@ -1470,6 +1528,11 @@ fn repository_schema_and_table_files_are_discovered() {
     )
     .expect("write overloaded function");
     fs::write(
+        dir.join("database/objects/materialized-views/dbstate_slice2.account_summary.sql"),
+        render_materialized_view_sql(&sample_inventory().materialized_views[0]),
+    )
+    .expect("write materialized view");
+    fs::write(
         dir.join(
             "database/objects/triggers/dbstate_slice2.sample_accounts.sample_accounts_audit_trigger.sql",
         ),
@@ -1502,6 +1565,9 @@ fn repository_schema_and_table_files_are_discovered() {
         .contains_key("function:dbstate_slice2.account_label.account_code_text"));
     assert!(import
         .objects
+        .contains_key("materializedView:dbstate_slice2.account_summary"));
+    assert!(import
+        .objects
         .contains_key("trigger:dbstate_slice2.sample_accounts.sample_accounts_audit_trigger"));
     assert!(import
         .objects
@@ -1529,6 +1595,11 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
     )
     .expect("write bad function file");
     fs::write(
+        dir.join("database/objects/materialized-views/a.b.c.sql"),
+        "-- bad materialized view\n",
+    )
+    .expect("write bad materialized view file");
+    fs::write(
         dir.join("database/objects/triggers/a.b.sql"),
         "-- bad trigger\n",
     )
@@ -1548,6 +1619,9 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
     assert!(import
         .skipped
         .contains(&"database/objects/functions/a.b.sql".to_string()));
+    assert!(import
+        .skipped
+        .contains(&"database/objects/materialized-views/a.b.c.sql".to_string()));
     assert!(import
         .skipped
         .contains(&"database/objects/triggers/a.b.sql".to_string()));
@@ -3184,6 +3258,188 @@ fn release_candidate_selection_respects_selected_trigger_refs() {
 }
 
 #[test]
+fn repo_only_materialized_view_release_generates_review_only_create_sql() {
+    let dir = create_temp_dir("release-matview-create");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/materialized-views/dbstate_slice2.account_summary.sql"),
+        render_materialized_view_sql(&sample_inventory().materialized_views[0]),
+    )
+    .expect("write repo-only materialized view");
+    commit_all(&dir, "repo-only materialized view");
+    let mut target_inventory = sample_inventory();
+    target_inventory.materialized_views.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["materializedView:dbstate_slice2.account_summary".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice31_matview",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.plan_items[0].operation_kind,
+        "createMaterializedViewReviewSql"
+    );
+    assert_eq!(
+        report.plan_items[0].operation_label,
+        "Create Materialized View"
+    );
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice31_matview.sql")).expect("sql");
+    assert!(sql.contains("-- Review-only materialized view suggestion."));
+    assert!(sql.contains("-- DbState does not execute this SQL."));
+    assert!(sql.contains("-- DbState does not refresh materialized views."));
+    assert!(sql.contains("CREATE MATERIALIZED VIEW \"dbstate_slice2\".\"account_summary\" AS"));
+    assert!(sql.contains("WITH NO DATA;"));
+    assert!(!sql.contains("DROP MATERIALIZED VIEW"));
+    assert!(!sql.contains("REFRESH MATERIALIZED VIEW"));
+}
+
+#[test]
+fn changed_materialized_view_release_remains_manual_review_only() {
+    let dir = create_temp_dir("release-matview-changed");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/materialized-views/dbstate_slice2.account_summary.sql"),
+        "-- stale materialized view\n",
+    )
+    .expect("write changed materialized view");
+    commit_all(&dir, "changed materialized view");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["materializedView:dbstate_slice2.account_summary".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice31_changed_matview",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].operation_kind, "manualReviewRequired");
+    assert!(report.plan_items[0]
+        .operation_explanation
+        .contains("changed materialized views are manual-review only"));
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice31_changed_matview.sql"))
+        .expect("sql");
+    assert!(sql.contains("changed materialized views are manual-review only"));
+    assert!(!sql.contains("DROP MATERIALIZED VIEW"));
+    assert!(!sql.contains("REFRESH MATERIALIZED VIEW"));
+}
+
+#[test]
+fn database_only_materialized_view_release_does_not_generate_drop_or_refresh() {
+    let dir = create_temp_dir("release-matview-db-only");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    commit_all(&dir, "schema only");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["materializedView:dbstate_slice2.account_summary".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice31_database_only_matview",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].compare_classification, "databaseOnly");
+    assert_eq!(report.plan_items[0].operation_kind, "databaseOnlyReview");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/0001_slice31_database_only_matview.sql"))
+            .expect("sql");
+    assert!(sql.contains("object exists only in target database"));
+    assert!(!sql.contains("DROP MATERIALIZED VIEW"));
+    assert!(!sql.contains("REFRESH MATERIALIZED VIEW"));
+}
+
+#[test]
+fn release_candidate_selection_respects_selected_materialized_view_refs() {
+    let dir = create_temp_dir("release-matview-selection");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    let mut selected = sample_inventory().materialized_views[0].clone();
+    selected.materialized_view_name = "selected_summary".to_string();
+    let mut unselected = selected.clone();
+    unselected.materialized_view_name = "unselected_summary".to_string();
+    fs::write(
+        dir.join("database/objects/materialized-views/dbstate_slice2.selected_summary.sql"),
+        render_materialized_view_sql(&selected),
+    )
+    .expect("write selected materialized view");
+    fs::write(
+        dir.join("database/objects/materialized-views/dbstate_slice2.unselected_summary.sql"),
+        render_materialized_view_sql(&unselected),
+    )
+    .expect("write unselected materialized view");
+    commit_all(&dir, "repo-only materialized views");
+    let mut target_inventory = sample_inventory();
+    target_inventory.materialized_views.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["materializedView:dbstate_slice2.selected_summary".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice31_matview_selection",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.included_objects,
+        vec!["materializedView:dbstate_slice2.selected_summary".to_string()]
+    );
+    let sql = fs::read_to_string(dir.join("database/releases/0001_slice31_matview_selection.sql"))
+        .expect("sql");
+    assert!(sql.contains("selected_summary"));
+    assert!(!sql.contains("unselected_summary"));
+}
+
+#[test]
 fn release_does_not_overwrite_existing_artifacts() {
     let dir = create_temp_dir("release-sequence");
     init_git_repo(&dir);
@@ -4731,6 +4987,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "database/objects/sequences/",
         "database/objects/indexes/",
         "database/objects/views/",
+        "database/objects/materialized-views/",
         "database/objects/constraints/",
         "database/objects/functions/",
         "database/objects/triggers/",
@@ -4741,6 +4998,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "objectType: \"sequence\"",
         "objectType: \"index\"",
         "objectType: \"view\"",
+        "objectType: \"materializedView\"",
         "objectType: \"constraint\"",
         "objectType: \"function\"",
         "objectType: \"trigger\"",
@@ -4758,6 +5016,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "data.sequences",
         "data.indexes",
         "data.views",
+        "data.materializedViews",
         "data.constraints",
         "data.functions",
         "data.triggers",
@@ -4780,6 +5039,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
     assert!(!js.contains("objectRef: \"column:"));
     assert!(!html.contains("functions future"));
     assert!(!html.contains("triggers future"));
+    assert!(!html.contains("materialized views future"));
     assert!(js.contains("label === \"Inspect\""));
     assert!(js.contains("label === \"Reference-data compare\""));
     assert!(js.contains("appendOption(select, \"referenceData\", \"Reference data\")"));
@@ -5006,6 +5266,64 @@ fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
         .contains("Trigger comment rendering is deferred"));
     assert!(!trigger_response.body.contains("DROP TRIGGER"));
     assert!(!trigger_response.body.contains("ALTER TRIGGER"));
+
+    let materialized_view_path = dir
+        .join("database")
+        .join("objects")
+        .join("materialized-views")
+        .join("core.account_summary.sql");
+    fs::write(
+        &materialized_view_path,
+        "-- DbState PostgreSQL desired-state object\n-- Object type: materializedView\n-- Object name: core.account_summary\n\nCREATE MATERIALIZED VIEW \"core\".\"account_summary\" AS\n SELECT account_id FROM core.accounts\nWITH NO DATA;\n",
+    )
+    .expect("write materialized view ddl");
+    let materialized_view_index_path = dir
+        .join("database")
+        .join("objects")
+        .join("indexes")
+        .join("core.account_summary.account_summary_account_id_idx.sql");
+    fs::write(
+        &materialized_view_index_path,
+        "CREATE INDEX \"account_summary_account_id_idx\" ON \"core\".\"account_summary\" (\"account_id\");\n",
+    )
+    .expect("write materialized view index ddl");
+    commit_all(&dir, "add materialized view object");
+
+    let materialized_view_body = r#"{ "scope": "all", "objectType": "materializedView", "schema": "core", "objectName": "account_summary", "relativePath": "database/objects/materialized-views/core.account_summary.sql" }"#;
+    let materialized_view_response = service_response(
+        "POST",
+        "/api/v1/postgres/object-ddl",
+        materialized_view_body,
+        &dir,
+    );
+
+    assert_eq!(
+        materialized_view_response.status_code, 200,
+        "{}",
+        materialized_view_response.body
+    );
+    assert!(materialized_view_response
+        .body
+        .contains("\"objectType\":\"materializedView\""));
+    assert!(materialized_view_response
+        .body
+        .contains("CREATE MATERIALIZED VIEW"));
+    assert!(materialized_view_response.body.contains("WITH NO DATA"));
+    assert!(materialized_view_response
+        .body
+        .contains("account_summary_account_id_idx"));
+    assert!(materialized_view_response
+        .body
+        .contains("\"group\":\"Indexes\""));
+    assert!(materialized_view_response
+        .body
+        .contains("Materialized view comment rendering is deferred"));
+    assert!(!materialized_view_response
+        .body
+        .contains("DROP MATERIALIZED VIEW"));
+    assert!(!materialized_view_response
+        .body
+        .contains("REFRESH MATERIALIZED VIEW"));
 }
 
 #[test]

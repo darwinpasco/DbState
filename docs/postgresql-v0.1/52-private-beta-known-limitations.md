@@ -60,6 +60,7 @@ Supported beta object types:
 - check constraints
 - regular PostgreSQL functions
 - regular table and view triggers
+- materialized views
 
 Deferred object types and details:
 
@@ -69,7 +70,6 @@ Deferred object types and details:
 - policies
 - roles
 - ownership
-- materialized views
 - partitioning details
 - row-level security
 - durable comments as first-class objects

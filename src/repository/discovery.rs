@@ -20,6 +20,7 @@ pub(crate) fn discover_repository_objects(root: &Path) -> Result<RepositoryImpor
     discover_sequence_files(root, &mut import)?;
     discover_index_files(root, &mut import)?;
     discover_view_files(root, &mut import)?;
+    discover_materialized_view_files(root, &mut import)?;
     discover_function_files(root, &mut import)?;
     discover_trigger_files(root, &mut import)?;
     discover_constraint_files(root, &mut import)?;
@@ -141,6 +142,19 @@ fn discover_view_files(root: &Path, import: &mut RepositoryImport) -> Result<(),
         "database/objects/views",
         RepositoryObjectType::View,
         view_key,
+    )
+}
+
+fn discover_materialized_view_files(
+    root: &Path,
+    import: &mut RepositoryImport,
+) -> Result<(), String> {
+    discover_two_part_object_files(
+        root,
+        import,
+        "database/objects/materialized-views",
+        RepositoryObjectType::MaterializedView,
+        materialized_view_key,
     )
 }
 
@@ -447,6 +461,7 @@ pub(crate) fn render_database_objects_for_selection(
     let mut sequence_names = Vec::new();
     let mut index_names = Vec::new();
     let mut view_names = Vec::new();
+    let mut materialized_view_names = Vec::new();
     let mut constraint_names = Vec::new();
     let mut function_names = Vec::new();
     let mut trigger_names = Vec::new();
@@ -486,6 +501,12 @@ pub(crate) fn render_database_objects_for_selection(
                     .iter()
                     .map(|item| (item.schema_name.clone(), item.view_name.clone())),
             );
+            materialized_view_names.extend(inventory.materialized_views.iter().map(|item| {
+                (
+                    item.schema_name.clone(),
+                    item.materialized_view_name.clone(),
+                )
+            }));
             constraint_names.extend(inventory.constraints.iter().map(|item| {
                 (
                     item.schema_name.clone(),
@@ -558,6 +579,18 @@ pub(crate) fn render_database_objects_for_selection(
                     .iter()
                     .filter(|item| item.schema_name == *schema)
                     .map(|item| (item.schema_name.clone(), item.view_name.clone())),
+            );
+            materialized_view_names.extend(
+                inventory
+                    .materialized_views
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.materialized_view_name.clone(),
+                        )
+                    }),
             );
             constraint_names.extend(
                 inventory
@@ -661,6 +694,8 @@ pub(crate) fn render_database_objects_for_selection(
     index_names.dedup();
     view_names.sort();
     view_names.dedup();
+    materialized_view_names.sort();
+    materialized_view_names.dedup();
     constraint_names.sort();
     constraint_names.dedup();
     function_names.sort();
@@ -791,6 +826,24 @@ pub(crate) fn render_database_objects_for_selection(
             parent_name: None,
             relative_path,
             content: render_view_sql(view),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    for (schema, materialized_view_name) in materialized_view_names {
+        let Some(materialized_view) = inventory.materialized_views.iter().find(|item| {
+            item.schema_name == schema && item.materialized_view_name == materialized_view_name
+        }) else {
+            continue;
+        };
+        let relative_path = materialized_view_file_path(&schema, &materialized_view_name)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::MaterializedView,
+            schema_name: schema.clone(),
+            table_name: None,
+            object_name: materialized_view_name.clone(),
+            parent_name: None,
+            relative_path,
+            content: render_materialized_view_sql(materialized_view),
         };
         objects.insert(object_key(&object), object);
     }
