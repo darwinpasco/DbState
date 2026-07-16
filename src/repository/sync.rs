@@ -1,6 +1,7 @@
 use crate::postgres::{
     invalid_postgres_url_message, is_postgres_connection_url, resolve_postgres_url,
 };
+use crate::project::project_structure_allows_release_subfolder_backfill;
 use crate::repository::discovery::render_database_objects_for_selection;
 use crate::repository::objects::*;
 use crate::*;
@@ -199,12 +200,20 @@ pub fn export_postgres_with_inventory(
             .push("Current path is not inside a Git repository.".to_string());
         return report;
     }
-    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure
+        && !project_structure_allows_release_subfolder_backfill(&project)
+    {
         report.errors.push(
             "DbState PostgreSQL project structure is incomplete. Run dbstate init first."
                 .to_string(),
         );
         return report;
+    }
+    if project_structure_allows_release_subfolder_backfill(&project) {
+        report.warnings.push(
+            "Project is missing release artifact subfolders. Run dbstate init to create database/releases/objects and database/releases/reference-data."
+                .to_string(),
+        );
     }
     if project.is_dirty && !dry_run {
         report.errors.push(
@@ -223,7 +232,7 @@ pub fn export_postgres_with_inventory(
         }
     };
 
-    report.warnings = plan.warnings;
+    report.warnings.extend(plan.warnings);
     report.planned_files = plan
         .planned_files
         .iter()
@@ -405,12 +414,20 @@ pub fn sync_postgres_with_inventory(
             .push("Current path is not inside a Git repository.".to_string());
         return report;
     }
-    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure
+        && !project_structure_allows_release_subfolder_backfill(&project)
+    {
         report.errors.push(
             "DbState PostgreSQL project structure is incomplete. Run dbstate init first."
                 .to_string(),
         );
         return report;
+    }
+    if project_structure_allows_release_subfolder_backfill(&project) {
+        report.warnings.push(
+            "Project is missing release artifact subfolders. Run dbstate init to create database/releases/objects and database/releases/reference-data."
+                .to_string(),
+        );
     }
     if project.is_dirty && !dry_run {
         report.errors.push(
@@ -435,7 +452,7 @@ pub fn sync_postgres_with_inventory(
     report.skipped_files = plan.skipped_files.clone();
     report.planned_creates = plan.planned_creates.clone();
     report.planned_updates = plan.planned_updates.clone();
-    report.warnings = plan.warnings.clone();
+    report.warnings.extend(plan.warnings.clone());
 
     if dry_run {
         report.success = report.errors.is_empty();

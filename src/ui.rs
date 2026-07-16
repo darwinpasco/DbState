@@ -332,10 +332,10 @@ rows:
           <div class="table-wrap">
             <table class="results-grid" aria-label="Reference-data database tables" data-testid="reference-data-database-tables">
               <thead>
-                <tr><th>Select</th><th>Schema</th><th>Table</th><th>Suggested key</th><th>Selected key count</th><th>Versioned columns</th><th>Masked columns</th><th>Rows</th></tr>
+                <tr><th>Select</th><th>Schema</th><th>Table</th><th>Registry status</th><th>keyColumns</th><th>ignoredColumns</th><th>maskedColumns</th><th>Suggested key</th><th>Selected key count</th><th>Versioned columns</th><th>Masked columns</th><th>Rows</th></tr>
               </thead>
               <tbody id="reference-data-database-tables-body">
-                <tr><td colspan="8">Load database tables to choose reference-data exports.</td></tr>
+                <tr><td colspan="12">Load database tables to choose reference-data exports.</td></tr>
               </tbody>
             </table>
           </div>
@@ -456,6 +456,7 @@ rows:
             <button type="button" data-action="reference-data-review-script-write" data-testid="generate-reference-data-review-script" disabled>Generate Review-Only Data Script</button>
           </div>
           <dl class="summary-list compact" id="reference-data-review-script-summary" data-testid="reference-data-review-script-summary"></dl>
+          <div id="reference-data-review-script-status" class="issue-item" data-testid="reference-data-review-script-status">No review-only data script action has run yet.</div>
           <div id="reference-data-review-script-artifacts" data-testid="reference-data-review-script-artifacts"></div>
           <div id="reference-data-review-script-preview-meta" class="note" data-testid="reference-data-review-script-preview-meta">No reference-data artifact selected.</div>
           <pre id="reference-data-review-script-preview" data-testid="reference-data-review-script-preview">No review-only data script preview generated yet.</pre>
@@ -1835,6 +1836,9 @@ const UI_JS: &str = r#"(function () {
       return { scope: "all" };
     }
     const selected = Array.from(state.referenceDataSelectedTables).sort();
+    if (!selected.length && isReferenceDataDatabaseToRepositoryMode(currentWorkflowMode())) {
+      return { scope: "all" };
+    }
     if (!selected.length) {
       throw new Error("Select at least one configured reference-data table.");
     }
@@ -1850,7 +1854,7 @@ const UI_JS: &str = r#"(function () {
     if (isSchemaRepositoryToDatabaseMode(mode) && actionLabel !== "Reference-data compare") {
       return true;
     }
-    if (isReferenceDataRepositoryToDatabaseMode(mode) && actionLabel === "Reference-data compare") {
+    if (isReferenceDataWorkflowMode(mode) && actionLabel === "Reference-data compare") {
       return true;
     }
     clearOperationResults("Workflow mode changed. Run an operation to load results.");
@@ -2084,14 +2088,15 @@ const UI_JS: &str = r#"(function () {
     const schemaDatabaseToRepository = isSchemaDatabaseToRepositoryMode(mode);
     const referenceDataRepoToDatabase = isReferenceDataRepositoryToDatabaseMode(mode);
     const referenceDataDatabaseToRepository = isReferenceDataDatabaseToRepositoryMode(mode);
+    const referenceDataWorkflow = isReferenceDataWorkflowMode(mode);
     byId("repository-sync-controls").hidden = !schemaDatabaseToRepository;
     byId("reference-data-panel").hidden = !referenceDataRepoToDatabase;
     byId("reference-data-export-panel").hidden = !referenceDataDatabaseToRepository;
     document.querySelectorAll("[data-standard-operation-action]").forEach(function (button) {
       const action = button.dataset.action;
       if (action === "data-compare") {
-        button.hidden = !referenceDataRepoToDatabase;
-        button.disabled = !referenceDataRepoToDatabase;
+        button.hidden = !referenceDataWorkflow;
+        button.disabled = !referenceDataWorkflow;
       } else {
         button.hidden = !schemaRepoToDatabase;
         button.disabled = !schemaRepoToDatabase;
@@ -2423,7 +2428,27 @@ const UI_JS: &str = r#"(function () {
   }
 
   function updateReferenceDataDatabaseTables(data) {
-    state.referenceDataDatabaseTables = Array.isArray(data.tables) ? data.tables.slice() : [];
+    if (data && Array.isArray(data.configuredTables)) {
+      state.referenceDataConfiguredTables = data.configuredTables.slice().sort(function (left, right) {
+        return textOrEmpty(left.tableName).localeCompare(textOrEmpty(right.tableName));
+      });
+      if (!state.referenceDataSelectedTables.size) {
+        state.referenceDataSelectedTables = new Set(state.referenceDataConfiguredTables.map(function (table) {
+          return table.tableName;
+        }));
+      }
+    }
+    const configuredByName = {};
+    state.referenceDataConfiguredTables.forEach(function (table) {
+      configuredByName[table.tableName] = table;
+    });
+    state.referenceDataDatabaseTables = Array.isArray(data.tables) ? data.tables.map(function (table) {
+      const configured = configuredByName[table.tableName] || null;
+      return Object.assign({}, table, {
+        registryConfig: configured,
+        inRegistry: !!configured
+      });
+    }) : [];
     state.referenceDataDatabaseTables.sort(function (left, right) {
       return textOrEmpty(left.tableName).localeCompare(textOrEmpty(right.tableName));
     });
@@ -2435,20 +2460,27 @@ const UI_JS: &str = r#"(function () {
 
   function defaultReferenceDataExportSelection(table) {
     const columns = Array.isArray(table.columns) ? table.columns : [];
-    const suggested = Array.isArray(table.suggestedKeyColumns) && table.suggestedKeyColumns.length
+    const registry = table && table.registryConfig ? table.registryConfig : null;
+    const suggested = registry && Array.isArray(registry.keyColumns) && registry.keyColumns.length
+      ? registry.keyColumns.slice()
+      : Array.isArray(table.suggestedKeyColumns) && table.suggestedKeyColumns.length
       ? table.suggestedKeyColumns.slice()
       : columns.length ? [columns[0].name] : [];
+    const masked = registry && Array.isArray(registry.maskedColumns) ? registry.maskedColumns.slice() : [];
+    const ignored = registry && Array.isArray(registry.ignoredColumns) ? registry.ignoredColumns.slice() : [];
     const versioned = columns.map(function (column) {
       return column.name;
     }).filter(function (column) {
-      return suggested.indexOf(column) < 0;
+      return suggested.indexOf(column) < 0 && masked.indexOf(column) < 0 && ignored.indexOf(column) < 0;
     });
     return {
       schema: table.schema,
       name: table.name,
       keyColumns: suggested,
       versionedColumns: versioned,
-      maskedColumns: []
+      maskedColumns: masked,
+      registryIgnoredColumns: ignored,
+      inRegistry: !!registry
     };
   }
 
@@ -2468,7 +2500,7 @@ const UI_JS: &str = r#"(function () {
     if (!tables.length) {
       const tr = document.createElement("tr");
       const td = document.createElement("td");
-      td.colSpan = 8;
+      td.colSpan = 12;
       td.textContent = state.referenceDataDatabaseTables.length ? "No database tables match the filter." : "Load database tables to choose reference-data exports.";
       tr.appendChild(td);
       body.appendChild(tr);
@@ -2501,8 +2533,13 @@ const UI_JS: &str = r#"(function () {
       selectCell.appendChild(checkbox);
       tr.appendChild(selectCell);
       const currentSelection = state.referenceDataExportSelections[tableName] || defaultReferenceDataExportSelection(table);
+      const registry = table.registryConfig || null;
       [table.schema,
         table.name,
+        table.inRegistry ? "In registry" : "Not configured",
+        registry && Array.isArray(registry.keyColumns) ? registry.keyColumns.join(", ") || "none" : "none",
+        registry && Array.isArray(registry.ignoredColumns) ? registry.ignoredColumns.join(", ") || "none" : "none",
+        registry && Array.isArray(registry.maskedColumns) ? registry.maskedColumns.join(", ") || "none" : "none",
         (table.suggestedKeyColumns || []).join(", ") || "none",
         (currentSelection.keyColumns || []).length,
         (currentSelection.versionedColumns || []).length,
@@ -2553,6 +2590,7 @@ const UI_JS: &str = r#"(function () {
     });
     updateSummary("reference-data-export-detail-summary", {
       table: table.tableName,
+      registryStatus: selection.inRegistry ? "In registry" : "Not configured",
       keyColumns: selection.keyColumns.join(", ") || "none",
       versionedColumns: selection.versionedColumns.join(", ") || "none",
       ignoredColumns: ignored.join(", ") || "none",
@@ -3404,7 +3442,9 @@ const UI_JS: &str = r#"(function () {
       return "schemaDatabaseToRepository";
     }
     if (label === "Reference-data compare") {
-      return "referenceDataRepoToDatabase";
+      return isReferenceDataDatabaseToRepositoryMode(currentWorkflowMode())
+        ? "referenceDataDatabaseToRepository"
+        : "referenceDataRepoToDatabase";
     }
     if (label === "Reference-data database tables" || label === "Reference-data export preview" || label === "Reference-data export write") {
       return "referenceDataDatabaseToRepository";
@@ -3413,7 +3453,7 @@ const UI_JS: &str = r#"(function () {
   }
 
   function rowMatchesObjectTypeFilter(row) {
-    if (isReferenceDataRepositoryToDatabaseMode(currentWorkflowMode())) {
+    if (isReferenceDataWorkflowMode(currentWorkflowMode())) {
       return true;
     }
     const filter = value("object-type-filter");
@@ -3545,7 +3585,7 @@ const UI_JS: &str = r#"(function () {
     if (!keepUnderlying) {
       state.rows = rows;
     }
-    if (isReferenceDataRepositoryToDatabaseMode(currentWorkflowMode())) {
+    if (isReferenceDataWorkflowMode(currentWorkflowMode())) {
       renderReferenceDataTableSummaryResults();
       return;
     }
@@ -3984,7 +4024,7 @@ const UI_JS: &str = r#"(function () {
     return Array.from(columns).sort();
   }
 
-  function dataDiffCellStatus(column, rowRaw, sourceValue, targetValue) {
+  function dataDiffCellStatus(column, rowRaw, sourceValue, targetValue, direction) {
     const ignoredColumns = Array.isArray(rowRaw.ignoredColumns) ? rowRaw.ignoredColumns : [];
     const maskedColumns = Array.isArray(rowRaw.maskedColumns) ? rowRaw.maskedColumns : [];
     const changedColumns = Array.isArray(rowRaw.changedColumns) ? rowRaw.changedColumns : [];
@@ -3994,10 +4034,17 @@ const UI_JS: &str = r#"(function () {
     if (maskedColumns.indexOf(column) >= 0 || sourceValue === "[masked]" || targetValue === "[masked]") {
       return "Masked";
     }
-    if (rowRaw.classification === "repoOnly" && targetValue === "") {
+    const databaseToRepository = direction && direction.sourceDdlSide === "database";
+    if (!databaseToRepository && rowRaw.classification === "repoOnly" && targetValue === "") {
       return "Source only";
     }
-    if (rowRaw.classification === "databaseOnly" && sourceValue === "") {
+    if (databaseToRepository && rowRaw.classification === "databaseOnly" && targetValue === "") {
+      return "Source only";
+    }
+    if (!databaseToRepository && rowRaw.classification === "databaseOnly" && sourceValue === "") {
+      return "Target only";
+    }
+    if (databaseToRepository && rowRaw.classification === "repoOnly" && sourceValue === "") {
       return "Target only";
     }
     if (changedColumns.indexOf(column) >= 0 || sourceValue !== targetValue) {
@@ -4023,12 +4070,12 @@ const UI_JS: &str = r#"(function () {
     tr.appendChild(td);
   }
 
-  function referenceDataRowModalContent(tableRow, rowRaw) {
+  function referenceDataRowModalContent(tableRow, rowRaw, direction) {
     const wrapper = document.createElement("div");
     wrapper.setAttribute("data-testid", "reference-data-row-data-diff-modal");
     const note = document.createElement("p");
     note.className = "note";
-    note.textContent = "Read-only Data Diff. Source: Repository reference-data. Target: PostgreSQL database. Ignored columns do not drive differences.";
+    note.textContent = "Read-only Data Diff. Source: " + direction.sourceLabel + ". Target: " + direction.targetLabel + ". Ignored columns do not drive differences.";
     wrapper.appendChild(note);
     const summary = document.createElement("dl");
     summary.className = "summary-list compact";
@@ -4047,14 +4094,14 @@ const UI_JS: &str = r#"(function () {
     table.setAttribute("aria-label", "Reference-Data Row Data Diff");
     table.innerHTML = "<thead><tr><th>Column</th><th>Source value</th><th>Target value</th><th>Status</th></tr></thead>";
     const body = document.createElement("tbody");
-    const sourceValues = rowRaw.repositoryValues || {};
-    const targetValues = rowRaw.databaseValues || {};
+    const sourceValues = direction.sourceDdlSide === "database" ? rowRaw.databaseValues || {} : rowRaw.repositoryValues || {};
+    const targetValues = direction.targetDdlSide === "repository" ? rowRaw.repositoryValues || {} : rowRaw.databaseValues || {};
     sortedDataDiffColumns(tableRow, rowRaw).forEach(function (column) {
       const sourceHas = Object.prototype.hasOwnProperty.call(sourceValues, column);
       const targetHas = Object.prototype.hasOwnProperty.call(targetValues, column);
       const sourceValue = sourceHas ? textOrEmpty(sourceValues[column]) : "";
       const targetValue = targetHas ? textOrEmpty(targetValues[column]) : "";
-      const status = dataDiffCellStatus(column, rowRaw, sourceValue, targetValue);
+      const status = dataDiffCellStatus(column, rowRaw, sourceValue, targetValue, direction);
       const tr = document.createElement("tr");
       const columnCell = document.createElement("td");
       columnCell.textContent = column;
@@ -4073,15 +4120,16 @@ const UI_JS: &str = r#"(function () {
   }
 
   function showReferenceDataRowDataDiffModal(tableRow, rowRaw) {
-    showModalContent("Reference-Data Row Data Diff", referenceDataRowModalContent(tableRow, rowRaw));
+    showModalContent("Reference-Data Row Data Diff", referenceDataRowModalContent(tableRow, rowRaw, directionForResultRow(tableRow)));
   }
 
   function renderEmptyDataDiff(message) {
+    const direction = directionForWorkflowMode(currentWorkflowMode());
     byId("data-diff-title").textContent = "Data Diff";
     updateSummary("data-diff-summary", {
       table: "none",
-      source: "Repository reference-data",
-      target: "PostgreSQL database",
+      source: direction.sourceLabel,
+      target: direction.targetLabel,
       message: message || "Select a reference-data table summary row."
     });
     byId("data-diff-rows-body").innerHTML = "<tr><td colspan=\"4\">Select a reference-data table summary row to view row data diff.</td></tr>";
@@ -4091,11 +4139,12 @@ const UI_JS: &str = r#"(function () {
     const raw = row && row.raw ? row.raw : {};
     const counts = raw.rowCounts || {};
     const tableName = raw.tableName || (row ? row.schema + "." + row.name : "");
+    const direction = directionForResultRow(row);
     byId("data-diff-title").textContent = "Data Diff: " + tableName;
     updateSummary("data-diff-summary", {
       table: tableName,
-      source: "Repository reference-data",
-      target: "PostgreSQL database",
+      source: direction.sourceLabel,
+      target: direction.targetLabel,
       totalRows: referenceDataRowTotal(counts),
       similar: counts.inSync || 0,
       different: counts.repoDifferent || 0,
@@ -4202,13 +4251,14 @@ const UI_JS: &str = r#"(function () {
     setObjectDiffDdlTestIds(direction);
     byId("source-type-label").textContent = direction.sourceType;
     byId("target-type-label").textContent = direction.targetType;
-    if (isReferenceDataRepositoryToDatabaseMode(currentWorkflowMode())) {
+    if (isReferenceDataWorkflowMode(currentWorkflowMode())) {
       applyWorkflowChrome();
+      const referenceDirection = directionForWorkflowMode(currentWorkflowMode());
       if (!row) {
         byId("selected-object-title").textContent = "No reference-data table selected";
         updateSummary("selected-object-summary", {
-          source: "Repository reference-data",
-          target: "PostgreSQL database"
+          source: referenceDirection.sourceLabel,
+          target: referenceDirection.targetLabel
         });
         renderEmptyDataDiff("Select a reference-data table summary row.");
         return;
@@ -4218,7 +4268,7 @@ const UI_JS: &str = r#"(function () {
         updateSummary("selected-object-summary", {
           message: "Selected result belongs to a different workflow. Run Reference Data Compare again."
         });
-        renderEmptyDataDiff("Run Reference Data Compare: Repository to Database again.");
+        renderEmptyDataDiff("Run Reference Data Compare again.");
         return;
       }
       const tableName = row.raw && row.raw.tableName ? row.raw.tableName : row.schema + "." + row.name;
@@ -4227,10 +4277,10 @@ const UI_JS: &str = r#"(function () {
         objectType: "referenceDataTable",
         table: tableName,
         status: row.status,
-        source: "Repository reference-data",
-        sourceType: "Repository",
-        target: "PostgreSQL database",
-        targetType: "Database",
+        source: direction.sourceLabel,
+        sourceType: direction.sourceType,
+        target: direction.targetLabel,
+        targetType: direction.targetType,
         warnings: Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings)
       });
       byId("selected-json").textContent = redactedJson(objectDiffDisplayPayload(row, direction));
@@ -4356,6 +4406,10 @@ const UI_JS: &str = r#"(function () {
     return mode === "referenceDataDatabaseToRepository";
   }
 
+  function isReferenceDataWorkflowMode(mode) {
+    return isReferenceDataRepositoryToDatabaseMode(mode) || isReferenceDataDatabaseToRepositoryMode(mode);
+  }
+
   function currentWorkflowMode() {
     return value("workflow-mode") || "schemaRepoToDatabase";
   }
@@ -4366,7 +4420,7 @@ const UI_JS: &str = r#"(function () {
 
   function applyWorkflowChrome() {
     const mode = currentWorkflowMode();
-    const referenceDataMode = isReferenceDataRepositoryToDatabaseMode(mode);
+    const referenceDataMode = isReferenceDataWorkflowMode(mode);
     const releasePlanApplies = releasePlanAppliesToWorkflow(mode);
     const objectDiffTab = byId("tab-object-diff");
     if (objectDiffTab) {
@@ -4406,7 +4460,7 @@ const UI_JS: &str = r#"(function () {
     }
     const reviewScriptPanel = byId("reference-data-review-script-panel");
     if (reviewScriptPanel) {
-      reviewScriptPanel.hidden = !referenceDataMode;
+      reviewScriptPanel.hidden = !isReferenceDataRepositoryToDatabaseMode(mode);
     }
     document.querySelectorAll(".object-diff-tabs").forEach(function (element) {
       element.hidden = referenceDataMode;
@@ -4873,6 +4927,28 @@ const UI_JS: &str = r#"(function () {
     return body;
   }
 
+  function artifactResultMessage(data, labels) {
+    const success = data && data.success === true;
+    const dryRun = data && data.dryRun === true;
+    if (dryRun && success) {
+      return labels.dryRunSuccess;
+    }
+    if (dryRun) {
+      return labels.dryRunFailure;
+    }
+    if (success) {
+      return labels.generateSuccess;
+    }
+    return labels.generateFailure;
+  }
+
+  function appendArtifactStatus(target, message, isError) {
+    const status = document.createElement("div");
+    status.className = "issue-item" + (isError ? " error" : "");
+    status.textContent = message;
+    target.appendChild(status);
+  }
+
   function renderReleaseArtifactResult(data) {
     const target = byId("release-artifact-result");
     if (!target) {
@@ -4892,6 +4968,12 @@ const UI_JS: &str = r#"(function () {
       artifacts: artifacts.length
     });
     target.appendChild(summary);
+    appendArtifactStatus(target, artifactResultMessage(data, {
+      dryRunSuccess: "Dry-run completed. Review artifact paths were planned; no files were written.",
+      dryRunFailure: "Release artifact dry-run failed. No files were written.",
+      generateSuccess: "Release artifacts generated successfully.",
+      generateFailure: "Release artifact generation failed. No files were written."
+    }), data.success !== true);
 
     if (data.repositoryContext && data.repositoryContext.isDirty || data.isDirty) {
       appendReleaseMessageList(
@@ -4941,6 +5023,13 @@ const UI_JS: &str = r#"(function () {
         note.textContent = "Preview is available after Generate Release Artifact writes review files.";
         target.appendChild(note);
       }
+    } else {
+      const note = document.createElement("p");
+      note.className = "note";
+      note.textContent = data.success === true
+        ? "No artifact paths were returned."
+        : "Zero artifacts were created; check the errors and warnings above.";
+      target.appendChild(note);
     }
   }
 
@@ -4981,7 +5070,8 @@ const UI_JS: &str = r#"(function () {
     const summary = byId("reference-data-review-script-summary");
     const preview = byId("reference-data-review-script-preview");
     const artifacts = byId("reference-data-review-script-artifacts");
-    if (!summary || !preview || !artifacts) {
+    const status = byId("reference-data-review-script-status");
+    if (!summary || !preview || !artifacts || !status) {
       return;
     }
     updateSummaryElement(summary, {
@@ -4996,6 +5086,13 @@ const UI_JS: &str = r#"(function () {
       deleteGeneratedCount: data.deleteGeneratedCount || 0,
       foreignKeyWarnings: data.foreignKeyWarningCount || 0
     });
+    status.className = "issue-item" + (data.success === true ? "" : " error");
+    status.textContent = artifactResultMessage(data, {
+      dryRunSuccess: "Review-only data script preview completed. No files were written.",
+      dryRunFailure: "Review-only data script preview failed. No files were written.",
+      generateSuccess: "Review-only data script artifacts generated successfully.",
+      generateFailure: "Review-only data script generation failed. No files were written."
+    });
     preview.textContent = data.scriptContent || "No review-only data script content returned.";
     const meta = byId("reference-data-review-script-preview-meta");
     if (meta) {
@@ -5008,7 +5105,14 @@ const UI_JS: &str = r#"(function () {
     const plannedArtifacts = Array.isArray(data.plannedArtifacts) ? data.plannedArtifacts : [];
     const paths = createdArtifacts.length ? createdArtifacts : plannedArtifacts;
     if (!paths.length) {
-      artifacts.textContent = "No artifact paths returned.";
+      const note = document.createElement("p");
+      note.className = "note";
+      note.textContent = data.success === true
+        ? "No artifact paths returned."
+        : "Zero artifacts were created; check the errors and warnings below.";
+      artifacts.appendChild(note);
+      appendReleaseMessageList(artifacts, "Errors", data.errors, "error");
+      appendReleaseMessageList(artifacts, "Warnings", data.warnings, "warning");
       return;
     }
     const list = document.createElement("ul");
@@ -5029,6 +5133,14 @@ const UI_JS: &str = r#"(function () {
       list.appendChild(item);
     });
     artifacts.appendChild(list);
+    if (!createdArtifacts.length) {
+      const note = document.createElement("p");
+      note.className = "note";
+      note.textContent = "Preview is available after Generate Review-Only Data Script writes review files.";
+      artifacts.appendChild(note);
+    }
+    appendReleaseMessageList(artifacts, "Errors", data.errors, "error");
+    appendReleaseMessageList(artifacts, "Warnings", data.warnings, "warning");
   }
 
   async function previewReferenceDataReviewArtifact(artifactPath) {
@@ -5787,9 +5899,10 @@ const UI_JS: &str = r#"(function () {
 
   byId("release-confirmation").addEventListener("input", updateReleaseWriteButton);
 
-  document.querySelector("[data-action='release-preview']").addEventListener("click", function () {
+  document.querySelector("[data-action='release-preview']").addEventListener("click", function (event) {
+    event.preventDefault();
     try {
-      if (currentWorkflowMode() !== "compare") {
+      if (!isSchemaRepositoryToDatabaseMode(currentWorkflowMode())) {
         renderReleasePlan();
         return;
       }
@@ -5802,9 +5915,10 @@ const UI_JS: &str = r#"(function () {
     }
   });
 
-  document.querySelector("[data-action='release-write']").addEventListener("click", function () {
+  document.querySelector("[data-action='release-write']").addEventListener("click", function (event) {
+    event.preventDefault();
     try {
-      if (currentWorkflowMode() !== "compare") {
+      if (!isSchemaRepositoryToDatabaseMode(currentWorkflowMode())) {
         renderReleasePlan();
         return;
       }

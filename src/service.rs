@@ -1,5 +1,6 @@
 use crate::object_ddl::service_object_ddl_endpoint;
 use crate::postgres::{invalid_postgres_url_message, is_postgres_connection_url};
+use crate::project::project_structure_allows_release_subfolder_backfill;
 use crate::ui;
 use crate::workspace::{
     resolve_service_workspace, validate_browse_directory_value, workspace_directory_listing,
@@ -1334,7 +1335,9 @@ fn service_release_artifact_preview_endpoint(body: &str, cwd: &Path) -> ServiceH
             "Selected repositoryPath is not inside a Git repository.",
         );
     }
-    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure
+        && !project_structure_allows_release_subfolder_backfill(&project)
+    {
         return service_error_response(
             409,
             command,
