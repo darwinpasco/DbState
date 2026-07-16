@@ -1,6 +1,7 @@
 use crate::postgres::{
     invalid_postgres_url_message, is_postgres_connection_url, resolve_postgres_url,
 };
+use crate::project::project_structure_allows_release_subfolder_backfill;
 use crate::repository::discovery::{
     discover_repository_objects, render_database_objects_for_selection, select_repository_objects,
 };
@@ -99,12 +100,20 @@ pub fn compare_postgres_with_inventory(
             .push("Current path is not inside a Git repository.".to_string());
         return report;
     }
-    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure
+        && !project_structure_allows_release_subfolder_backfill(&project)
+    {
         report.errors.push(
             "DbState PostgreSQL project structure is incomplete. Run dbstate init first."
                 .to_string(),
         );
         return report;
+    }
+    if project_structure_allows_release_subfolder_backfill(&project) {
+        report.warnings.push(
+            "Project is missing release artifact subfolders. Run dbstate init to create database/releases/objects and database/releases/reference-data."
+                .to_string(),
+        );
     }
 
     let root = PathBuf::from(project.git_root.expect("git root exists for repository"));

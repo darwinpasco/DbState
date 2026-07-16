@@ -188,7 +188,28 @@ pub(crate) const EXPECTED_PATHS: &[ExpectedPath] = &[
         relative: "database/releases",
         kind: PathKind::Directory,
     },
+    ExpectedPath {
+        relative: "database/releases/objects",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
+        relative: "database/releases/reference-data",
+        kind: PathKind::Directory,
+    },
 ];
+
+pub(crate) fn missing_paths_are_only_release_artifact_subfolders(paths: &[String]) -> bool {
+    !paths.is_empty()
+        && paths.iter().all(|path| {
+            path == "database/releases/objects" || path == "database/releases/reference-data"
+        })
+}
+
+pub(crate) fn project_structure_allows_release_subfolder_backfill(report: &ProjectReport) -> bool {
+    report.is_git_repository
+        && report.dbstate_project_status == DbStateProjectStatus::PartialDbStateStructure
+        && missing_paths_are_only_release_artifact_subfolders(&report.missing_paths)
+}
 
 pub fn status_report(cwd: &Path, command: CommandKind) -> ProjectReport {
     let repository_path = display_path(cwd);

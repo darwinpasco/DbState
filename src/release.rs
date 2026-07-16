@@ -2,6 +2,7 @@ use crate::postgres::{
     inspect_postgres, invalid_postgres_url_message, is_postgres_connection_url,
     quote_postgres_identifier, resolve_postgres_url,
 };
+use crate::project::project_structure_allows_release_subfolder_backfill;
 use crate::repository::plan::{analyze_table_difference, parse_repository_table_columns};
 use crate::repository::{
     ensure_database_object_path, plan_postgres_with_inventory, DependencyWarning, ExportSelection,
@@ -157,12 +158,20 @@ pub fn release_postgres_with_inventory(
             .push("Current path is not inside a Git repository.".to_string());
         return report;
     }
-    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure
+        && !project_structure_allows_release_subfolder_backfill(&project)
+    {
         report.errors.push(
             "DbState PostgreSQL project structure is incomplete. Run dbstate init first."
                 .to_string(),
         );
         return report;
+    }
+    if project_structure_allows_release_subfolder_backfill(&project) {
+        report.warnings.push(
+            "Project is missing release artifact subfolders. database/releases/objects will be created during release artifact generation."
+                .to_string(),
+        );
     }
     if project.is_dirty && !dry_run {
         report.errors.push(
@@ -187,7 +196,7 @@ pub fn release_postgres_with_inventory(
     report.plan_items = plan.plan_items.clone();
     report.blocked_items = plan.blocked_items.clone();
     report.dependency_warnings = plan.dependency_warnings.clone();
-    report.warnings = plan.warnings.clone();
+    report.warnings.extend(plan.warnings.clone());
     if report.is_dirty && dry_run {
         report.warnings.push(
             "Release artifact generation will be blocked because the working tree has changes. Commit or stash changes before generating release artifacts."

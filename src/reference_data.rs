@@ -2,6 +2,7 @@ use crate::postgres::{
     invalid_postgres_url_message, is_postgres_connection_url, quote_postgres_identifier,
     resolve_postgres_url,
 };
+use crate::project::project_structure_allows_release_subfolder_backfill;
 use crate::repository::safe_file_component;
 use crate::*;
 use ::postgres::{Client, NoTls};
@@ -244,6 +245,7 @@ pub struct ReferenceDataDatabaseTablesReport {
     pub is_dirty: bool,
     pub database_type: String,
     pub tables: Vec<ReferenceDataCandidateTable>,
+    pub configured_tables: Vec<ReferenceDataConfiguredTableStatus>,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
 }
@@ -437,6 +439,7 @@ pub fn reference_data_database_tables_with_connection(
         is_dirty: project.is_dirty,
         database_type: "postgresql".to_string(),
         tables: Vec::new(),
+        configured_tables: Vec::new(),
         warnings: Vec::new(),
         errors: Vec::new(),
     };
@@ -449,6 +452,22 @@ pub fn reference_data_database_tables_with_connection(
     if !is_postgres_connection_url(connection_url) {
         report.errors.push(invalid_postgres_url_message());
         return Ok(report);
+    }
+
+    let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
+    match read_reference_data_registry(&root) {
+        Ok(registry) => {
+            report.configured_tables = registry
+                .tables
+                .iter()
+                .map(reference_data_config_status)
+                .collect();
+        }
+        Err(error) => {
+            report.warnings.push(format!(
+                "Reference-data registry could not be loaded for table registry status: {error}"
+            ));
+        }
     }
 
     let mut client = Client::connect(connection_url, NoTls)
@@ -510,12 +529,20 @@ fn reference_data_export_with_connection(
             .push("Selected path is not inside a Git repository.".to_string());
         return Ok(report);
     }
-    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure
+        && !project_structure_allows_release_subfolder_backfill(&project)
+    {
         report.errors.push(
             "DbState PostgreSQL project structure is incomplete. Initialize the repository before exporting reference data."
                 .to_string(),
         );
         return Ok(report);
+    }
+    if project_structure_allows_release_subfolder_backfill(&project) {
+        report.warnings.push(
+            "Project is missing release artifact subfolders. Run dbstate init to create database/releases/objects and database/releases/reference-data."
+                .to_string(),
+        );
     }
     if write_files && project.is_dirty {
         report.errors.push(
@@ -1093,12 +1120,20 @@ pub fn data_compare_postgres_with_connection(
             .push("Current path is not inside a Git repository.".to_string());
         return Ok(report);
     }
-    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure
+        && !project_structure_allows_release_subfolder_backfill(&project)
+    {
         report.errors.push(
             "DbState PostgreSQL project structure is incomplete. Run dbstate init first."
                 .to_string(),
         );
         return Ok(report);
+    }
+    if project_structure_allows_release_subfolder_backfill(&project) {
+        report.warnings.push(
+            "Project is missing release artifact subfolders. Run dbstate init to create database/releases/objects and database/releases/reference-data."
+                .to_string(),
+        );
     }
     if !is_postgres_connection_url(connection_url) {
         report.errors.push(invalid_postgres_url_message());
@@ -2019,12 +2054,20 @@ fn reference_data_review_script_with_connection(
             .push("Current path is not inside a Git repository.".to_string());
         return Ok(report);
     }
-    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure
+        && !project_structure_allows_release_subfolder_backfill(&project)
+    {
         report.errors.push(
             "DbState PostgreSQL project structure is incomplete. Run dbstate init first."
                 .to_string(),
         );
         return Ok(report);
+    }
+    if project_structure_allows_release_subfolder_backfill(&project) {
+        report.warnings.push(
+            "Project is missing release artifact subfolders. database/releases/reference-data will be created during review script generation."
+                .to_string(),
+        );
     }
     if project.is_dirty && !dry_run {
         report.errors.push(
@@ -3090,6 +3133,11 @@ impl ReferenceDataDatabaseTablesReport {
         );
         write_json_string_field(&mut json, "databaseType", &self.database_type, false);
         write_reference_data_candidate_table_array_field(&mut json, "tables", &self.tables);
+        write_reference_data_configured_table_array_field(
+            &mut json,
+            "configuredTables",
+            &self.configured_tables,
+        );
         write_json_array_field(&mut json, "warnings", &self.warnings);
         write_json_array_field(&mut json, "errors", &self.errors);
         json.push('}');

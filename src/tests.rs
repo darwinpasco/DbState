@@ -6,7 +6,7 @@ use crate::project::{PathKind, DEFAULT_REGISTRY, EXPECTED_PATHS};
 use crate::reference_data::{
     append_reference_table_result, empty_reference_data_compare_report,
     parse_reference_data_registry, parse_reference_data_table_state, reference_row_key,
-    ReferenceDataForeignKeyReference,
+    ReferenceDataCandidateTable, ReferenceDataForeignKeyReference,
 };
 use crate::reference_data::{
     data_compare_postgres_command, reference_data_review_script_preview_from_compare,
@@ -584,6 +584,12 @@ fn dry_run_init_reports_planned_creates_but_creates_nothing() {
 
     assert!(report.success);
     assert!(!report.planned_creates.is_empty());
+    assert!(report
+        .planned_creates
+        .contains(&"database/releases/objects".to_string()));
+    assert!(report
+        .planned_creates
+        .contains(&"database/releases/reference-data".to_string()));
     assert!(report.created_paths.is_empty());
     assert!(!dir.join("database").exists());
 }
@@ -601,6 +607,8 @@ fn init_creates_only_missing_folders_and_files() {
         DbStateProjectStatus::CompleteDbStateStructure
     );
     assert!(dir.join("database/objects/tables").is_dir());
+    assert!(dir.join("database/releases/objects").is_dir());
+    assert!(dir.join("database/releases/reference-data").is_dir());
     assert!(dir
         .join("database/reference-data/dbstate.reference-data.yml")
         .is_file());
@@ -609,6 +617,29 @@ fn init_creates_only_missing_folders_and_files() {
             .expect("read registry"),
         DEFAULT_REGISTRY
     );
+}
+
+#[test]
+fn project_status_reports_missing_release_artifact_subfolders() {
+    let dir = create_temp_dir("missing-release-subfolders");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::remove_dir_all(dir.join("database/releases/objects")).expect("remove objects release dir");
+    fs::remove_dir_all(dir.join("database/releases/reference-data"))
+        .expect("remove reference-data release dir");
+
+    let report = status_report(&dir, CommandKind::RepoStatus);
+
+    assert_eq!(
+        report.dbstate_project_status,
+        DbStateProjectStatus::PartialDbStateStructure
+    );
+    assert!(report
+        .missing_paths
+        .contains(&"database/releases/objects".to_string()));
+    assert!(report
+        .missing_paths
+        .contains(&"database/releases/reference-data".to_string()));
 }
 
 #[test]
@@ -1690,8 +1721,14 @@ fn sync_never_writes_under_releases() {
         .created_files
         .iter()
         .all(|path| path.starts_with("database/objects/")));
-    assert!(fs::read_dir(dir.join("database/releases"))
-        .expect("read releases")
+    assert!(dir.join("database/releases/objects").is_dir());
+    assert!(dir.join("database/releases/reference-data").is_dir());
+    assert!(fs::read_dir(dir.join("database/releases/objects"))
+        .expect("read object releases")
+        .next()
+        .is_none());
+    assert!(fs::read_dir(dir.join("database/releases/reference-data"))
+        .expect("read reference-data releases")
         .next()
         .is_none());
 }
@@ -3034,7 +3071,7 @@ fn release_dry_run_writes_no_files_and_plans_artifacts() {
     assert!(!dir
         .join("database/releases/objects/0001_slice7.sql")
         .exists());
-    assert!(!dir.join("database/releases/objects").exists());
+    assert!(dir.join("database/releases/objects").is_dir());
     let json = report.to_json();
     assert!(json.contains("\"operationKind\":\"createReviewSql\""));
     assert!(json.contains("\"safetyBadge\":\"Review SQL\""));
@@ -3143,6 +3180,45 @@ fn release_generates_sql_summary_and_risk_json_under_releases() {
     assert!(!summary.contains("postgres://"));
     assert!(!risk.contains("postgres://"));
     assert!(!manifest.contains("postgres://"));
+}
+
+#[test]
+fn release_write_backfills_missing_objects_release_folder() {
+    let dir = create_temp_dir("release-backfill-objects-folder");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/local_only.sql"),
+        render_schema_sql("local_only"),
+    )
+    .expect("write repo-only schema");
+    commit_all(&dir, "repo-only schema");
+    fs::remove_dir_all(dir.join("database/releases/objects")).expect("remove objects release dir");
+    fs::remove_dir_all(dir.join("database/releases/reference-data"))
+        .expect("remove reference-data release dir");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(vec!["schema:local_only".to_string()], Vec::new())
+            .expect("plan selection"),
+        "slice34e",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert!(dir.join("database/releases/objects").is_dir());
+    assert!(report
+        .created_artifacts
+        .contains(&"database/releases/objects/0001_slice34e.sql".to_string()));
+    assert!(dir
+        .join("database/releases/objects/0001_slice34e.sql")
+        .exists());
+    assert!(report.warnings.iter().any(|warning| {
+        warning.contains("database/releases/objects")
+            || warning.contains("release artifact subfolders")
+    }));
 }
 
 #[test]
@@ -4851,6 +4927,54 @@ fn reference_registry_parser_accepts_slice34_setup_aliases() {
 }
 
 #[test]
+fn reference_data_database_tables_json_includes_registry_status() {
+    let report = ReferenceDataDatabaseTablesReport {
+        command: "reference-data database-tables".to_string(),
+        success: true,
+        repository_path: "repo".to_string(),
+        git_root: Some("repo".to_string()),
+        is_git_repository: true,
+        branch: Some("dev".to_string()),
+        working_tree_status: WorkingTreeStatus::Clean,
+        is_dirty: false,
+        database_type: "postgresql".to_string(),
+        tables: vec![ReferenceDataCandidateTable {
+            schema: "public".to_string(),
+            name: "country".to_string(),
+            table_name: "public.country".to_string(),
+            columns: Vec::new(),
+            suggested_key_columns: vec!["country_id".to_string()],
+            warnings: Vec::new(),
+        }],
+        configured_tables: vec![ReferenceDataConfiguredTableStatus {
+            schema: "public".to_string(),
+            name: "country".to_string(),
+            table_name: "public.country".to_string(),
+            file: "tables/public.country.yml".to_string(),
+            key_columns: vec!["country_id".to_string()],
+            ignored_columns: vec!["last_update".to_string()],
+            masked_columns: vec!["secret_note".to_string()],
+        }],
+        warnings: Vec::new(),
+        errors: Vec::new(),
+    };
+    let json = report.to_json();
+
+    for expected in [
+        "\"configuredTables\"",
+        "\"tableName\":\"public.country\"",
+        "\"keyColumns\":[\"country_id\"]",
+        "\"ignoredColumns\":[\"last_update\"]",
+        "\"maskedColumns\":[\"secret_note\"]",
+    ] {
+        assert!(
+            json.contains(expected),
+            "missing registry status JSON field {expected}"
+        );
+    }
+}
+
+#[test]
 fn reference_registry_parser_rejects_missing_key() {
     let yaml = "version: 1
 tables:
@@ -5501,6 +5625,33 @@ fn slice34c_review_script_write_creates_artifacts_under_releases_and_preview_rea
 }
 
 #[test]
+fn slice34e_reference_data_review_write_backfills_reference_data_release_folder() {
+    let dir = create_temp_dir("slice34e-reference-data-release-folder");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::remove_dir_all(dir.join("database/releases/reference-data"))
+        .expect("remove reference-data release dir");
+    let mut compare = reference_data_review_compare_fixture();
+    compare.repository_path = display_path(&dir);
+    compare.git_root = Some(display_path(&dir));
+    compare.is_git_repository = true;
+
+    let report =
+        reference_data_review_script_write_from_compare(&dir, &compare, "reference_data_review")
+            .expect("write review script artifacts");
+
+    assert!(report.success, "{:?}", report.errors);
+    assert!(dir.join("database/releases/reference-data").is_dir());
+    assert!(report
+        .created_artifacts
+        .iter()
+        .all(|path| path.starts_with("database/releases/reference-data/")));
+    assert!(dir
+        .join("database/releases/reference-data/0001_reference_data_review.reference-data.sql")
+        .exists());
+}
+
+#[test]
 fn slice34d_release_artifact_sequences_are_independent_by_kind() {
     let dir = create_temp_dir("slice34d-independent-artifact-sequences");
     init_git_repo(&dir);
@@ -6118,6 +6269,13 @@ fn slice25_ui_contains_release_artifact_preview_contract() {
     assert!(
         js.contains("Preview is available after Generate Release Artifact writes review files.")
     );
+    assert!(js
+        .contains("Dry-run completed. Review artifact paths were planned; no files were written."));
+    assert!(js.contains("Release artifact dry-run failed. No files were written."));
+    assert!(js.contains("Release artifacts generated successfully."));
+    assert!(js.contains("Release artifact generation failed. No files were written."));
+    assert!(js.contains("No artifact paths were returned."));
+    assert!(js.contains("Zero artifacts were created; check the errors and warnings"));
 
     for forbidden_action in [
         "release-artifact-execute",
@@ -6132,6 +6290,48 @@ fn slice25_ui_contains_release_artifact_preview_contract() {
             "release artifact preview UI exposes forbidden action {forbidden_action}"
         );
     }
+}
+
+#[test]
+fn slice34e_release_plan_buttons_dispatch_for_schema_repository_to_database() {
+    let html = ui_html();
+    let js = ui_js();
+
+    assert_eq!(html.matches("data-action=\"release-preview\"").count(), 1);
+    assert_eq!(html.matches("data-action=\"release-write\"").count(), 1);
+    assert_eq!(
+        html.matches("data-testid=\"release-plan-dry-run\"").count(),
+        1
+    );
+    assert_eq!(
+        html.matches("data-testid=\"generate-release-artifact\"")
+            .count(),
+        1
+    );
+    assert!(html.contains(
+        "<button type=\"button\" data-action=\"release-preview\" data-testid=\"release-plan-dry-run\">Dry-run Release Artifact</button>"
+    ));
+    assert!(html.contains(
+        "<button type=\"button\" data-action=\"release-write\" data-testid=\"generate-release-artifact\" disabled>Generate Release Artifact</button>"
+    ));
+
+    assert!(js.contains(
+        "document.querySelector(\"[data-action='release-preview']\").addEventListener(\"click\", function (event)"
+    ));
+    assert!(js.contains(
+        "document.querySelector(\"[data-action='release-write']\").addEventListener(\"click\", function (event)"
+    ));
+    assert!(js.contains("event.preventDefault();"));
+    assert!(js.contains("if (!isSchemaRepositoryToDatabaseMode(currentWorkflowMode())) {"));
+    assert!(js.contains(
+        "run(\"Release artifact dry-run\", approvedEndpoints.releasePreview, releaseBody(false), { step: \"release-plan\", releaseResult: true });"
+    ));
+    assert!(js.contains(
+        "run(\"Generate Release Artifact\", approvedEndpoints.releaseWrite, releaseBody(true), { step: \"release-plan\", releaseResult: true });"
+    ));
+    assert!(js.contains("releasePlanTab.hidden = !releasePlanApplies"));
+    assert!(js.contains("return isSchemaRepositoryToDatabaseMode(mode);"));
+    assert!(!js.contains("currentWorkflowMode() !== \"compare\""));
 }
 
 #[test]
@@ -6927,7 +7127,7 @@ fn slice34b_reference_data_repo_to_database_is_table_first_data_diff() {
         "showReferenceDataRowDataDiffModal",
         "Reference-Data Row Data Diff",
         "data-testid\", \"reference-data-row-data-diff-modal\"",
-        "Source: Repository reference-data. Target: PostgreSQL database.",
+        "Source: \" + direction.sourceLabel + \". Target: \" + direction.targetLabel",
         "Column</th><th>Source value</th><th>Target value</th><th>Status",
         "Same",
         "Source only",
@@ -7032,6 +7232,75 @@ fn slice34b_schema_object_diff_chrome_is_preserved() {
 }
 
 #[test]
+fn slice34e_reference_data_database_to_repository_uses_data_diff_and_registry_status() {
+    let html = ui_html();
+    let js = ui_js();
+    let combined = format!("{html}\n{js}");
+
+    for expected in [
+        "Reference Data Compare: Database to Repository",
+        "Load database tables",
+        "Run Reference Data Compare",
+        "Preview Reference YAML",
+        "Write Reference Data Files",
+        "Registry status",
+        "keyColumns",
+        "ignoredColumns",
+        "maskedColumns",
+        "In registry",
+        "Not configured",
+        "registryStatus",
+        "configuredTables",
+        "registryConfig",
+        "versionedColumns",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "missing Database-to-Repository reference-data UI contract {expected}"
+        );
+    }
+
+    for expected in [
+        "const referenceDataWorkflow = isReferenceDataWorkflowMode(mode)",
+        "button.hidden = !referenceDataWorkflow",
+        "button.disabled = !referenceDataWorkflow",
+        "if (isReferenceDataWorkflowMode(currentWorkflowMode()))",
+        "renderReferenceDataTableSummaryResults();",
+        "return isReferenceDataDatabaseToRepositoryMode(currentWorkflowMode())",
+        "? \"referenceDataDatabaseToRepository\"",
+        "sourceLabel: \"PostgreSQL database\"",
+        "targetLabel: \"Repository reference-data\"",
+        "sourceValues = direction.sourceDdlSide === \"database\" ? rowRaw.databaseValues",
+        "targetValues = direction.targetDdlSide === \"repository\" ? rowRaw.repositoryValues",
+        "databaseToRepository && rowRaw.classification === \"databaseOnly\"",
+        "databaseToRepository && rowRaw.classification === \"repoOnly\"",
+        "objectDiffTab.textContent = referenceDataMode ? \"5. Data Diff\" : \"5. Object Diff\"",
+        "document.querySelectorAll(\".object-diff-tabs\").forEach",
+        "rawDetails.parentElement.hidden = referenceDataMode",
+    ] {
+        assert!(
+            js.contains(expected),
+            "missing Database-to-Repository Data Diff JS contract {expected}"
+        );
+    }
+
+    for expected in [
+        "Column",
+        "Source value",
+        "Target value",
+        "Status",
+        "Key",
+        "Changed Columns",
+        "Warnings",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "reference-data Data Diff missing {expected}"
+        );
+    }
+}
+
+#[test]
 fn slice34c_reference_data_review_script_ui_contract_is_review_only() {
     let html = ui_html();
     let js = ui_js();
@@ -7039,11 +7308,17 @@ fn slice34c_reference_data_review_script_ui_contract_is_review_only() {
 
     for expected in [
         "data-testid=\"reference-data-review-script-panel\"",
+        "data-testid=\"reference-data-review-script-status\"",
         "Preview Review-Only Data Script",
         "Generate Review-Only Data Script",
         "GENERATE REVIEW DATA SCRIPT",
         "DbState does not execute this SQL",
         "DbState does not generate DELETE for database-only rows in Private Beta",
+        "Review-only data script preview completed. No files were written.",
+        "Review-only data script preview failed. No files were written.",
+        "Review-only data script artifacts generated successfully.",
+        "Review-only data script generation failed. No files were written.",
+        "Zero artifacts were created; check the errors and warnings below.",
         "Database-only rows require manual review",
         "potentially affected foreign keys",
         "Script generation includes non-in-sync rows for selected tables",
