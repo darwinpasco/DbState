@@ -36,7 +36,9 @@ The following Reference-Data Compare controls are enabled as of Slice 34:
 
 Database to Repository Compare captures supported PostgreSQL object definitions into repository files under `database/objects/`. The repository write remains a controlled local file write and requires typed confirmation. It does not mutate PostgreSQL and does not stage, commit, fetch, pull, push, or tag Git changes.
 
-Repository to Database Compare is the workflow that uses Release Plan. Release Plan can dry-run or generate reviewable release artifact files under `database/releases/` through the local DbState Service.
+Schema Compare: Repository to Database is the workflow that uses Release Plan. Release Plan can dry-run or generate reviewable schema/object release artifact files under `database/releases/objects/` through the local DbState Service.
+
+Reference Data Compare: Repository to Database uses its own Review-Only Data Script controls. Those artifacts are written under `database/releases/reference-data/`.
 
 Release artifact generation requires:
 

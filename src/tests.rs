@@ -3029,9 +3029,12 @@ fn release_dry_run_writes_no_files_and_plans_artifacts() {
     assert!(report.success);
     assert!(report
         .planned_artifacts
-        .contains(&"database/releases/0001_slice7.sql".to_string()));
+        .contains(&"database/releases/objects/0001_slice7.sql".to_string()));
     assert!(report.created_artifacts.is_empty());
-    assert!(!dir.join("database/releases/0001_slice7.sql").exists());
+    assert!(!dir
+        .join("database/releases/objects/0001_slice7.sql")
+        .exists());
+    assert!(!dir.join("database/releases/objects").exists());
     let json = report.to_json();
     assert!(json.contains("\"operationKind\":\"createReviewSql\""));
     assert!(json.contains("\"safetyBadge\":\"Review SQL\""));
@@ -3076,19 +3079,23 @@ fn release_generates_sql_summary_and_risk_json_under_releases() {
     assert_eq!(
         report.created_artifacts,
         vec![
-            "database/releases/0001_slice7_test.sql".to_string(),
-            "database/releases/0001_slice7_test.summary.md".to_string(),
-            "database/releases/0001_slice7_test.risk.json".to_string(),
-            "database/releases/0001_slice7_test.manifest.json".to_string(),
+            "database/releases/objects/0001_slice7_test.sql".to_string(),
+            "database/releases/objects/0001_slice7_test.summary.md".to_string(),
+            "database/releases/objects/0001_slice7_test.risk.json".to_string(),
+            "database/releases/objects/0001_slice7_test.manifest.json".to_string(),
         ]
     );
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice7_test.sql")).expect("sql");
-    let summary = fs::read_to_string(dir.join("database/releases/0001_slice7_test.summary.md"))
-        .expect("summary");
-    let risk =
-        fs::read_to_string(dir.join("database/releases/0001_slice7_test.risk.json")).expect("risk");
-    let manifest = fs::read_to_string(dir.join("database/releases/0001_slice7_test.manifest.json"))
-        .expect("manifest");
+    assert!(!dir.join("database/releases/0001_slice7_test.sql").exists());
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice7_test.sql"))
+        .expect("sql");
+    let summary =
+        fs::read_to_string(dir.join("database/releases/objects/0001_slice7_test.summary.md"))
+            .expect("summary");
+    let risk = fs::read_to_string(dir.join("database/releases/objects/0001_slice7_test.risk.json"))
+        .expect("risk");
+    let manifest =
+        fs::read_to_string(dir.join("database/releases/objects/0001_slice7_test.manifest.json"))
+            .expect("manifest");
 
     assert!(sql.contains("-- DbState Release Artifact"));
     assert!(sql.contains("-- Safety: Review-only. DbState does not execute this SQL."));
@@ -3189,8 +3196,8 @@ fn repo_only_constraint_release_generates_review_only_add_constraint_sql() {
         "createConstraintReviewSql"
     );
     assert_eq!(report.plan_items[0].operation_label, "Add Constraint");
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice28_constraint.sql")).expect("sql");
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice28_constraint.sql"))
+        .expect("sql");
     assert!(sql.contains("-- Review-only constraint suggestion."));
     assert!(sql.contains("-- DbState does not execute this SQL."));
     assert!(sql.contains("ALTER TABLE \"dbstate_slice2\".\"sample_accounts\""));
@@ -3241,8 +3248,10 @@ fn changed_constraint_release_remains_manual_review_only() {
     assert!(report.plan_items[0]
         .operation_explanation
         .contains("changed constraints are manual-review only"));
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice28_changed_constraint.sql"))
-        .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice28_changed_constraint.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("changed constraints are manual-review only"));
     assert!(!sql.contains("DROP CONSTRAINT"));
     assert!(!sql.contains("ADD CONSTRAINT \"sample_accounts_pkey\""));
@@ -3276,9 +3285,10 @@ fn database_only_constraint_release_does_not_generate_drop_constraint() {
     assert!(report.success, "{:?}", report.errors);
     assert_eq!(report.plan_items[0].compare_classification, "databaseOnly");
     assert_eq!(report.plan_items[0].operation_kind, "databaseOnlyReview");
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice28_database_only_constraint.sql"))
-            .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice28_database_only_constraint.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("object exists only in target database"));
     assert!(!sql.contains("DROP CONSTRAINT"));
 }
@@ -3343,9 +3353,10 @@ fn release_candidate_selection_respects_selected_constraint_refs() {
         report.included_objects,
         vec!["constraint:dbstate_slice2.sample_accounts.selected_constraint_check".to_string()]
     );
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice28_constraint_selection.sql"))
-            .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice28_constraint_selection.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("selected_constraint_check"));
     assert!(!sql.contains("unselected_constraint_check"));
 }
@@ -3388,8 +3399,8 @@ fn repo_only_function_release_generates_review_only_create_function_sql() {
         "createFunctionReviewSql"
     );
     assert_eq!(report.plan_items[0].operation_label, "Create Function");
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice29_function.sql")).expect("sql");
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice29_function.sql"))
+        .expect("sql");
     assert!(sql.contains("-- Review-only function suggestion."));
     assert!(sql.contains("-- DbState does not execute this SQL."));
     assert!(sql.contains("-- Review before applying manually outside DbState."));
@@ -3434,8 +3445,9 @@ fn changed_function_release_remains_manual_review_only() {
     assert!(report.plan_items[0]
         .operation_explanation
         .contains("changed functions are manual-review only"));
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice29_changed_function.sql"))
-        .expect("sql");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/objects/0001_slice29_changed_function.sql"))
+            .expect("sql");
     assert!(sql.contains("changed functions are manual-review only"));
     assert!(!sql.contains("\nDROP FUNCTION"));
     assert!(!sql.contains("CREATE FUNCTION dbstate_slice2.account_label"));
@@ -3469,9 +3481,10 @@ fn database_only_function_release_does_not_generate_drop_function() {
     assert!(report.success, "{:?}", report.errors);
     assert_eq!(report.plan_items[0].compare_classification, "databaseOnly");
     assert_eq!(report.plan_items[0].operation_kind, "databaseOnlyReview");
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice29_database_only_function.sql"))
-            .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice29_database_only_function.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("object exists only in target database"));
     assert!(!sql.contains("DROP FUNCTION"));
 }
@@ -3518,8 +3531,10 @@ fn release_candidate_selection_respects_selected_function_refs() {
         report.included_objects,
         vec!["function:dbstate_slice2.account_label.account_id_integer".to_string()]
     );
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice29_function_selection.sql"))
-        .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice29_function_selection.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("account_id integer"));
     assert!(!sql.contains("account_code text"));
 }
@@ -3566,8 +3581,8 @@ fn repo_only_trigger_release_generates_review_only_create_trigger_sql() {
         "createTriggerReviewSql"
     );
     assert_eq!(report.plan_items[0].operation_label, "Create Trigger");
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice30_trigger.sql")).expect("sql");
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice30_trigger.sql"))
+        .expect("sql");
     assert!(sql.contains("-- Review-only trigger suggestion."));
     assert!(sql.contains("-- DbState does not execute this SQL."));
     assert!(sql.contains("-- Review before applying manually outside DbState."));
@@ -3617,8 +3632,9 @@ fn changed_trigger_release_remains_manual_review_only() {
     assert!(report.plan_items[0]
         .operation_explanation
         .contains("changed triggers are manual-review only"));
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice30_changed_trigger.sql"))
-        .expect("sql");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/objects/0001_slice30_changed_trigger.sql"))
+            .expect("sql");
     assert!(sql.contains("changed triggers are manual-review only"));
     assert!(!sql.contains("\nDROP TRIGGER"));
     assert!(!sql.contains("\nALTER TRIGGER"));
@@ -3655,9 +3671,10 @@ fn database_only_trigger_release_does_not_generate_drop_trigger() {
     assert!(report.success, "{:?}", report.errors);
     assert_eq!(report.plan_items[0].compare_classification, "databaseOnly");
     assert_eq!(report.plan_items[0].operation_kind, "databaseOnlyReview");
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice30_database_only_trigger.sql"))
-            .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice30_database_only_trigger.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("object exists only in target database"));
     assert!(!sql.contains("DROP TRIGGER"));
     assert!(!sql.contains("ALTER TRIGGER"));
@@ -3719,8 +3736,10 @@ fn release_candidate_selection_respects_selected_trigger_refs() {
         report.included_objects,
         vec!["trigger:dbstate_slice2.sample_accounts.selected_audit_trigger".to_string()]
     );
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice30_trigger_selection.sql"))
-        .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice30_trigger_selection.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("selected_audit_trigger"));
     assert!(!sql.contains("unselected_audit_trigger"));
 }
@@ -3766,8 +3785,8 @@ fn repo_only_materialized_view_release_generates_review_only_create_sql() {
         report.plan_items[0].operation_label,
         "Create Materialized View"
     );
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice31_matview.sql")).expect("sql");
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice31_matview.sql"))
+        .expect("sql");
     assert!(sql.contains("-- Review-only materialized view suggestion."));
     assert!(sql.contains("-- DbState does not execute this SQL."));
     assert!(sql.contains("-- DbState does not refresh materialized views."));
@@ -3812,8 +3831,9 @@ fn changed_materialized_view_release_remains_manual_review_only() {
     assert!(report.plan_items[0]
         .operation_explanation
         .contains("changed materialized views are manual-review only"));
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice31_changed_matview.sql"))
-        .expect("sql");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/objects/0001_slice31_changed_matview.sql"))
+            .expect("sql");
     assert!(sql.contains("changed materialized views are manual-review only"));
     assert!(!sql.contains("DROP MATERIALIZED VIEW"));
     assert!(!sql.contains("REFRESH MATERIALIZED VIEW"));
@@ -3847,9 +3867,10 @@ fn database_only_materialized_view_release_does_not_generate_drop_or_refresh() {
     assert!(report.success, "{:?}", report.errors);
     assert_eq!(report.plan_items[0].compare_classification, "databaseOnly");
     assert_eq!(report.plan_items[0].operation_kind, "databaseOnlyReview");
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice31_database_only_matview.sql"))
-            .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice31_database_only_matview.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("object exists only in target database"));
     assert!(!sql.contains("DROP MATERIALIZED VIEW"));
     assert!(!sql.contains("REFRESH MATERIALIZED VIEW"));
@@ -3901,8 +3922,10 @@ fn release_candidate_selection_respects_selected_materialized_view_refs() {
         report.included_objects,
         vec!["materializedView:dbstate_slice2.selected_summary".to_string()]
     );
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice31_matview_selection.sql"))
-        .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice31_matview_selection.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("selected_summary"));
     assert!(!sql.contains("unselected_summary"));
 }
@@ -3945,8 +3968,8 @@ fn repo_only_grant_release_generates_review_only_grant_sql() {
         "grantPrivilegesReviewSql"
     );
     assert_eq!(report.plan_items[0].operation_label, "Grant Privileges");
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice32_grant.sql")).expect("sql");
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice32_grant.sql"))
+        .expect("sql");
     assert!(sql.contains("-- Review-only grant suggestion."));
     assert!(sql.contains("-- DbState does not execute this SQL."));
     assert!(sql.contains("GRANT SELECT ON TABLE \"dbstate_slice2\".\"sample_accounts\" TO PUBLIC;"));
@@ -3989,8 +4012,9 @@ fn changed_grant_release_remains_manual_review_only() {
     assert!(report.plan_items[0]
         .operation_explanation
         .contains("changed grants are manual-review only"));
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice32_changed_grant.sql"))
-        .expect("sql");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/objects/0001_slice32_changed_grant.sql"))
+            .expect("sql");
     assert!(sql.contains("changed grants are manual-review only"));
     assert!(!sql
         .lines()
@@ -4024,9 +4048,10 @@ fn database_only_grant_release_does_not_generate_revoke() {
 
     assert!(report.success, "{:?}", report.errors);
     assert_eq!(report.plan_items[0].operation_kind, "databaseOnlyReview");
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice32_database_only_grant.sql"))
-            .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice32_database_only_grant.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("grant exists only in target database"));
     assert!(!sql
         .lines()
@@ -4075,8 +4100,9 @@ fn release_candidate_selection_respects_selected_grant_refs() {
         report.included_objects,
         vec!["grant:schema.dbstate_slice2.app_reader".to_string()]
     );
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice32_grant_selection.sql"))
-        .expect("sql");
+    let sql =
+        fs::read_to_string(dir.join("database/releases/objects/0001_slice32_grant_selection.sql"))
+            .expect("sql");
     assert!(sql.contains("GRANT USAGE ON SCHEMA \"dbstate_slice2\" TO \"app_reader\";"));
     assert!(!sql.contains("sample_accounts"));
 }
@@ -4121,8 +4147,8 @@ fn repo_only_rls_policy_release_generates_review_only_create_policy_sql() {
         "createRlsPolicyReviewSql"
     );
     assert_eq!(report.plan_items[0].operation_label, "Create RLS Policy");
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice33_rls_policy.sql")).expect("sql");
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice33_rls_policy.sql"))
+        .expect("sql");
     assert!(sql.contains("-- Review-only RLS policy suggestion."));
     assert!(sql.contains("-- DbState does not execute this SQL."));
     assert!(sql.contains("CREATE POLICY \"sample_accounts_public_read\""));
@@ -4175,8 +4201,10 @@ fn changed_rls_policy_release_remains_manual_review_only() {
     assert!(report.plan_items[0]
         .operation_explanation
         .contains("changed RLS policies are manual-review only"));
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice33_changed_rls_policy.sql"))
-        .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice33_changed_rls_policy.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("changed RLS policies are manual-review only"));
     assert!(!sql
         .lines()
@@ -4215,9 +4243,10 @@ fn database_only_rls_policy_release_does_not_generate_drop_policy() {
 
     assert!(report.success, "{:?}", report.errors);
     assert_eq!(report.plan_items[0].operation_label, "Database Only");
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice33_database_only_rls_policy.sql"))
-            .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice33_database_only_rls_policy.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("RLS policy exists only in target database"));
     assert!(!sql
         .lines()
@@ -4277,9 +4306,10 @@ fn release_candidate_selection_respects_selected_rls_policy_refs() {
         report.included_objects,
         vec!["rlsPolicy:dbstate_slice2.sample_accounts.selected_policy".to_string()]
     );
-    let sql =
-        fs::read_to_string(dir.join("database/releases/0001_slice33_rls_policy_selection.sql"))
-            .expect("sql");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice33_rls_policy_selection.sql"),
+    )
+    .expect("sql");
     assert!(sql.contains("selected_policy"));
     assert!(!sql.contains("unselected_policy"));
 }
@@ -4289,18 +4319,22 @@ fn release_does_not_overwrite_existing_artifacts() {
     let dir = create_temp_dir("release-sequence");
     init_git_repo(&dir);
     create_complete_structure(&dir);
+    fs::create_dir_all(dir.join("database/releases/objects")).expect("create objects release dir");
     fs::write(
-        dir.join("database/releases/0001_slice7.sql"),
+        dir.join("database/releases/objects/0001_slice7.sql"),
         "-- existing\n",
     )
     .expect("write existing sql");
     fs::write(
-        dir.join("database/releases/0001_slice7.summary.md"),
+        dir.join("database/releases/objects/0001_slice7.summary.md"),
         "existing\n",
     )
     .expect("write existing summary");
-    fs::write(dir.join("database/releases/0001_slice7.risk.json"), "{}\n")
-        .expect("write existing risk");
+    fs::write(
+        dir.join("database/releases/objects/0001_slice7.risk.json"),
+        "{}\n",
+    )
+    .expect("write existing risk");
     fs::write(
         dir.join("database/objects/schemas/local_only.sql"),
         render_schema_sql("local_only"),
@@ -4321,7 +4355,7 @@ fn release_does_not_overwrite_existing_artifacts() {
     assert!(report.success);
     assert!(report
         .planned_artifacts
-        .contains(&"database/releases/0002_slice7.sql".to_string()));
+        .contains(&"database/releases/objects/0002_slice7.sql".to_string()));
 }
 
 #[test]
@@ -4359,7 +4393,7 @@ fn release_selected_refs_include_only_selected_candidate() {
     assert!(!report
         .included_objects
         .contains(&"schema:local_two".to_string()));
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice27_selected.sql"))
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice27_selected.sql"))
         .expect("read sql");
     assert!(sql.contains("schema:local_one"));
     assert!(sql.contains("CREATE SCHEMA IF NOT EXISTS \"local_one\";"));
@@ -4396,7 +4430,7 @@ fn release_selected_ref_not_in_current_plan_is_rejected_safely() {
         .any(|error| error.contains("was not found in the selected compare scope")));
     assert!(report.created_artifacts.is_empty());
     assert!(!dir
-        .join("database/releases/0001_slice27_missing.sql")
+        .join("database/releases/objects/0001_slice27_missing.sql")
         .exists());
 }
 
@@ -4418,7 +4452,7 @@ fn release_service_rejects_empty_selected_object_refs() {
         .body
         .contains("Select at least one release candidate"));
     assert!(!dir
-        .join("database/releases/0001_slice27_empty.sql")
+        .join("database/releases/objects/0001_slice27_empty.sql")
         .exists());
 }
 
@@ -4512,7 +4546,7 @@ fn additive_nullable_column_release_generates_review_only_add_column_sql() {
     assert!(json.contains("\"operationKind\":\"additiveAddColumnReviewSql\""));
     assert!(json.contains("\"safetyBadge\":\"Additive ADD COLUMN\""));
     assert!(json.contains("review-only ADD COLUMN"));
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice24_nullable.sql"))
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice24_nullable.sql"))
         .expect("read sql");
     assert!(sql.contains("-- Review-only additive column suggestion."));
     assert!(sql.contains("-- DbState does not execute this SQL."));
@@ -4581,7 +4615,7 @@ fn not_null_column_without_default_release_stays_manual_review_only() {
     assert!(json.contains("\"safetyBadge\":\"Manual Review\""));
     assert!(json.contains("NOT NULL with no default"));
     assert!(json.contains("manual review"));
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice24_required.sql"))
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice24_required.sql"))
         .expect("read sql");
     assert!(sql.contains("NOT NULL with no default"));
     assert!(sql.contains("manual"));
@@ -4629,7 +4663,7 @@ fn changed_existing_column_release_stays_manual_review_only() {
     assert!(json.contains("\"safetyBadge\":\"Manual Review\""));
     assert!(json.contains("existing-column changes are manual-review only"));
     assert!(!json.contains("\"safetyBadge\":\"Additive ADD COLUMN\""));
-    let sql = fs::read_to_string(dir.join("database/releases/0001_slice24_changed.sql"))
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice24_changed.sql"))
         .expect("read sql");
     assert!(sql.contains("difference is not clearly additive"));
     assert!(sql.contains("existing column \"display_name\" differs"));
@@ -4644,7 +4678,7 @@ fn release_json_includes_expected_fields_and_no_secrets() {
     report.release_scope = "all".to_string();
     report
         .planned_artifacts
-        .push("database/releases/0001_slice7.sql".to_string());
+        .push("database/releases/objects/0001_slice7.sql".to_string());
     report.warnings.push(redact_postgres_url(&placeholder_url(
         "user",
         "sensitive-marker",
@@ -5390,7 +5424,7 @@ fn slice34c_review_script_json_contract_is_safe_and_data_oriented() {
         "\"updateCount\":1",
         "\"manualReviewCount\":1",
         "\"deleteGeneratedCount\":0",
-        "database/releases/0001_reference_data_review.reference-data.sql",
+        "database/releases/reference-data/0001_reference_data_review.reference-data.sql",
     ] {
         assert!(
             json.contains(expected),
@@ -5421,7 +5455,7 @@ fn slice34c_review_script_write_requires_typed_confirmation_before_connection() 
     assert_eq!(response.status_code, 400);
     assert!(response.body.contains("GENERATE REVIEW DATA SCRIPT"));
     assert!(!dir
-        .join("database/releases/0001_reference_data_review.reference-data.sql")
+        .join("database/releases/reference-data/0001_reference_data_review.reference-data.sql")
         .exists());
 }
 
@@ -5441,17 +5475,20 @@ fn slice34c_review_script_write_creates_artifacts_under_releases_and_preview_rea
     assert!(report.success);
     assert_eq!(report.created_artifacts.len(), 4);
     for path in &report.created_artifacts {
-        assert!(path.starts_with("database/releases/"));
+        assert!(path.starts_with("database/releases/reference-data/"));
         assert!(dir.join(path).exists(), "missing generated artifact {path}");
     }
     assert!(dir
+        .join("database/releases/reference-data/0001_reference_data_review.reference-data.sql")
+        .exists());
+    assert!(!dir
         .join("database/releases/0001_reference_data_review.reference-data.sql")
         .exists());
     assert!(!dir
         .join("database/reference-data/0001_reference_data_review.reference-data.sql")
         .exists());
     let body = format!(
-        r#"{{ "repositoryPath": "{}", "artifactPath": "database/releases/0001_reference_data_review.reference-data.sql" }}"#,
+        r#"{{ "repositoryPath": "{}", "artifactPath": "database/releases/reference-data/0001_reference_data_review.reference-data.sql" }}"#,
         escape_json(&display_path(&dir))
     );
     let preview = service_response("POST", "/api/v1/releases/artifact-preview", &body, &dir);
@@ -5461,6 +5498,52 @@ fn slice34c_review_script_write_creates_artifacts_under_releases_and_preview_rea
     assert!(!preview.body.contains("Apply"));
     assert!(!preview.body.contains("Execute"));
     assert!(!preview.body.contains("Sync to Database"));
+}
+
+#[test]
+fn slice34d_release_artifact_sequences_are_independent_by_kind() {
+    let dir = create_temp_dir("slice34d-independent-artifact-sequences");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/local_only.sql"),
+        render_schema_sql("local_only"),
+    )
+    .expect("write repo-only schema");
+    commit_all(&dir, "repo-only schema");
+
+    let schema_report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(vec!["schema:local_only".to_string()], Vec::new())
+            .expect("plan selection"),
+        "shared_sequence",
+        false,
+    );
+    assert!(schema_report.success, "{:?}", schema_report.errors);
+    assert!(schema_report
+        .created_artifacts
+        .contains(&"database/releases/objects/0001_shared_sequence.sql".to_string()));
+
+    let mut compare = reference_data_review_compare_fixture();
+    compare.repository_path = display_path(&dir);
+    compare.git_root = Some(display_path(&dir));
+    compare.is_git_repository = true;
+    let reference_report =
+        reference_data_review_script_write_from_compare(&dir, &compare, "shared_sequence")
+            .expect("write reference-data artifacts");
+
+    assert!(reference_report.success, "{:?}", reference_report.errors);
+    assert!(reference_report.created_artifacts.contains(
+        &"database/releases/reference-data/0001_shared_sequence.reference-data.sql".to_string()
+    ));
+    assert!(dir
+        .join("database/releases/objects/0001_shared_sequence.sql")
+        .exists());
+    assert!(dir
+        .join("database/releases/reference-data/0001_shared_sequence.reference-data.sql")
+        .exists());
 }
 
 #[test]
@@ -5743,6 +5826,58 @@ fn release_artifact_preview_endpoint_reads_release_sql_artifact() {
         fs::read_to_string(&artifact).expect("read release artifact after preview"),
         content
     );
+}
+
+#[test]
+fn slice34d_release_artifact_preview_accepts_nested_release_artifacts() {
+    let dir = create_temp_dir("slice34d-nested-artifact-preview");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::create_dir_all(dir.join("database/releases/objects")).expect("create objects dir");
+    fs::create_dir_all(dir.join("database/releases/reference-data"))
+        .expect("create reference-data dir");
+    let artifacts = [
+        (
+            "database/releases/objects/0001_schema.sql",
+            "sql",
+            "-- schema sql\n",
+        ),
+        (
+            "database/releases/reference-data/0001_reference.reference-data.sql",
+            "sql",
+            "-- reference data sql\n",
+        ),
+        (
+            "database/releases/reference-data/0001_reference.reference-data.summary.md",
+            "summary",
+            "# summary\n",
+        ),
+        (
+            "database/releases/reference-data/0001_reference.reference-data.risk.json",
+            "risk",
+            "{}\n",
+        ),
+        (
+            "database/releases/reference-data/0001_reference.reference-data.manifest.json",
+            "manifest",
+            "{}\n",
+        ),
+    ];
+    for (relative_path, expected_type, content) in artifacts {
+        fs::write(dir.join(relative_path), content).expect("write nested artifact");
+        let body = format!(
+            r#"{{ "repositoryPath": "{}", "artifactPath": "{}" }}"#,
+            escape_json(&display_path(&dir)),
+            relative_path
+        );
+        let response = service_response("POST", "/api/v1/releases/artifact-preview", &body, &dir);
+        assert_eq!(response.status_code, 200, "{}", response.body);
+        assert!(response
+            .body
+            .contains(&format!("\"artifactType\":\"{}\"", expected_type)));
+        assert!(response.body.contains(&escape_json(relative_path)));
+        assert!(response.body.contains(&escape_json(content)));
+    }
 }
 
 #[test]
@@ -6918,7 +7053,11 @@ fn slice34c_reference_data_review_script_ui_contract_is_review_only() {
         "renderReferenceDataReviewScriptResult",
         "selectedReferenceDataReviewTables",
         "reference-data-review-artifact-preview",
-        "previewReleaseArtifact",
+        "reference-data-review-script-preview-meta",
+        "previewReferenceDataReviewArtifact",
+        "artifactPath: artifactPath",
+        "artifactType",
+        "truncated",
     ] {
         assert!(
             combined.contains(expected),
@@ -6943,6 +7082,24 @@ fn slice34c_reference_data_review_script_ui_contract_is_review_only() {
             "Slice 34C UI exposes forbidden control {forbidden}"
         );
     }
+}
+
+#[test]
+fn slice34d_release_plan_is_hidden_for_reference_data_workflows() {
+    let html = ui_html();
+    let js = ui_js();
+    let combined = format!("{html}\n{js}");
+
+    assert!(html.contains("data-testid=\"tab-release-plan\""));
+    assert!(html.contains("id=\"step-release-plan\""));
+    assert!(js.contains("function releasePlanAppliesToWorkflow(mode)"));
+    assert!(js.contains("return isSchemaRepositoryToDatabaseMode(mode);"));
+    assert!(js.contains("releasePlanTab.hidden = !releasePlanApplies"));
+    assert!(js.contains("releasePlanPanel.hidden = !releasePlanApplies"));
+    assert!(js.contains("step === \"release-plan\" && !releasePlanAppliesToWorkflow"));
+    assert!(js.contains("Reference-data compare is read-only and does not generate DML"));
+    assert!(js.contains("This workflow writes selected YAML files under database/reference-data/"));
+    assert!(combined.contains("Review-Only Data Script"));
 }
 
 #[test]

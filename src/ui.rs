@@ -457,6 +457,7 @@ rows:
           </div>
           <dl class="summary-list compact" id="reference-data-review-script-summary" data-testid="reference-data-review-script-summary"></dl>
           <div id="reference-data-review-script-artifacts" data-testid="reference-data-review-script-artifacts"></div>
+          <div id="reference-data-review-script-preview-meta" class="note" data-testid="reference-data-review-script-preview-meta">No reference-data artifact selected.</div>
           <pre id="reference-data-review-script-preview" data-testid="reference-data-review-script-preview">No review-only data script preview generated yet.</pre>
         </section>
       </section>
@@ -625,7 +626,7 @@ rows:
               <li>Have a DBA or responsible engineer review before any manual execution outside DbState.</li>
             </ol>
           </div>
-          <p class="note">Release artifacts are reviewable files under database/releases/. DbState does not execute SQL, apply database changes, mutate PostgreSQL, or stage, commit, push, pull, fetch, or tag Git changes.</p>
+          <p class="note">Schema release artifacts are reviewable files under database/releases/objects/. Reference-data review artifacts are under database/releases/reference-data/. DbState does not execute SQL, apply database changes, mutate PostgreSQL, or stage, commit, push, pull, fetch, or tag Git changes.</p>
         </div>
       </section>
 
@@ -650,7 +651,7 @@ rows:
         <ul class="safety-list">
           <li>The browser UI is a thin workflow shell over the local service.</li>
           <li>PostgreSQL compare and inspect operations are read-only.</li>
-          <li>Release artifacts are reviewable files under <code>database/releases/</code> and require explicit typed confirmation in the UI or CLI.</li>
+          <li>Schema release artifacts are reviewable files under <code>database/releases/objects/</code>. Reference-data review artifacts are under <code>database/releases/reference-data/</code>. Both require explicit typed confirmation in the UI or CLI.</li>
           <li>No direct database apply exists.</li>
           <li>No generated SQL execution exists.</li>
           <li>Only controlled local file writes are exposed: repository object files and release artifact files. The UI never mutates PostgreSQL or Git history.</li>
@@ -2712,6 +2713,9 @@ const UI_JS: &str = r#"(function () {
   }
 
   function showStep(step) {
+    if (step === "release-plan" && !releasePlanAppliesToWorkflow(currentWorkflowMode())) {
+      step = "results";
+    }
     document.querySelectorAll(".workflow-step").forEach(function (button) {
       button.classList.toggle("active", button.dataset.step === step);
     });
@@ -4356,11 +4360,31 @@ const UI_JS: &str = r#"(function () {
     return value("workflow-mode") || "schemaRepoToDatabase";
   }
 
+  function releasePlanAppliesToWorkflow(mode) {
+    return isSchemaRepositoryToDatabaseMode(mode);
+  }
+
   function applyWorkflowChrome() {
-    const referenceDataMode = isReferenceDataRepositoryToDatabaseMode(currentWorkflowMode());
+    const mode = currentWorkflowMode();
+    const referenceDataMode = isReferenceDataRepositoryToDatabaseMode(mode);
+    const releasePlanApplies = releasePlanAppliesToWorkflow(mode);
     const objectDiffTab = byId("tab-object-diff");
     if (objectDiffTab) {
       objectDiffTab.textContent = referenceDataMode ? "5. Data Diff" : "5. Object Diff";
+    }
+    const releasePlanTab = document.querySelector("[data-testid='tab-release-plan']");
+    if (releasePlanTab) {
+      releasePlanTab.hidden = !releasePlanApplies;
+      releasePlanTab.disabled = !releasePlanApplies;
+      releasePlanTab.setAttribute("aria-disabled", String(!releasePlanApplies));
+    }
+    const releasePlanPanel = byId("step-release-plan");
+    if (releasePlanPanel) {
+      releasePlanPanel.hidden = !releasePlanApplies;
+      if (!releasePlanApplies && releasePlanPanel.classList.contains("active")) {
+        showStep("results");
+        return;
+      }
     }
     const objectTypeLabel = byId("object-type-filter-label");
     if (objectTypeLabel) {
@@ -4823,11 +4847,12 @@ const UI_JS: &str = r#"(function () {
     const button = document.querySelector("[data-action='release-write']");
     const preview = document.querySelector("[data-action='release-preview']");
     const selectedCount = selectedReleaseObjectRefs().length;
+    const releasePlanApplies = releasePlanAppliesToWorkflow(currentWorkflowMode());
     if (preview) {
-      preview.disabled = currentWorkflowMode() !== "compare" || !releaseName() || selectedCount === 0;
+      preview.disabled = !releasePlanApplies || !releaseName() || selectedCount === 0;
     }
     if (button) {
-      button.disabled = currentWorkflowMode() !== "compare" || !releaseName() || !releaseConfirmed() || selectedCount === 0;
+      button.disabled = !releasePlanApplies || !releaseName() || !releaseConfirmed() || selectedCount === 0;
     }
   }
 
@@ -4972,6 +4997,12 @@ const UI_JS: &str = r#"(function () {
       foreignKeyWarnings: data.foreignKeyWarningCount || 0
     });
     preview.textContent = data.scriptContent || "No review-only data script content returned.";
+    const meta = byId("reference-data-review-script-preview-meta");
+    if (meta) {
+      meta.textContent = data.scriptContent
+        ? "Previewing generated review-only data script response."
+        : "No reference-data artifact selected.";
+    }
     artifacts.innerHTML = "";
     const createdArtifacts = Array.isArray(data.createdArtifacts) ? data.createdArtifacts : [];
     const plannedArtifacts = Array.isArray(data.plannedArtifacts) ? data.plannedArtifacts : [];
@@ -4998,6 +5029,34 @@ const UI_JS: &str = r#"(function () {
       list.appendChild(item);
     });
     artifacts.appendChild(list);
+  }
+
+  async function previewReferenceDataReviewArtifact(artifactPath) {
+    const meta = byId("reference-data-review-script-preview-meta");
+    const content = byId("reference-data-review-script-preview");
+    if (!artifactPath) {
+      throw new Error("Artifact path is required.");
+    }
+    meta.textContent = "Loading " + artifactPath + "...";
+    content.textContent = "";
+    const data = await requestJson(approvedEndpoints.releaseArtifactPreview, {
+      repositoryPath: workspacePath(),
+      artifactPath: artifactPath
+    });
+    state.lastResponse = data;
+    state.lastOperation = "Reference-data review artifact preview";
+    responseSummary.textContent = "Reference-data review artifact preview: " + summarize(data);
+    jsonViewer.textContent = redactedJson(data);
+    updateStatus("Reference-data review artifact preview", data);
+    renderErrorSummary(data);
+    renderWarnings(data);
+    meta.textContent = [
+      "File: " + textOrEmpty(data.fileName),
+      "Type: " + textOrEmpty(data.artifactType),
+      "Path: " + textOrEmpty(data.artifactPath),
+      data.truncated ? "Preview truncated at 1 MiB." : "Full file preview."
+    ].join(" | ");
+    content.textContent = data.content || "";
   }
 
   async function previewReleaseArtifact(artifactPath) {
@@ -5159,7 +5218,7 @@ const UI_JS: &str = r#"(function () {
     const mode = currentWorkflowMode();
     const notApplicable = byId("release-plan-not-applicable");
     const content = byId("release-plan-content");
-    if (!isSchemaRepositoryToDatabaseMode(mode)) {
+    if (!releasePlanAppliesToWorkflow(mode)) {
       content.hidden = true;
       notApplicable.hidden = false;
       if (isSchemaDatabaseToRepositoryMode(mode)) {
@@ -5695,7 +5754,7 @@ const UI_JS: &str = r#"(function () {
     if (!button) {
       return;
     }
-    previewReleaseArtifact(button.getAttribute("data-artifact-path")).catch(function (error) {
+    previewReferenceDataReviewArtifact(button.getAttribute("data-artifact-path")).catch(function (error) {
       responseSummary.textContent = "Reference-data review artifact preview: " + error.message;
     });
   });

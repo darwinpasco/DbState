@@ -38,7 +38,7 @@ C:\DbState\PrivateBetaDemo
 | Raw Details evidence | Open Raw Details or Selected JSON Item. | Panel is usable for support evidence and includes direction/context fields such as objectRef, objectType, producingWorkflowMode, sourceType, and targetType. |  |  |
 | Repository to Database Release Plan | Run Repository to Database Compare, then open Release Plan. | Release Context, Risk Summary, Object Summary, Release Candidates, Dry-run / Generated Artifacts, Reviewer Checklist, and Safety Statement are readable. |  |  |
 | Release dry-run | Run release dry-run from UI or CLI. | Planned artifacts, warnings, risk reasons, and errors appear when relevant. No files are written. |  |  |
-| Release write | Type `GENERATE RELEASE ARTIFACTS` and generate artifacts from Repository to Database Compare. | SQL, summary, risk JSON, and manifest are written under `database/releases/` only. |  |  |
+| Release write | Type `GENERATE RELEASE ARTIFACTS` and generate artifacts from Repository to Database Compare. | SQL, summary, risk JSON, and manifest are written under `database/releases/objects/` only. |  |  |
 | Dirty tree release block | Try Generate Release Artifact with a dirty working tree. | UI surfaces the dirty working tree condition and tells the tester to commit or stash before generating artifacts. |  |  |
 
 ## Docker
@@ -63,7 +63,8 @@ C:\DbState\PrivateBetaDemo
 | Compare | Run `dbstate compare postgres --all --format json`. | Differences return without file writes. |  |  |
 | Plan | Run `dbstate plan postgres --all --format json`. | Plan items and warnings return. |  |  |
 | Release dry-run | Run `dbstate release postgres --all --name beta_review --dry-run --format json`. | Planned artifacts return and no files are written. |  |  |
-| Release write | Run `dbstate release postgres --all --name beta_review`. | Review artifacts are written under `database/releases/`. |  |  |
+| Release write | Run `dbstate release postgres --all --name beta_review`. | Review artifacts are written under `database/releases/objects/`. |  |  |
+| Reference-data review script write | Generate a Reference Data Repository-to-Database review-only script. | Review artifacts are written under `database/releases/reference-data/`; DbState does not execute SQL or generate DELETE statements. |  |  |
 | Data compare empty registry | Run configured reference-data compare against empty registry. | Valid empty result or clear configured-table guidance. |  |  |
 | Data compare configured table selection | Load reference-data registry status and select configured tables. | Only tables listed in `database/reference-data/dbstate.reference-data.yml` are selectable. Masked columns are shown as masked and no data write or DML action is offered. |  |  |
 

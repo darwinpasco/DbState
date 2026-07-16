@@ -231,6 +231,14 @@ pub fn release_postgres_with_inventory(
         return report;
     }
 
+    if let Err(error) = fs::create_dir_all(root.join("database/releases/objects")) {
+        report.errors.push(format!(
+            "Could not create database/releases/objects for release artifacts: {error}"
+        ));
+        update_release_risk(&mut report);
+        return report;
+    }
+
     let mut artifact_report = report.clone();
     artifact_report.success = true;
 
@@ -352,10 +360,10 @@ fn plan_release_artifact_paths(root: &Path, slug: &str) -> Result<ReleaseArtifac
     for sequence in 1..=9999 {
         let prefix = format!("{sequence:04}_{slug}");
         let artifacts = ReleaseArtifactPaths {
-            sql: format!("database/releases/{prefix}.sql"),
-            summary: format!("database/releases/{prefix}.summary.md"),
-            risk: format!("database/releases/{prefix}.risk.json"),
-            manifest: format!("database/releases/{prefix}.manifest.json"),
+            sql: format!("database/releases/objects/{prefix}.sql"),
+            summary: format!("database/releases/objects/{prefix}.summary.md"),
+            risk: format!("database/releases/objects/{prefix}.risk.json"),
+            manifest: format!("database/releases/objects/{prefix}.manifest.json"),
         };
         for relative_path in artifacts.relative_paths() {
             ensure_database_release_path(&relative_path)?;
