@@ -42,10 +42,22 @@ pub struct ReferenceTableCompareResult {
     pub compared_columns: Vec<String>,
     pub ignored_columns: Vec<String>,
     pub masked_columns: Vec<String>,
+    pub foreign_key_references: Vec<ReferenceDataForeignKeyReference>,
     pub row_counts: ReferenceDataCompareCounts,
     pub row_results: Vec<ReferenceRowCompareResult>,
     pub warnings: Vec<String>,
     pub errors: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ReferenceDataForeignKeyReference {
+    pub constraint_name: String,
+    pub referencing_schema: String,
+    pub referencing_table: String,
+    pub referencing_columns: Vec<String>,
+    pub referenced_schema: String,
+    pub referenced_table: String,
+    pub referenced_columns: Vec<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -69,6 +81,36 @@ pub struct ReferenceDataCompareCounts {
     pub repo_only: usize,
     pub database_only: usize,
     pub skipped: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct ReferenceDataReviewScriptReport {
+    pub command: String,
+    pub success: bool,
+    pub dry_run: bool,
+    pub repository_path: String,
+    pub git_root: Option<String>,
+    pub is_git_repository: bool,
+    pub branch: Option<String>,
+    pub working_tree_status: WorkingTreeStatus,
+    pub is_dirty: bool,
+    pub script_name: String,
+    pub selected_tables: Vec<String>,
+    pub affected_rows: usize,
+    pub insert_count: usize,
+    pub update_count: usize,
+    pub manual_review_count: usize,
+    pub database_only_count: usize,
+    pub foreign_key_warning_count: usize,
+    pub delete_generated_count: usize,
+    pub planned_artifacts: Vec<String>,
+    pub created_artifacts: Vec<String>,
+    pub script_content: String,
+    pub summary_content: String,
+    pub risk_content: String,
+    pub manifest_content: String,
+    pub warnings: Vec<String>,
+    pub errors: Vec<String>,
 }
 
 pub(crate) fn data_compare_postgres_command(
@@ -1130,8 +1172,28 @@ pub fn data_compare_postgres_with_connection(
                     continue;
                 }
             };
-        let table_result =
+        let mut table_result =
             compare_reference_data_table(&config, &state, &database_rows, &database_columns);
+        match read_reference_data_foreign_key_references(&mut client, &config) {
+            Ok(foreign_keys) => {
+                if !foreign_keys.is_empty() {
+                    let descriptions: Vec<String> = foreign_keys
+                        .iter()
+                        .map(reference_data_foreign_key_description)
+                        .collect();
+                    for row in &mut table_result.row_results {
+                        if row.classification == "databaseOnly" {
+                            row.warnings.push(format!(
+                                "Potentially affected foreign keys: {}. DbState does not generate DELETE for database-only reference-data rows in Private Beta.",
+                                descriptions.join("; ")
+                            ));
+                        }
+                    }
+                }
+                table_result.foreign_key_references = foreign_keys;
+            }
+            Err(error) => table_result.warnings.push(error),
+        }
         append_reference_table_result(&mut report, table_result);
     }
 
@@ -1527,6 +1589,67 @@ fn read_reference_data_rows_from_postgres(
     Ok((database_rows, database_columns))
 }
 
+fn read_reference_data_foreign_key_references(
+    client: &mut Client,
+    config: &ReferenceDataTableConfig,
+) -> Result<Vec<ReferenceDataForeignKeyReference>, String> {
+    let (schema, table) = split_schema_qualified_name(&config.name)?;
+    let rows = client
+        .query(
+            "SELECT con.conname,
+                    src_ns.nspname AS referencing_schema,
+                    src_rel.relname AS referencing_table,
+                    array_agg(src_att.attname ORDER BY key_ord.ordinality) AS referencing_columns,
+                    tgt_ns.nspname AS referenced_schema,
+                    tgt_rel.relname AS referenced_table,
+                    array_agg(tgt_att.attname ORDER BY key_ord.ordinality) AS referenced_columns
+             FROM pg_constraint con
+             JOIN pg_class src_rel ON src_rel.oid = con.conrelid
+             JOIN pg_namespace src_ns ON src_ns.oid = src_rel.relnamespace
+             JOIN pg_class tgt_rel ON tgt_rel.oid = con.confrelid
+             JOIN pg_namespace tgt_ns ON tgt_ns.oid = tgt_rel.relnamespace
+             JOIN unnest(con.conkey, con.confkey) WITH ORDINALITY AS key_ord(src_attnum, tgt_attnum, ordinality) ON true
+             JOIN pg_attribute src_att ON src_att.attrelid = con.conrelid AND src_att.attnum = key_ord.src_attnum
+             JOIN pg_attribute tgt_att ON tgt_att.attrelid = con.confrelid AND tgt_att.attnum = key_ord.tgt_attnum
+             WHERE con.contype = 'f'
+               AND tgt_ns.nspname = $1
+               AND tgt_rel.relname = $2
+             GROUP BY con.conname, src_ns.nspname, src_rel.relname, tgt_ns.nspname, tgt_rel.relname
+             ORDER BY src_ns.nspname, src_rel.relname, con.conname",
+            &[&schema, &table],
+        )
+        .map_err(|_| {
+            format!(
+                "PostgreSQL foreign-key metadata query failed for reference-data table '{}'.",
+                config.name
+            )
+        })?;
+    Ok(rows
+        .into_iter()
+        .map(|row| ReferenceDataForeignKeyReference {
+            constraint_name: row.get::<_, String>(0),
+            referencing_schema: row.get::<_, String>(1),
+            referencing_table: row.get::<_, String>(2),
+            referencing_columns: row.get::<_, Vec<String>>(3),
+            referenced_schema: row.get::<_, String>(4),
+            referenced_table: row.get::<_, String>(5),
+            referenced_columns: row.get::<_, Vec<String>>(6),
+        })
+        .collect())
+}
+
+fn reference_data_foreign_key_description(value: &ReferenceDataForeignKeyReference) -> String {
+    format!(
+        "{}.{}.{} -> {}.{}.{}",
+        value.referencing_schema,
+        value.referencing_table,
+        value.referencing_columns.join(","),
+        value.referenced_schema,
+        value.referenced_table,
+        value.referenced_columns.join(",")
+    )
+}
+
 pub fn compare_reference_data_table(
     config: &ReferenceDataTableConfig,
     state: &ReferenceDataTableState,
@@ -1539,6 +1662,7 @@ pub fn compare_reference_data_table(
         compared_columns: comparable_reference_columns(config, state, database_columns),
         ignored_columns: config.ignore_columns.clone(),
         masked_columns: config.masked_columns.clone(),
+        foreign_key_references: Vec::new(),
         row_counts: ReferenceDataCompareCounts::default(),
         row_results: Vec::new(),
         warnings: Vec::new(),
@@ -1760,6 +1884,796 @@ pub(crate) fn append_reference_table_result(
     report.warnings.extend(table_result.warnings.clone());
     report.errors.extend(table_result.errors.clone());
     report.table_results.push(table_result);
+}
+
+pub fn reference_data_review_script_preview_with_connection(
+    cwd: &Path,
+    connection_url: &str,
+    selection: &ReferenceDataSelection,
+    script_name: &str,
+) -> Result<ReferenceDataReviewScriptReport, String> {
+    reference_data_review_script_with_connection(cwd, connection_url, selection, script_name, true)
+}
+
+pub fn reference_data_review_script_write_with_connection(
+    cwd: &Path,
+    connection_url: &str,
+    selection: &ReferenceDataSelection,
+    script_name: &str,
+) -> Result<ReferenceDataReviewScriptReport, String> {
+    reference_data_review_script_with_connection(cwd, connection_url, selection, script_name, false)
+}
+
+#[cfg(test)]
+pub(crate) fn reference_data_review_script_preview_from_compare(
+    compare: &ReferenceDataCompareReport,
+    script_name: &str,
+) -> Result<ReferenceDataReviewScriptReport, String> {
+    let slug = reference_data_review_script_slug(script_name)?;
+    let artifacts = ReferenceDataReviewArtifactPaths {
+        sql: format!("database/releases/0001_{slug}.reference-data.sql"),
+        summary: format!("database/releases/0001_{slug}.reference-data.summary.md"),
+        risk: format!("database/releases/0001_{slug}.reference-data.risk.json"),
+        manifest: format!("database/releases/0001_{slug}.reference-data.manifest.json"),
+    };
+    let mut report = empty_reference_data_review_script_report(true);
+    report.success = true;
+    report.repository_path = compare.repository_path.clone();
+    report.git_root = compare.git_root.clone();
+    report.is_git_repository = compare.is_git_repository;
+    report.branch = compare.branch.clone();
+    report.working_tree_status = compare.working_tree_status;
+    report.is_dirty = compare.is_dirty;
+    report.script_name = script_name.to_string();
+    report.selected_tables = compare.selected_tables.clone();
+    report.planned_artifacts = artifacts.relative_paths();
+    report.warnings.extend(compare.warnings.clone());
+    report.errors.extend(compare.errors.clone());
+    render_reference_data_review_artifacts(&mut report, compare, &artifacts);
+    report.success = report.errors.is_empty();
+    Ok(report)
+}
+
+#[cfg(test)]
+pub(crate) fn reference_data_review_script_write_from_compare(
+    root: &Path,
+    compare: &ReferenceDataCompareReport,
+    script_name: &str,
+) -> Result<ReferenceDataReviewScriptReport, String> {
+    let slug = reference_data_review_script_slug(script_name)?;
+    let artifacts = plan_reference_data_review_artifact_paths(root, &slug)?;
+    let mut report = empty_reference_data_review_script_report(false);
+    report.success = true;
+    report.repository_path = compare.repository_path.clone();
+    report.git_root = compare.git_root.clone();
+    report.is_git_repository = compare.is_git_repository;
+    report.branch = compare.branch.clone();
+    report.working_tree_status = compare.working_tree_status;
+    report.is_dirty = compare.is_dirty;
+    report.script_name = script_name.to_string();
+    report.selected_tables = compare.selected_tables.clone();
+    report.planned_artifacts = artifacts.relative_paths();
+    report.warnings.extend(compare.warnings.clone());
+    report.errors.extend(compare.errors.clone());
+    render_reference_data_review_artifacts(&mut report, compare, &artifacts);
+    if !report.errors.is_empty() {
+        report.success = false;
+        return Ok(report);
+    }
+    let generated = [
+        (&artifacts.sql, report.script_content.clone()),
+        (&artifacts.summary, report.summary_content.clone()),
+        (&artifacts.risk, report.risk_content.clone()),
+        (&artifacts.manifest, report.manifest_content.clone()),
+    ];
+    for (relative_path, _) in &generated {
+        ensure_reference_data_review_release_path(relative_path)?;
+        if root.join(relative_path).exists() {
+            report.errors.push(format!(
+                "Refusing to overwrite existing reference-data review artifact {relative_path}."
+            ));
+        }
+    }
+    if report.errors.is_empty() {
+        for (relative_path, content) in generated {
+            fs::write(root.join(relative_path), content)
+                .map_err(|error| format!("Could not write {relative_path}: {error}"))?;
+            report.created_artifacts.push(relative_path.clone());
+        }
+    }
+    report.success = report.errors.is_empty();
+    Ok(report)
+}
+
+fn reference_data_review_script_with_connection(
+    cwd: &Path,
+    connection_url: &str,
+    selection: &ReferenceDataSelection,
+    script_name: &str,
+    dry_run: bool,
+) -> Result<ReferenceDataReviewScriptReport, String> {
+    let mut report = empty_reference_data_review_script_report(dry_run);
+    report.script_name = script_name.to_string();
+    let slug = match reference_data_review_script_slug(script_name) {
+        Ok(slug) => slug,
+        Err(error) => {
+            report.errors.push(error);
+            return Ok(report);
+        }
+    };
+
+    let project = status_report(cwd, CommandKind::DataComparePostgres);
+    report.repository_path = project.repository_path.clone();
+    report.git_root = project.git_root.clone();
+    report.is_git_repository = project.is_git_repository;
+    report.branch = project.branch.clone();
+    report.working_tree_status = project.working_tree_status;
+    report.is_dirty = project.is_dirty;
+    if !project.is_git_repository {
+        report
+            .errors
+            .push("Current path is not inside a Git repository.".to_string());
+        return Ok(report);
+    }
+    if project.dbstate_project_status != DbStateProjectStatus::CompleteDbStateStructure {
+        report.errors.push(
+            "DbState PostgreSQL project structure is incomplete. Run dbstate init first."
+                .to_string(),
+        );
+        return Ok(report);
+    }
+    if project.is_dirty && !dry_run {
+        report.errors.push(
+            "Reference-data review script generation is blocked because the working tree has changes. Commit/stash changes or use preview."
+                .to_string(),
+        );
+        return Ok(report);
+    }
+    if project.is_dirty && dry_run {
+        report.warnings.push(
+            "Reference-data review script generation will be blocked while the working tree has changes."
+                .to_string(),
+        );
+    }
+
+    let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
+    if !root.join("database/releases").is_dir() {
+        report.errors.push(
+            "database/releases is missing. Run dbstate init before generating review script artifacts."
+                .to_string(),
+        );
+        return Ok(report);
+    }
+    let artifacts = match plan_reference_data_review_artifact_paths(&root, &slug) {
+        Ok(artifacts) => artifacts,
+        Err(error) => {
+            report.errors.push(error);
+            return Ok(report);
+        }
+    };
+    report.planned_artifacts = artifacts.relative_paths();
+
+    let compare = data_compare_postgres_with_connection(cwd, connection_url, selection)?;
+    report.selected_tables = compare.selected_tables.clone();
+    report.warnings.extend(compare.warnings.clone());
+    report.errors.extend(compare.errors.clone());
+    if !report.errors.is_empty() {
+        report.success = false;
+        return Ok(report);
+    }
+
+    render_reference_data_review_artifacts(&mut report, &compare, &artifacts);
+    report.success = report.errors.is_empty();
+    if dry_run || !report.success {
+        return Ok(report);
+    }
+
+    let generated = [
+        (&artifacts.sql, report.script_content.clone()),
+        (&artifacts.summary, report.summary_content.clone()),
+        (&artifacts.risk, report.risk_content.clone()),
+        (&artifacts.manifest, report.manifest_content.clone()),
+    ];
+    for (relative_path, _) in &generated {
+        if let Err(error) = ensure_reference_data_review_release_path(relative_path) {
+            report.errors.push(error);
+        }
+        if root.join(relative_path).exists() {
+            report.errors.push(format!(
+                "Refusing to overwrite existing reference-data review artifact {relative_path}."
+            ));
+        }
+    }
+    if !report.errors.is_empty() {
+        report.success = false;
+        return Ok(report);
+    }
+    for (relative_path, content) in generated {
+        if let Err(error) = fs::write(root.join(relative_path), content) {
+            report
+                .errors
+                .push(format!("Could not write {relative_path}: {error}"));
+            continue;
+        }
+        report.created_artifacts.push(relative_path.clone());
+    }
+    report.success = report.errors.is_empty();
+    Ok(report)
+}
+
+#[derive(Debug, Clone)]
+struct ReferenceDataReviewArtifactPaths {
+    sql: String,
+    summary: String,
+    risk: String,
+    manifest: String,
+}
+
+impl ReferenceDataReviewArtifactPaths {
+    fn relative_paths(&self) -> Vec<String> {
+        vec![
+            self.sql.clone(),
+            self.summary.clone(),
+            self.risk.clone(),
+            self.manifest.clone(),
+        ]
+    }
+
+    fn sequence(&self) -> String {
+        self.sql
+            .rsplit('/')
+            .next()
+            .and_then(|file| {
+                file.split_once('_')
+                    .map(|(sequence, _)| sequence.to_string())
+            })
+            .unwrap_or_else(|| "0000".to_string())
+    }
+}
+
+fn reference_data_review_script_slug(script_name: &str) -> Result<String, String> {
+    let trimmed = script_name.trim();
+    if trimmed.is_empty() {
+        return Err("Review script name cannot be empty.".to_string());
+    }
+    if trimmed.contains("..")
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+        || trimmed.contains(' ')
+        || trimmed.contains('\t')
+    {
+        return Err(
+            "Review script name must use only letters, numbers, hyphen, or underscore.".to_string(),
+        );
+    }
+    let slug = trimmed.to_ascii_lowercase();
+    if slug
+        .chars()
+        .all(|character| character.is_ascii_alphanumeric() || character == '-' || character == '_')
+    {
+        Ok(slug)
+    } else {
+        Err("Review script name must use only letters, numbers, hyphen, or underscore.".to_string())
+    }
+}
+
+fn plan_reference_data_review_artifact_paths(
+    root: &Path,
+    slug: &str,
+) -> Result<ReferenceDataReviewArtifactPaths, String> {
+    for sequence in 1..=9999 {
+        let prefix = format!("{sequence:04}_{slug}.reference-data");
+        let artifacts = ReferenceDataReviewArtifactPaths {
+            sql: format!("database/releases/{prefix}.sql"),
+            summary: format!("database/releases/{prefix}.summary.md"),
+            risk: format!("database/releases/{prefix}.risk.json"),
+            manifest: format!("database/releases/{prefix}.manifest.json"),
+        };
+        for relative_path in artifacts.relative_paths() {
+            ensure_reference_data_review_release_path(&relative_path)?;
+        }
+        if !root.join(&artifacts.sql).exists()
+            && !root.join(&artifacts.summary).exists()
+            && !root.join(&artifacts.risk).exists()
+            && !root.join(&artifacts.manifest).exists()
+        {
+            return Ok(artifacts);
+        }
+    }
+    Err("Could not choose a reference-data review artifact sequence from 0001 to 9999.".to_string())
+}
+
+fn ensure_reference_data_review_release_path(relative_path: &str) -> Result<(), String> {
+    if relative_path.starts_with("database/releases/")
+        && !relative_path.contains("..")
+        && !relative_path.contains('\\')
+        && !relative_path.contains(':')
+    {
+        Ok(())
+    } else {
+        Err(format!(
+            "Refusing to write outside database/releases/: {relative_path}"
+        ))
+    }
+}
+
+fn empty_reference_data_review_script_report(dry_run: bool) -> ReferenceDataReviewScriptReport {
+    ReferenceDataReviewScriptReport {
+        command: if dry_run {
+            "reference-data review-script preview".to_string()
+        } else {
+            "reference-data review-script write".to_string()
+        },
+        success: false,
+        dry_run,
+        repository_path: String::new(),
+        git_root: None,
+        is_git_repository: false,
+        branch: None,
+        working_tree_status: WorkingTreeStatus::Unknown,
+        is_dirty: false,
+        script_name: String::new(),
+        selected_tables: Vec::new(),
+        affected_rows: 0,
+        insert_count: 0,
+        update_count: 0,
+        manual_review_count: 0,
+        database_only_count: 0,
+        foreign_key_warning_count: 0,
+        delete_generated_count: 0,
+        planned_artifacts: Vec::new(),
+        created_artifacts: Vec::new(),
+        script_content: String::new(),
+        summary_content: String::new(),
+        risk_content: String::new(),
+        manifest_content: String::new(),
+        warnings: Vec::new(),
+        errors: Vec::new(),
+    }
+}
+
+fn render_reference_data_review_artifacts(
+    report: &mut ReferenceDataReviewScriptReport,
+    compare: &ReferenceDataCompareReport,
+    artifacts: &ReferenceDataReviewArtifactPaths,
+) {
+    let sql = render_reference_data_review_sql(report, compare);
+    report.script_content = sql;
+    report.summary_content = render_reference_data_review_summary(report, artifacts);
+    report.risk_content = render_reference_data_review_risk_json(report, artifacts);
+    report.manifest_content = render_reference_data_review_manifest_json(report, artifacts);
+}
+
+fn render_reference_data_review_summary(
+    report: &ReferenceDataReviewScriptReport,
+    artifacts: &ReferenceDataReviewArtifactPaths,
+) -> String {
+    let mut summary = String::new();
+    writeln!(summary, "# Reference Data Review Script").ok();
+    writeln!(summary).ok();
+    writeln!(summary, "- Review only: true").ok();
+    writeln!(summary, "- Executes SQL: false").ok();
+    writeln!(summary, "- Mutates PostgreSQL: false").ok();
+    writeln!(summary, "- Source: Repository reference-data").ok();
+    writeln!(summary, "- Target: PostgreSQL database").ok();
+    writeln!(
+        summary,
+        "- Selected tables: {}",
+        if report.selected_tables.is_empty() {
+            "none".to_string()
+        } else {
+            report.selected_tables.join(", ")
+        }
+    )
+    .ok();
+    writeln!(summary, "- INSERT candidates: {}", report.insert_count).ok();
+    writeln!(summary, "- UPDATE candidates: {}", report.update_count).ok();
+    writeln!(
+        summary,
+        "- Manual-review rows: {}",
+        report.manual_review_count
+    )
+    .ok();
+    writeln!(
+        summary,
+        "- Database-only rows: {}",
+        report.database_only_count
+    )
+    .ok();
+    writeln!(
+        summary,
+        "- DELETE statements generated: {}",
+        report.delete_generated_count
+    )
+    .ok();
+    writeln!(
+        summary,
+        "- Potential foreign-key warnings: {}",
+        report.foreign_key_warning_count
+    )
+    .ok();
+    writeln!(summary).ok();
+    writeln!(
+        summary,
+        "DbState does not execute this SQL. Review manually before applying outside DbState."
+    )
+    .ok();
+    writeln!(
+        summary,
+        "DbState does not generate DELETE for database-only reference-data rows in Private Beta."
+    )
+    .ok();
+    writeln!(summary).ok();
+    writeln!(summary, "## Artifacts").ok();
+    for path in artifacts.relative_paths() {
+        writeln!(summary, "- {path}").ok();
+    }
+    summary
+}
+
+fn render_reference_data_review_risk_json(
+    report: &ReferenceDataReviewScriptReport,
+    artifacts: &ReferenceDataReviewArtifactPaths,
+) -> String {
+    let mut json = String::new();
+    json.push('{');
+    write_json_bool_field(&mut json, "reviewOnly", true);
+    write_json_bool_field(&mut json, "executesSql", false);
+    write_json_bool_field(&mut json, "mutatesPostgres", false);
+    write_json_bool_field(&mut json, "deleteGenerated", false);
+    write_json_usize_field(&mut json, "insertCandidates", report.insert_count);
+    write_json_usize_field(&mut json, "updateCandidates", report.update_count);
+    write_json_usize_field(&mut json, "manualReviewRows", report.manual_review_count);
+    write_json_usize_field(&mut json, "databaseOnlyRows", report.database_only_count);
+    write_json_usize_field(
+        &mut json,
+        "foreignKeyWarnings",
+        report.foreign_key_warning_count,
+    );
+    write_json_usize_field(
+        &mut json,
+        "deleteGeneratedCount",
+        report.delete_generated_count,
+    );
+    write_json_array_field(&mut json, "selectedTables", &report.selected_tables);
+    write_json_array_field(&mut json, "artifactPaths", &artifacts.relative_paths());
+    write_json_array_field(&mut json, "warnings", &report.warnings);
+    json.push('}');
+    json
+}
+
+fn render_reference_data_review_manifest_json(
+    report: &ReferenceDataReviewScriptReport,
+    artifacts: &ReferenceDataReviewArtifactPaths,
+) -> String {
+    let mut json = String::new();
+    json.push('{');
+    write_json_string_field(&mut json, "artifactKind", "referenceDataReviewScript", true);
+    write_json_string_field(&mut json, "source", "repositoryReferenceData", false);
+    write_json_string_field(&mut json, "target", "postgresDatabase", false);
+    write_json_string_field(&mut json, "sequence", &artifacts.sequence(), false);
+    write_json_string_field(&mut json, "scriptName", &report.script_name, false);
+    write_json_bool_field(&mut json, "reviewOnly", true);
+    write_json_bool_field(&mut json, "executesSql", false);
+    write_json_bool_field(&mut json, "mutatesPostgres", false);
+    write_json_array_field(&mut json, "selectedTables", &report.selected_tables);
+    write_json_array_field(&mut json, "paths", &artifacts.relative_paths());
+    json.push('}');
+    json
+}
+
+fn render_reference_data_review_sql(
+    report: &mut ReferenceDataReviewScriptReport,
+    compare: &ReferenceDataCompareReport,
+) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- REVIEW ONLY.").ok();
+    writeln!(sql, "-- DbState does not execute this SQL.").ok();
+    writeln!(sql, "-- Review manually before applying outside DbState.").ok();
+    writeln!(sql, "-- Source: Repository reference-data").ok();
+    writeln!(sql, "-- Target: PostgreSQL database").ok();
+    writeln!(
+        sql,
+        "-- DbState does not generate DELETE for database-only reference-data rows in Private Beta."
+    )
+    .ok();
+    writeln!(sql).ok();
+
+    for table in &compare.table_results {
+        writeln!(sql, "-- Reference table: {}", table.table_name).ok();
+        writeln!(sql, "-- Key columns: {}", table.key_columns.join(", ")).ok();
+        writeln!(sql).ok();
+        for row in &table.row_results {
+            match row.classification.as_str() {
+                "repoOnly" => render_reference_data_insert_candidate(&mut sql, report, table, row),
+                "repoDifferent" => {
+                    render_reference_data_update_candidate(&mut sql, report, table, row)
+                }
+                "databaseOnly" => {
+                    render_reference_data_database_only_comment(&mut sql, report, table, row)
+                }
+                "skipped" | "error" => {
+                    report.manual_review_count += 1;
+                    report.affected_rows += 1;
+                    writeln!(sql, "-- REVIEW REQUIRED: skipped/error reference-data row.").ok();
+                    writeln!(sql, "-- Row: {}", row.row_key).ok();
+                    writeln!(sql, "-- No INSERT, UPDATE, or DELETE generated.").ok();
+                    write_reference_row_warnings(&mut sql, row);
+                    writeln!(sql).ok();
+                }
+                _ => {}
+            }
+        }
+        writeln!(sql).ok();
+    }
+    if report.insert_count == 0 && report.update_count == 0 && report.manual_review_count == 0 {
+        writeln!(
+            sql,
+            "-- No non-in-sync reference-data rows selected for review script generation."
+        )
+        .ok();
+    }
+    sql
+}
+
+fn render_reference_data_insert_candidate(
+    sql: &mut String,
+    report: &mut ReferenceDataReviewScriptReport,
+    table: &ReferenceTableCompareResult,
+    row: &ReferenceRowCompareResult,
+) {
+    let columns = reference_data_insert_columns(table, row);
+    if columns.is_empty() {
+        report.manual_review_count += 1;
+        report.affected_rows += 1;
+        writeln!(sql, "-- REVIEW REQUIRED: repository-only reference-data row has no safely renderable columns.").ok();
+        writeln!(sql, "-- Row: {}", row.row_key).ok();
+        writeln!(sql, "-- No INSERT generated.").ok();
+        writeln!(sql).ok();
+        return;
+    }
+    let Some((schema, table_name)) = table.table_name.split_once('.') else {
+        report.errors.push(format!(
+            "Reference-data table '{}' is not schema-qualified.",
+            table.table_name
+        ));
+        return;
+    };
+    let values: Vec<String> = columns
+        .iter()
+        .map(|column| sql_literal(row.repository_values.get(column)))
+        .collect();
+    writeln!(sql, "-- Row: {}", reference_row_comment_key(row)).ok();
+    writeln!(sql, "-- Classification: Repository only").ok();
+    writeln!(
+        sql,
+        "INSERT INTO {}.{} ({})",
+        quote_postgres_identifier(schema),
+        quote_postgres_identifier(table_name),
+        columns
+            .iter()
+            .map(|column| quote_postgres_identifier(column))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+    .ok();
+    writeln!(sql, "VALUES ({});", values.join(", ")).ok();
+    writeln!(sql).ok();
+    report.insert_count += 1;
+    report.affected_rows += 1;
+}
+
+fn render_reference_data_update_candidate(
+    sql: &mut String,
+    report: &mut ReferenceDataReviewScriptReport,
+    table: &ReferenceTableCompareResult,
+    row: &ReferenceRowCompareResult,
+) {
+    let columns = reference_data_update_columns(table, row);
+    if columns.is_empty() {
+        report.manual_review_count += 1;
+        report.affected_rows += 1;
+        writeln!(sql, "-- REVIEW REQUIRED: different reference-data row has no safely renderable changed versioned columns.").ok();
+        writeln!(sql, "-- Row: {}", row.row_key).ok();
+        writeln!(sql, "-- No UPDATE generated.").ok();
+        writeln!(sql).ok();
+        return;
+    }
+    let Some((schema, table_name)) = table.table_name.split_once('.') else {
+        report.errors.push(format!(
+            "Reference-data table '{}' is not schema-qualified.",
+            table.table_name
+        ));
+        return;
+    };
+    writeln!(sql, "-- Row: {}", reference_row_comment_key(row)).ok();
+    writeln!(sql, "-- Classification: Different").ok();
+    writeln!(
+        sql,
+        "UPDATE {}.{}",
+        quote_postgres_identifier(schema),
+        quote_postgres_identifier(table_name)
+    )
+    .ok();
+    writeln!(
+        sql,
+        "SET {}",
+        columns
+            .iter()
+            .map(|column| format!(
+                "{} = {}",
+                quote_postgres_identifier(column),
+                sql_literal(row.repository_values.get(column))
+            ))
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
+    .ok();
+    writeln!(sql, "WHERE {};", reference_data_where_clause(table, row)).ok();
+    writeln!(sql).ok();
+    report.update_count += 1;
+    report.affected_rows += 1;
+}
+
+fn render_reference_data_database_only_comment(
+    sql: &mut String,
+    report: &mut ReferenceDataReviewScriptReport,
+    table: &ReferenceTableCompareResult,
+    row: &ReferenceRowCompareResult,
+) {
+    report.manual_review_count += 1;
+    report.database_only_count += 1;
+    report.affected_rows += 1;
+    writeln!(sql, "-- REVIEW REQUIRED: database-only reference-data row.").ok();
+    writeln!(
+        sql,
+        "-- DbState does not generate DELETE for reference-data rows in Private Beta."
+    )
+    .ok();
+    writeln!(
+        sql,
+        "-- Reason: deleting reference data can break foreign keys or historical meaning."
+    )
+    .ok();
+    writeln!(sql, "-- Key: {}", reference_row_comment_key(row)).ok();
+    writeln!(sql, "-- Potentially affected foreign keys:").ok();
+    if table.foreign_key_references.is_empty() {
+        writeln!(sql, "--   none detected by read-only metadata query").ok();
+    } else {
+        report.foreign_key_warning_count += table.foreign_key_references.len();
+        for foreign_key in &table.foreign_key_references {
+            writeln!(
+                sql,
+                "--   {}",
+                reference_data_foreign_key_description(foreign_key)
+            )
+            .ok();
+        }
+    }
+    writeln!(sql, "-- No DELETE generated.").ok();
+    write_reference_row_warnings(sql, row);
+    writeln!(sql).ok();
+}
+
+fn write_reference_row_warnings(sql: &mut String, row: &ReferenceRowCompareResult) {
+    for warning in &row.warnings {
+        writeln!(sql, "-- Warning: {warning}").ok();
+    }
+}
+
+fn reference_data_insert_columns(
+    table: &ReferenceTableCompareResult,
+    row: &ReferenceRowCompareResult,
+) -> Vec<String> {
+    let mut columns = Vec::new();
+    for column in &table.key_columns {
+        if row.repository_values.contains_key(column) && !columns.contains(column) {
+            columns.push(column.clone());
+        }
+    }
+    for column in row.repository_values.keys() {
+        if table.ignored_columns.contains(column)
+            || table.masked_columns.contains(column)
+            || columns.contains(column)
+        {
+            continue;
+        }
+        columns.push(column.clone());
+    }
+    columns
+}
+
+fn reference_data_update_columns(
+    table: &ReferenceTableCompareResult,
+    row: &ReferenceRowCompareResult,
+) -> Vec<String> {
+    row.changed_columns
+        .iter()
+        .filter(|column| {
+            !table.key_columns.contains(*column)
+                && !table.ignored_columns.contains(*column)
+                && !table.masked_columns.contains(*column)
+                && row.repository_values.contains_key(*column)
+        })
+        .cloned()
+        .collect()
+}
+
+fn reference_data_where_clause(
+    table: &ReferenceTableCompareResult,
+    row: &ReferenceRowCompareResult,
+) -> String {
+    table
+        .key_columns
+        .iter()
+        .map(|column| {
+            format!(
+                "{} = {}",
+                quote_postgres_identifier(column),
+                sql_literal(row.key_values.get(column))
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" AND ")
+}
+
+fn reference_row_comment_key(row: &ReferenceRowCompareResult) -> String {
+    if row.key_values.is_empty() {
+        return row.row_key.clone();
+    }
+    row.key_values
+        .iter()
+        .map(|(key, value)| format!("{key} = {value}"))
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn sql_literal(value: Option<&String>) -> String {
+    let Some(value) = value else {
+        return "NULL".to_string();
+    };
+    if value == "[masked]" || value == "[ignored]" {
+        return "NULL".to_string();
+    }
+    let trimmed = value.trim();
+    if trimmed.eq_ignore_ascii_case("null") {
+        return "NULL".to_string();
+    }
+    if trimmed.eq_ignore_ascii_case("true") || trimmed.eq_ignore_ascii_case("false") {
+        return trimmed.to_ascii_lowercase();
+    }
+    if is_safe_sql_number(trimmed) {
+        return trimmed.to_string();
+    }
+    format!("'{}'", trimmed.replace('\'', "''"))
+}
+
+fn is_safe_sql_number(value: &str) -> bool {
+    if value.is_empty() {
+        return false;
+    }
+    let mut chars = value.chars().peekable();
+    if matches!(chars.peek(), Some('-')) {
+        chars.next();
+    }
+    let mut saw_digit = false;
+    let mut saw_dot = false;
+    for character in chars {
+        if character.is_ascii_digit() {
+            saw_digit = true;
+        } else if character == '.' && !saw_dot {
+            saw_dot = true;
+        } else {
+            return false;
+        }
+    }
+    saw_digit
+}
+
+fn write_json_usize_field(json: &mut String, name: &str, value: usize) {
+    json.push(',');
+    write!(json, "\"{}\":{}", escape_json(name), value).ok();
 }
 
 fn comparable_reference_columns(
@@ -2278,6 +3192,53 @@ fn write_reference_data_export_table_array_field(
     json.push(']');
 }
 
+impl ReferenceDataReviewScriptReport {
+    pub fn to_json(&self) -> String {
+        let mut json = String::new();
+        json.push('{');
+        write_json_string_field(&mut json, "command", self.command.as_str(), true);
+        write_json_bool_field(&mut json, "success", self.success);
+        write_json_bool_field(&mut json, "dryRun", self.dry_run);
+        write_repository_context_fields(
+            &mut json,
+            &self.repository_path,
+            self.git_root.as_deref(),
+            self.is_git_repository,
+            self.branch.as_deref(),
+            self.working_tree_status,
+            self.is_dirty,
+        );
+        write_json_string_field(&mut json, "scriptName", &self.script_name, false);
+        write_json_array_field(&mut json, "selectedTables", &self.selected_tables);
+        write_json_usize_field(&mut json, "affectedRows", self.affected_rows);
+        write_json_usize_field(&mut json, "insertCount", self.insert_count);
+        write_json_usize_field(&mut json, "updateCount", self.update_count);
+        write_json_usize_field(&mut json, "manualReviewCount", self.manual_review_count);
+        write_json_usize_field(&mut json, "databaseOnlyCount", self.database_only_count);
+        write_json_usize_field(
+            &mut json,
+            "foreignKeyWarningCount",
+            self.foreign_key_warning_count,
+        );
+        write_json_usize_field(
+            &mut json,
+            "deleteGeneratedCount",
+            self.delete_generated_count,
+        );
+        write_json_array_field(&mut json, "plannedArtifacts", &self.planned_artifacts);
+        write_json_array_field(&mut json, "createdArtifacts", &self.created_artifacts);
+        write_json_array_field(&mut json, "filesCreated", &self.created_artifacts);
+        write_json_string_field(&mut json, "scriptContent", &self.script_content, false);
+        write_json_string_field(&mut json, "summaryContent", &self.summary_content, false);
+        write_json_string_field(&mut json, "riskContent", &self.risk_content, false);
+        write_json_string_field(&mut json, "manifestContent", &self.manifest_content, false);
+        write_json_array_field(&mut json, "warnings", &self.warnings);
+        write_json_array_field(&mut json, "errors", &self.errors);
+        json.push('}');
+        json
+    }
+}
+
 impl ReferenceDataCompareReport {
     pub fn to_text(&self) -> String {
         let mut text = String::new();
@@ -2402,10 +3363,45 @@ fn write_reference_table_result_array_field(
         write_json_array_field(json, "comparedColumns", &value.compared_columns);
         write_json_array_field(json, "ignoredColumns", &value.ignored_columns);
         write_json_array_field(json, "maskedColumns", &value.masked_columns);
+        write_reference_foreign_key_array_field(
+            json,
+            "foreignKeyReferences",
+            &value.foreign_key_references,
+        );
         write_reference_counts_field(json, "rowCounts", &value.row_counts);
         write_reference_row_result_array_field(json, "rowResults", &value.row_results);
         write_json_array_field(json, "warnings", &value.warnings);
         write_json_array_field(json, "errors", &value.errors);
+        json.push('}');
+    }
+    json.push(']');
+}
+
+fn write_reference_foreign_key_array_field(
+    json: &mut String,
+    name: &str,
+    values: &[ReferenceDataForeignKeyReference],
+) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "constraintName", &value.constraint_name, true);
+        write_json_string_field(json, "referencingSchema", &value.referencing_schema, false);
+        write_json_string_field(json, "referencingTable", &value.referencing_table, false);
+        write_json_array_field(json, "referencingColumns", &value.referencing_columns);
+        write_json_string_field(json, "referencedSchema", &value.referenced_schema, false);
+        write_json_string_field(json, "referencedTable", &value.referenced_table, false);
+        write_json_array_field(json, "referencedColumns", &value.referenced_columns);
+        write_json_string_field(
+            json,
+            "description",
+            &reference_data_foreign_key_description(value),
+            false,
+        );
         json.push('}');
     }
     json.push(']');
