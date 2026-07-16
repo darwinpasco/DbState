@@ -35,7 +35,7 @@ const UI_HTML: &str = r#"<!doctype html>
       <button type="button" class="workflow-step" data-step="source-target" data-testid="tab-source-target">2. Source &amp; Target</button>
       <button type="button" class="workflow-step" data-step="compare-options" data-testid="tab-compare-options">3. Compare Options</button>
       <button type="button" class="workflow-step" data-step="results" data-testid="tab-results">4. Results</button>
-      <button type="button" class="workflow-step" data-step="object-diff" data-testid="tab-object-diff">5. Object Diff</button>
+      <button type="button" class="workflow-step" id="tab-object-diff" data-step="object-diff" data-testid="tab-object-diff">5. Object Diff</button>
       <button type="button" class="workflow-step" data-step="warnings" data-testid="tab-warnings">6. Warnings</button>
       <button type="button" class="workflow-step" data-step="release-plan" data-testid="tab-release-plan">7. Release Plan</button>
       <button type="button" class="workflow-step" data-step="reports" data-testid="tab-reports-raw-json">8. Reports / Raw JSON</button>
@@ -387,7 +387,7 @@ rows:
         </div>
         <div id="results-error-summary" class="results-error-summary" hidden></div>
         <div class="results-toolbar">
-          <label for="object-type-filter">Object type
+          <label id="object-type-filter-label" for="object-type-filter">Object type
             <select id="object-type-filter" data-testid="results-object-type-filter">
               <option value="all">All</option>
               <option value="schema">Schema</option>
@@ -424,7 +424,7 @@ rows:
         </div>
         <div class="table-wrap">
           <table class="results-grid" aria-label="Comparison results grid" data-testid="results-table">
-            <thead>
+            <thead id="results-head">
               <tr>
                 <th>Include</th>
                 <th>Object type</th>
@@ -440,11 +440,6 @@ rows:
             </tbody>
           </table>
         </div>
-        <section class="subsection" id="reference-data-row-detail" data-testid="reference-data-row-detail">
-          <h3>Reference-Data Row Detail</h3>
-          <p class="note">Read-only row comparison detail. Masked values are displayed as [masked]. Ignored columns do not cause differences.</p>
-          <dl class="summary-list compact" id="reference-data-row-detail-summary"></dl>
-        </section>
       </section>
 
       <section class="workflow-panel" id="step-object-diff">
@@ -456,6 +451,23 @@ rows:
           <h3 id="selected-object-title">No object selected</h3>
           <dl class="summary-list compact" id="selected-object-summary"></dl>
         </section>
+        <div id="data-diff-view" data-testid="reference-data-data-diff" hidden>
+          <section class="subsection">
+            <h3 id="data-diff-title">Data Diff</h3>
+            <p class="note">Read-only reference-data comparison. Ignored columns do not drive differences. Masked values are shown only as [masked].</p>
+            <dl class="summary-list compact" id="data-diff-summary"></dl>
+          </section>
+          <div class="table-wrap">
+            <table class="results-grid" aria-label="Reference-data rows for selected table" data-testid="reference-data-data-diff-rows">
+              <thead>
+                <tr><th>Key</th><th>Status</th><th>Changed Columns</th><th>Warnings</th></tr>
+              </thead>
+              <tbody id="data-diff-rows-body">
+                <tr><td colspan="4">Select a reference-data table summary row to view row data diff.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
         <div class="object-diff-tabs" aria-label="Object Diff view mode">
           <button type="button" class="secondary-button active" data-diff-mode="fullContext">Full Context DDL</button>
           <button type="button" class="secondary-button" data-diff-mode="objectOnly">Object Only DDL</button>
@@ -1143,7 +1155,9 @@ button:hover {
 }
 
 .modal-dialog {
-  width: min(560px, calc(100vw - 32px));
+  width: min(860px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px);
+  overflow: auto;
   background: #ffffff;
   border: 1px solid var(--border);
   border-radius: 12px;
@@ -1295,6 +1309,39 @@ button:hover {
 
 .diff-line-target-only {
   color: #ff8f85;
+}
+
+.summary-count {
+  font-weight: 700;
+}
+
+.source-only-value {
+  color: #197a44;
+  font-weight: 700;
+}
+
+.target-only-value {
+  color: #b42318;
+  font-weight: 700;
+}
+
+.different-value {
+  background: #fff2cc;
+}
+
+.ignored-value,
+.masked-value {
+  color: #59636e;
+  font-style: italic;
+}
+
+#object-type-filter-label[hidden],
+#data-diff-view[hidden],
+.object-diff-tabs[hidden],
+#ddl-comparison-status[hidden],
+#ddl-diff-view[hidden],
+#related-objects-view[hidden] {
+  display: none;
 }
 
 .object-diff-tabs {
@@ -1565,6 +1612,7 @@ const UI_JS: &str = r#"(function () {
     referenceDataDatabaseTables: [],
     referenceDataExportSelections: {},
     referenceDataExportActiveTable: "",
+    selectedReferenceDataTable: "",
     profiles: [],
     directoryRoots: [],
     directoryCurrentPath: "",
@@ -1607,6 +1655,23 @@ const UI_JS: &str = r#"(function () {
       p.textContent = line || " ";
       body.appendChild(p);
     });
+    modal.hidden = false;
+    const closeButton = document.querySelector("[data-action='modal-close']");
+    if (closeButton) {
+      closeButton.focus();
+    }
+  }
+
+  function showModalContent(title, content) {
+    const modal = byId("app-modal");
+    if (!modal) {
+      responseSummary.textContent = title;
+      return;
+    }
+    byId("app-modal-title").textContent = title;
+    const body = byId("app-modal-body");
+    body.innerHTML = "";
+    body.appendChild(content);
     modal.hidden = false;
     const closeButton = document.querySelector("[data-action='modal-close']");
     if (closeButton) {
@@ -2019,6 +2084,7 @@ const UI_JS: &str = r#"(function () {
     updateRepositoryWriteButton();
     updateReleaseWriteButton();
     renderReleasePlan();
+    applyWorkflowChrome();
   }
 
   function workflowLayout(mode) {
@@ -2050,7 +2116,7 @@ const UI_JS: &str = r#"(function () {
         sourceKind: "Repository reference-data",
         sourceType: "Repository",
         sourceContext: "repository",
-        targetKind: "PostgreSQL target",
+        targetKind: "PostgreSQL database",
         targetType: "Database",
         targetContext: "connection"
       };
@@ -2631,6 +2697,7 @@ const UI_JS: &str = r#"(function () {
     document.querySelectorAll(".workflow-panel").forEach(function (panel) {
       panel.classList.toggle("active", panel.id === "step-" + step);
     });
+    applyWorkflowChrome();
   }
 
   function rowRef(row, index) {
@@ -3321,6 +3388,9 @@ const UI_JS: &str = r#"(function () {
   }
 
   function rowMatchesObjectTypeFilter(row) {
+    if (isReferenceDataRepositoryToDatabaseMode(currentWorkflowMode())) {
+      return true;
+    }
     const filter = value("object-type-filter");
     if (filter === "all") {
       return true;
@@ -3367,12 +3437,93 @@ const UI_JS: &str = r#"(function () {
     return [left.objectType, left.schema, left.name].join(".").localeCompare([right.objectType, right.schema, right.name].join("."));
   }
 
+  function renderDefaultResultsHeader() {
+    byId("results-head").innerHTML = "<tr><th>Include</th><th>Object type</th><th>Schema</th><th>Object name</th><th>Status</th><th>Planned operation</th><th>Warnings</th></tr>";
+  }
+
+  function renderReferenceDataResultsHeader() {
+    byId("results-head").innerHTML = "<tr><th>Table</th><th>Total Rows</th><th>Similar</th><th>Different</th><th>Repository Only</th><th>Database Only</th><th>Warnings</th></tr>";
+  }
+
+  function referenceDataRowTotal(counts) {
+    counts = counts || {};
+    return (counts.inSync || 0)
+      + (counts.repoDifferent || 0)
+      + (counts.repoOnly || 0)
+      + (counts.databaseOnly || 0)
+      + (counts.skipped || 0);
+  }
+
+  function appendSummaryCountCell(tr, value, className) {
+    const td = document.createElement("td");
+    const span = document.createElement("span");
+    span.className = "summary-count " + className;
+    span.textContent = String(value || 0);
+    td.appendChild(span);
+    tr.appendChild(td);
+  }
+
+  function renderReferenceDataTableSummaryResults() {
+    renderReferenceDataResultsHeader();
+    const body = byId("results-body");
+    body.innerHTML = "";
+    const visibleRows = state.rows.filter(function (row) {
+      return row.objectType === "referenceDataTable" && rowMatchesStatusFilter(row) && rowMatchesCurrentWorkflow(row);
+    }).slice().sort(compareResultRows);
+    state.visibleRows = visibleRows;
+    if (state.selectedIndex < 0 || state.selectedIndex >= visibleRows.length) {
+      state.selectedIndex = visibleRows.length ? 0 : -1;
+    }
+    visibleRows.forEach(function (row, visibleIndex) {
+      const counts = (row.raw && row.raw.rowCounts) || {};
+      const tr = document.createElement("tr");
+      tr.dataset.index = String(visibleIndex);
+      tr.setAttribute("data-action", "open-reference-data-table-diff");
+      tr.setAttribute("data-testid", "reference-data-table-summary-row");
+      tr.classList.toggle("selected", visibleIndex === state.selectedIndex);
+      const tableCell = document.createElement("td");
+      tableCell.textContent = row.raw && row.raw.tableName ? row.raw.tableName : row.schema + "." + row.name;
+      tr.appendChild(tableCell);
+      appendSummaryCountCell(tr, referenceDataRowTotal(counts), "");
+      appendSummaryCountCell(tr, counts.inSync || 0, "status-insync");
+      appendSummaryCountCell(tr, counts.repoDifferent || 0, "status-repodifferent");
+      appendSummaryCountCell(tr, counts.repoOnly || 0, "status-repoonly");
+      appendSummaryCountCell(tr, counts.databaseOnly || 0, "status-databaseonly");
+      appendSummaryCountCell(tr, Array.isArray(row.warnings) ? row.warnings.length : 0, "status-skipped");
+      tr.addEventListener("click", function () {
+        state.selectedIndex = visibleIndex;
+        state.selectedReferenceDataTable = row.raw && row.raw.tableName ? row.raw.tableName : row.schema + "." + row.name;
+        renderReferenceDataTableSummaryResults();
+        renderSelectedObject();
+        showStep("object-diff");
+      });
+      body.appendChild(tr);
+    });
+    if (!visibleRows.length) {
+      const tr = document.createElement("tr");
+      const td = document.createElement("td");
+      td.colSpan = 7;
+      td.textContent = "No reference-data table summaries are available in the latest response.";
+      tr.appendChild(td);
+      body.appendChild(tr);
+    }
+    byId("results-count").textContent = visibleRows.length + " table summary row(s)";
+    byId("included-count").textContent = "Reference-data rows available in Reports / Raw JSON";
+    renderSelectedObject();
+    renderReleasePlan();
+  }
+
   function renderResults(rows, keepUnderlying) {
     const body = byId("results-body");
     body.innerHTML = "";
     if (!keepUnderlying) {
       state.rows = rows;
     }
+    if (isReferenceDataRepositoryToDatabaseMode(currentWorkflowMode())) {
+      renderReferenceDataTableSummaryResults();
+      return;
+    }
+    renderDefaultResultsHeader();
     const visibleRows = state.rows.filter(function (row) {
       return rowMatchesFilter(row) && rowMatchesCurrentWorkflow(row);
     }).slice().sort(compareResultRows);
@@ -3793,6 +3944,172 @@ const UI_JS: &str = r#"(function () {
     });
   }
 
+  function sortedDataDiffColumns(tableRow, rowRaw) {
+    const columns = new Set();
+    const tableRaw = tableRow && tableRow.raw ? tableRow.raw : {};
+    [tableRaw.keyColumns, tableRaw.ignoredColumns, tableRaw.maskedColumns, rowRaw.changedColumns].forEach(function (values) {
+      if (Array.isArray(values)) {
+        values.forEach(function (column) { columns.add(column); });
+      }
+    });
+    [rowRaw.keyValues, rowRaw.repositoryValues, rowRaw.databaseValues].forEach(function (values) {
+      Object.keys(values || {}).forEach(function (column) { columns.add(column); });
+    });
+    return Array.from(columns).sort();
+  }
+
+  function dataDiffCellStatus(column, rowRaw, sourceValue, targetValue) {
+    const ignoredColumns = Array.isArray(rowRaw.ignoredColumns) ? rowRaw.ignoredColumns : [];
+    const maskedColumns = Array.isArray(rowRaw.maskedColumns) ? rowRaw.maskedColumns : [];
+    const changedColumns = Array.isArray(rowRaw.changedColumns) ? rowRaw.changedColumns : [];
+    if (ignoredColumns.indexOf(column) >= 0 || sourceValue === "[ignored]" || targetValue === "[ignored]") {
+      return "Ignored";
+    }
+    if (maskedColumns.indexOf(column) >= 0 || sourceValue === "[masked]" || targetValue === "[masked]") {
+      return "Masked";
+    }
+    if (rowRaw.classification === "repoOnly" && targetValue === "") {
+      return "Source only";
+    }
+    if (rowRaw.classification === "databaseOnly" && sourceValue === "") {
+      return "Target only";
+    }
+    if (changedColumns.indexOf(column) >= 0 || sourceValue !== targetValue) {
+      return "Different";
+    }
+    return "Same";
+  }
+
+  function appendDataDiffValueCell(tr, value, status, side) {
+    const td = document.createElement("td");
+    td.textContent = value || "";
+    if (status === "Source only" && side === "source") {
+      td.className = "source-only-value";
+    } else if (status === "Target only" && side === "target") {
+      td.className = "target-only-value";
+    } else if (status === "Different") {
+      td.className = "different-value";
+    } else if (status === "Ignored") {
+      td.className = "ignored-value";
+    } else if (status === "Masked") {
+      td.className = "masked-value";
+    }
+    tr.appendChild(td);
+  }
+
+  function referenceDataRowModalContent(tableRow, rowRaw) {
+    const wrapper = document.createElement("div");
+    wrapper.setAttribute("data-testid", "reference-data-row-data-diff-modal");
+    const note = document.createElement("p");
+    note.className = "note";
+    note.textContent = "Read-only Data Diff. Source: Repository reference-data. Target: PostgreSQL database. Ignored columns do not drive differences.";
+    wrapper.appendChild(note);
+    const summary = document.createElement("dl");
+    summary.className = "summary-list compact";
+    wrapper.appendChild(summary);
+    updateSummaryElement(summary, {
+      table: rowRaw.tableName || (tableRow && tableRow.raw && tableRow.raw.tableName) || "",
+      keyValues: textOrEmpty(rowRaw.rowKey),
+      classification: rowRaw.classification || "",
+      changedColumns: Array.isArray(rowRaw.changedColumns) && rowRaw.changedColumns.length ? rowRaw.changedColumns.join(", ") : "[none]",
+      warnings: Array.isArray(rowRaw.warnings) ? rowRaw.warnings.length : 0
+    });
+    const tableWrap = document.createElement("div");
+    tableWrap.className = "table-wrap";
+    const table = document.createElement("table");
+    table.className = "results-grid";
+    table.setAttribute("aria-label", "Reference-Data Row Data Diff");
+    table.innerHTML = "<thead><tr><th>Column</th><th>Source value</th><th>Target value</th><th>Status</th></tr></thead>";
+    const body = document.createElement("tbody");
+    const sourceValues = rowRaw.repositoryValues || {};
+    const targetValues = rowRaw.databaseValues || {};
+    sortedDataDiffColumns(tableRow, rowRaw).forEach(function (column) {
+      const sourceHas = Object.prototype.hasOwnProperty.call(sourceValues, column);
+      const targetHas = Object.prototype.hasOwnProperty.call(targetValues, column);
+      const sourceValue = sourceHas ? textOrEmpty(sourceValues[column]) : "";
+      const targetValue = targetHas ? textOrEmpty(targetValues[column]) : "";
+      const status = dataDiffCellStatus(column, rowRaw, sourceValue, targetValue);
+      const tr = document.createElement("tr");
+      const columnCell = document.createElement("td");
+      columnCell.textContent = column;
+      tr.appendChild(columnCell);
+      appendDataDiffValueCell(tr, sourceValue, status, "source");
+      appendDataDiffValueCell(tr, targetValue, status, "target");
+      const statusCell = document.createElement("td");
+      statusCell.textContent = status;
+      tr.appendChild(statusCell);
+      body.appendChild(tr);
+    });
+    table.appendChild(body);
+    tableWrap.appendChild(table);
+    wrapper.appendChild(tableWrap);
+    return wrapper;
+  }
+
+  function showReferenceDataRowDataDiffModal(tableRow, rowRaw) {
+    showModalContent("Reference-Data Row Data Diff", referenceDataRowModalContent(tableRow, rowRaw));
+  }
+
+  function renderEmptyDataDiff(message) {
+    byId("data-diff-title").textContent = "Data Diff";
+    updateSummary("data-diff-summary", {
+      table: "none",
+      source: "Repository reference-data",
+      target: "PostgreSQL database",
+      message: message || "Select a reference-data table summary row."
+    });
+    byId("data-diff-rows-body").innerHTML = "<tr><td colspan=\"4\">Select a reference-data table summary row to view row data diff.</td></tr>";
+  }
+
+  function renderReferenceDataTableDataDiff(row) {
+    const raw = row && row.raw ? row.raw : {};
+    const counts = raw.rowCounts || {};
+    const tableName = raw.tableName || (row ? row.schema + "." + row.name : "");
+    byId("data-diff-title").textContent = "Data Diff: " + tableName;
+    updateSummary("data-diff-summary", {
+      table: tableName,
+      source: "Repository reference-data",
+      target: "PostgreSQL database",
+      totalRows: referenceDataRowTotal(counts),
+      similar: counts.inSync || 0,
+      different: counts.repoDifferent || 0,
+      repositoryOnly: counts.repoOnly || 0,
+      databaseOnly: counts.databaseOnly || 0,
+      warnings: Array.isArray(raw.warnings) ? raw.warnings.length : 0
+    });
+    const body = byId("data-diff-rows-body");
+    body.innerHTML = "";
+    const rows = Array.isArray(raw.rowResults) ? raw.rowResults : [];
+    if (!rows.length) {
+      body.innerHTML = "<tr><td colspan=\"4\">No row-level reference-data results are available for this table.</td></tr>";
+      return;
+    }
+    rows.forEach(function (rowRaw) {
+      const tr = document.createElement("tr");
+      tr.setAttribute("data-action", "open-reference-data-row-diff-modal");
+      tr.setAttribute("data-testid", "reference-data-row-data-diff-row");
+      const values = [
+        rowRaw.rowKey || textOrEmpty(rowRaw.keyValues),
+        statusBadge(rowRaw.classification || "row"),
+        Array.isArray(rowRaw.changedColumns) && rowRaw.changedColumns.length ? rowRaw.changedColumns.join(", ") : "[none]",
+        Array.isArray(rowRaw.warnings) ? rowRaw.warnings.length : 0
+      ];
+      values.forEach(function (value) {
+        const td = document.createElement("td");
+        if (value instanceof HTMLElement) {
+          td.appendChild(value);
+        } else {
+          td.textContent = textOrEmpty(value);
+        }
+        tr.appendChild(td);
+      });
+      tr.addEventListener("click", function () {
+        showReferenceDataRowDataDiffModal(row, rowRaw);
+      });
+      body.appendChild(tr);
+    });
+  }
+
   function renderLoadedObjectDiff() {
     const row = state.visibleRows[state.selectedIndex];
     if (!row || !state.selectedObjectDdl) {
@@ -3856,10 +4173,44 @@ const UI_JS: &str = r#"(function () {
   function renderSelectedObject() {
     const row = state.visibleRows[state.selectedIndex];
     const direction = directionForResultRow(row);
-    renderReferenceDataRowDetail(row);
     setObjectDiffDdlTestIds(direction);
     byId("source-type-label").textContent = direction.sourceType;
     byId("target-type-label").textContent = direction.targetType;
+    if (isReferenceDataRepositoryToDatabaseMode(currentWorkflowMode())) {
+      applyWorkflowChrome();
+      if (!row) {
+        byId("selected-object-title").textContent = "No reference-data table selected";
+        updateSummary("selected-object-summary", {
+          source: "Repository reference-data",
+          target: "PostgreSQL database"
+        });
+        renderEmptyDataDiff("Select a reference-data table summary row.");
+        return;
+      }
+      if (row.objectType !== "referenceDataTable" || !rowMatchesCurrentWorkflow(row)) {
+        byId("selected-object-title").textContent = "No reference-data table selected";
+        updateSummary("selected-object-summary", {
+          message: "Selected result belongs to a different workflow. Run Reference Data Compare again."
+        });
+        renderEmptyDataDiff("Run Reference Data Compare: Repository to Database again.");
+        return;
+      }
+      const tableName = row.raw && row.raw.tableName ? row.raw.tableName : row.schema + "." + row.name;
+      byId("selected-object-title").textContent = "Data Diff: " + tableName;
+      updateSummary("selected-object-summary", {
+        objectType: "referenceDataTable",
+        table: tableName,
+        status: row.status,
+        source: "Repository reference-data",
+        sourceType: "Repository",
+        target: "PostgreSQL database",
+        targetType: "Database",
+        warnings: Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings)
+      });
+      byId("selected-json").textContent = redactedJson(objectDiffDisplayPayload(row, direction));
+      renderReferenceDataTableDataDiff(row);
+      return;
+    }
     if (!row) {
       byId("selected-object-title").textContent = "No object selected";
       byId("selected-object-summary").innerHTML = "";
@@ -3983,6 +4334,45 @@ const UI_JS: &str = r#"(function () {
     return value("workflow-mode") || "schemaRepoToDatabase";
   }
 
+  function applyWorkflowChrome() {
+    const referenceDataMode = isReferenceDataRepositoryToDatabaseMode(currentWorkflowMode());
+    const objectDiffTab = byId("tab-object-diff");
+    if (objectDiffTab) {
+      objectDiffTab.textContent = referenceDataMode ? "5. Data Diff" : "5. Object Diff";
+    }
+    const objectTypeLabel = byId("object-type-filter-label");
+    if (objectTypeLabel) {
+      objectTypeLabel.hidden = referenceDataMode;
+    }
+    const panelHeading = document.querySelector('#step-object-diff .panel-heading h2');
+    if (panelHeading) {
+      panelHeading.textContent = referenceDataMode ? "Data Diff" : "Object Diff";
+    }
+    const panelDescription = document.querySelector('#step-object-diff .panel-heading p');
+    if (panelDescription) {
+      panelDescription.textContent = referenceDataMode
+        ? "Select a reference-data table to inspect row-level data differences."
+        : "Select a result row to inspect available object-level details.";
+    }
+    const dataDiffView = byId("data-diff-view");
+    if (dataDiffView) {
+      dataDiffView.hidden = !referenceDataMode;
+    }
+    document.querySelectorAll(".object-diff-tabs").forEach(function (element) {
+      element.hidden = referenceDataMode;
+    });
+    ["ddl-comparison-status", "ddl-diff-view", "related-objects-view"].forEach(function (id) {
+      const element = byId(id);
+      if (element) {
+        element.hidden = referenceDataMode;
+      }
+    });
+    const rawDetails = byId("selected-json");
+    if (rawDetails && rawDetails.parentElement) {
+      rawDetails.parentElement.hidden = referenceDataMode;
+    }
+  }
+
   function workflowModesMatch(rowMode, selectedMode) {
     if (rowMode === "inspect" && isSchemaRepositoryToDatabaseMode(selectedMode)) {
       return true;
@@ -4045,7 +4435,7 @@ const UI_JS: &str = r#"(function () {
       return {
         sourceLabel: "Repository reference-data",
         sourceType: "Repository",
-        targetLabel: "PostgreSQL target",
+        targetLabel: "PostgreSQL database",
         targetType: "Database",
         sourceDdlSide: "repository",
         targetDdlSide: "database"
@@ -4354,7 +4744,7 @@ const UI_JS: &str = r#"(function () {
     }
     if (label === "Reference-data compare") {
       byId("results-source").textContent = "Repository reference-data";
-      byId("results-target").textContent = "PostgreSQL target";
+      byId("results-target").textContent = "PostgreSQL database";
       return;
     }
     byId("results-source").textContent = data && data.repositoryPath ? "Repository desired state: " + data.repositoryPath : "Repository desired state";

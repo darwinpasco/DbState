@@ -5198,6 +5198,28 @@ fn reference_data_compare_classifies_rows_and_ignores_columns() {
         .expect("different row");
     assert_eq!(different.classification, "repoDifferent");
     assert_eq!(different.changed_columns, vec!["name".to_string()]);
+    assert_eq!(
+        different.key_values.get("code").map(String::as_str),
+        Some("QRPH")
+    );
+    assert_eq!(
+        different.repository_values.get("name").map(String::as_str),
+        Some("QRPh Desired")
+    );
+    assert_eq!(
+        different.database_values.get("name").map(String::as_str),
+        Some("QRPh Live")
+    );
+    assert_eq!(
+        different
+            .repository_values
+            .get("updated_at")
+            .map(String::as_str),
+        Some("[ignored]")
+    );
+    assert!(different
+        .ignored_columns
+        .contains(&"updated_at".to_string()));
     assert!(!different
         .changed_columns
         .contains(&"updated_at".to_string()));
@@ -5226,6 +5248,11 @@ fn reference_data_compare_masks_columns_without_exposing_values() {
     let text = report.to_text();
 
     assert!(json.contains("secret_note"));
+    assert!(json.contains("\"keyValues\""));
+    assert!(json.contains("\"repositoryValues\""));
+    assert!(json.contains("\"databaseValues\""));
+    assert!(json.contains("\"ignoredColumns\""));
+    assert!(json.contains("[masked]"));
     assert!(!json.contains("repo-secret-cash"));
     assert!(!json.contains("database-secret-value"));
     assert!(!text.contains("repo-secret-cash"));
@@ -6331,7 +6358,8 @@ fn slice13b_results_grid_usability_contract_is_present() {
     let css = ui_css();
     let js = ui_js();
 
-    assert!(html.contains("<label for=\"object-type-filter\">Object type"));
+    assert!(html
+        .contains("<label id=\"object-type-filter-label\" for=\"object-type-filter\">Object type"));
     assert!(html.contains("<option value=\"all\">All</option>"));
     assert!(html.contains("<option value=\"schema\">Schema</option>"));
     assert!(html.contains("<option value=\"table\">Table</option>"));
@@ -6348,7 +6376,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
     assert!(html.contains("ignoredColumns:"));
     assert!(html.contains("reference-data-configured-tables"));
     assert!(html.contains("reference-data-selected-count"));
-    assert!(html.contains("Reference-Data Row Detail"));
+    assert!(js.contains("Reference-Data Row Data Diff"));
     assert!(!html.contains("placeholder=\"dbstate_slice2\""));
     assert!(!html.contains("placeholder=\"schema.table\""));
     assert!(!html.contains("table:dbstate_slice2.sample_accounts"));
@@ -6479,7 +6507,7 @@ fn slice34_reference_data_compare_ui_is_enabled_and_read_only() {
         "reference-data-selected-count",
         "Select all",
         "Clear selection",
-        "Reference-Data Row Detail",
+        "Reference-Data Row Data Diff",
         "database/reference-data/dbstate.reference-data.yml",
         "database/reference-data/tables/public.country.yml",
         "Canonical table file format",
@@ -6508,7 +6536,8 @@ fn slice34_reference_data_compare_ui_is_enabled_and_read_only() {
     assert!(combined.contains("/api/v1/reference-data/status"));
     assert!(combined.contains("selectedTables"));
     assert!(combined.contains("renderReferenceDataConfiguredTables"));
-    assert!(combined.contains("renderReferenceDataRowDetail"));
+    assert!(combined.contains("renderReferenceDataTableDataDiff"));
+    assert!(combined.contains("showReferenceDataRowDataDiffModal"));
     assert!(combined.contains("state.referenceDataSelectedTables"));
     assert!(!combined.contains("Reference-Data Compare Is Out of Scope"));
     assert!(!combined.contains("reference-data compare is out-of-scope"));
@@ -6517,6 +6546,148 @@ fn slice34_reference_data_compare_ui_is_enabled_and_read_only() {
     );
     assert!(!combined.contains("Sync to Database"));
     assert!(!combined.contains("Apply data changes"));
+}
+
+#[test]
+fn slice34b_reference_data_repo_to_database_is_table_first_data_diff() {
+    let html = ui_html();
+    let css = ui_css();
+    let js = ui_js();
+    let combined = format!("{html}\n{css}\n{js}");
+
+    for expected in [
+        "id=\"tab-object-diff\"",
+        "id=\"object-type-filter-label\"",
+        "id=\"results-head\"",
+        "id=\"data-diff-view\" data-testid=\"reference-data-data-diff\"",
+        "data-testid=\"reference-data-data-diff-rows\"",
+        "<tr><th>Key</th><th>Status</th><th>Changed Columns</th><th>Warnings</th></tr>",
+    ] {
+        assert!(
+            html.contains(expected),
+            "missing Slice 34B HTML contract {expected}"
+        );
+    }
+
+    for expected in [
+        "objectDiffTab.textContent = referenceDataMode ? \"5. Data Diff\" : \"5. Object Diff\"",
+        "objectTypeLabel.hidden = referenceDataMode",
+        "renderReferenceDataResultsHeader",
+        "<tr><th>Table</th><th>Total Rows</th><th>Similar</th><th>Different</th><th>Repository Only</th><th>Database Only</th><th>Warnings</th></tr>",
+        "data-action\", \"open-reference-data-table-diff\"",
+        "data-testid\", \"reference-data-table-summary-row\"",
+        "status-insync",
+        "status-repodifferent",
+        "status-repoonly",
+        "status-databaseonly",
+        "renderReferenceDataTableDataDiff",
+        "data-action\", \"open-reference-data-row-diff-modal\"",
+        "data-testid\", \"reference-data-row-data-diff-row\"",
+        "showReferenceDataRowDataDiffModal",
+        "Reference-Data Row Data Diff",
+        "data-testid\", \"reference-data-row-data-diff-modal\"",
+        "Source: Repository reference-data. Target: PostgreSQL database.",
+        "Column</th><th>Source value</th><th>Target value</th><th>Status",
+        "Same",
+        "Source only",
+        "Target only",
+        "Different",
+        "Ignored",
+        "[masked]",
+        "repositoryValues",
+        "databaseValues",
+        "keyValues",
+        "changedColumns",
+        "ignoredColumns",
+        "maskedColumns",
+    ] {
+        assert!(js.contains(expected), "missing Slice 34B JS contract {expected}");
+    }
+
+    for expected in [
+        ".summary-count",
+        ".source-only-value",
+        ".target-only-value",
+        ".different-value",
+        ".ignored-value",
+        ".masked-value",
+        "#object-type-filter-label[hidden]",
+        "#data-diff-view[hidden]",
+        ".object-diff-tabs[hidden]",
+        "#ddl-comparison-status[hidden]",
+        "#ddl-diff-view[hidden]",
+        "#related-objects-view[hidden]",
+    ] {
+        assert!(
+            css.contains(expected),
+            "missing Slice 34B CSS contract {expected}"
+        );
+    }
+
+    let data_diff_section = html
+        .split("id=\"data-diff-view\"")
+        .nth(1)
+        .expect("data diff section exists")
+        .split("<div class=\"object-diff-tabs\"")
+        .next()
+        .expect("data diff section before object diff tabs");
+    for forbidden in [
+        "Full Context DDL",
+        "Object Only DDL",
+        "Related Objects",
+        "Raw Details",
+        "DDL unavailable",
+        "Source DDL",
+        "Target DDL",
+    ] {
+        assert!(
+            !data_diff_section.contains(forbidden),
+            "reference-data Data Diff section exposes DDL chrome {forbidden}"
+        );
+    }
+
+    for forbidden in [
+        "Edit Reference Data Row",
+        "Delete Reference Data Row",
+        "Apply Reference Data",
+        "Sync to Database",
+        "Execute Reference Data",
+    ] {
+        assert!(
+            !combined.contains(forbidden),
+            "Slice 34B must not expose forbidden reference-data action {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn slice34b_schema_object_diff_chrome_is_preserved() {
+    let html = ui_html();
+    let js = ui_js();
+
+    for expected in [
+        "5. Object Diff",
+        "Full Context DDL",
+        "Object Only DDL",
+        "Related Objects",
+        "Raw Details",
+        "Source DDL - Full Context DDL",
+        "Target DDL - Full Context DDL",
+        "approvedEndpoints.objectDdl",
+        "loadSelectedObjectDdl",
+        "renderLoadedObjectDiff",
+    ] {
+        assert!(
+            format!("{html}\n{js}").contains(expected),
+            "schema Object Diff contract missing {expected}"
+        );
+    }
+
+    assert!(js.contains(
+        "objectDiffTab.textContent = referenceDataMode ? \"5. Data Diff\" : \"5. Object Diff\""
+    ));
+    assert!(js.contains("dataDiffView.hidden = !referenceDataMode"));
+    assert!(js.contains("element.hidden = referenceDataMode"));
 }
 
 #[test]

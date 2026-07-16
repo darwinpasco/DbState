@@ -53,7 +53,11 @@ pub struct ReferenceRowCompareResult {
     pub table_name: String,
     pub row_key: String,
     pub classification: String,
+    pub key_values: BTreeMap<String, String>,
+    pub repository_values: BTreeMap<String, String>,
+    pub database_values: BTreeMap<String, String>,
     pub changed_columns: Vec<String>,
+    pub ignored_columns: Vec<String>,
     pub masked_columns: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -1598,16 +1602,48 @@ pub fn compare_reference_data_table(
                 let changed_columns =
                     changed_reference_columns(config, repo_row, database_row, database_columns);
                 if changed_columns.is_empty() {
-                    push_reference_row_result(&mut result, &key, "inSync", Vec::new());
+                    push_reference_row_result(
+                        &mut result,
+                        config,
+                        &key,
+                        "inSync",
+                        Some(repo_row),
+                        Some(database_row),
+                        Vec::new(),
+                    );
                 } else {
-                    push_reference_row_result(&mut result, &key, "repoDifferent", changed_columns);
+                    push_reference_row_result(
+                        &mut result,
+                        config,
+                        &key,
+                        "repoDifferent",
+                        Some(repo_row),
+                        Some(database_row),
+                        changed_columns,
+                    );
                 }
             }
-            (Some(_), None) => {
-                push_reference_row_result(&mut result, &key, "repoOnly", Vec::new());
+            (Some(repo_row), None) => {
+                push_reference_row_result(
+                    &mut result,
+                    config,
+                    &key,
+                    "repoOnly",
+                    Some(repo_row),
+                    None,
+                    Vec::new(),
+                );
             }
-            (None, Some(_)) => {
-                push_reference_row_result(&mut result, &key, "databaseOnly", Vec::new());
+            (None, Some(database_row)) => {
+                push_reference_row_result(
+                    &mut result,
+                    config,
+                    &key,
+                    "databaseOnly",
+                    None,
+                    Some(database_row),
+                    Vec::new(),
+                );
             }
             (None, None) => {}
         }
@@ -1617,8 +1653,11 @@ pub fn compare_reference_data_table(
 
 fn push_reference_row_result(
     table_result: &mut ReferenceTableCompareResult,
+    config: &ReferenceDataTableConfig,
     row_key: &str,
     classification: &str,
+    repository_row: Option<&ReferenceDataRow>,
+    database_row: Option<&ReferenceDataRow>,
     changed_columns: Vec<String>,
 ) {
     match classification {
@@ -1633,10 +1672,68 @@ fn push_reference_row_result(
         table_name: table_result.table_name.clone(),
         row_key: row_key.to_string(),
         classification: classification.to_string(),
+        key_values: safe_reference_key_values(repository_row.or(database_row), &config.key_columns),
+        repository_values: safe_reference_row_values(repository_row, config),
+        database_values: safe_reference_row_values(database_row, config),
         changed_columns,
+        ignored_columns: table_result.ignored_columns.clone(),
         masked_columns: table_result.masked_columns.clone(),
         warnings: Vec::new(),
     });
+}
+
+fn safe_reference_key_values(
+    row: Option<&ReferenceDataRow>,
+    key_columns: &[String],
+) -> BTreeMap<String, String> {
+    let mut values = BTreeMap::new();
+    let Some(row) = row else {
+        return values;
+    };
+    for column in key_columns {
+        let value = row
+            .values
+            .get(column)
+            .and_then(|value| value.as_ref())
+            .map_or_else(|| "null".to_string(), |value| value.to_string());
+        values.insert(column.clone(), value);
+    }
+    values
+}
+
+fn safe_reference_row_values(
+    row: Option<&ReferenceDataRow>,
+    config: &ReferenceDataTableConfig,
+) -> BTreeMap<String, String> {
+    let mut values = BTreeMap::new();
+    let columns: BTreeSet<String> = config
+        .key_columns
+        .iter()
+        .chain(config.ignore_columns.iter())
+        .chain(config.masked_columns.iter())
+        .cloned()
+        .chain(
+            row.into_iter()
+                .flat_map(|row| row.values.keys().cloned())
+                .collect::<Vec<_>>(),
+        )
+        .collect();
+    for column in columns {
+        if config.masked_columns.contains(&column) {
+            values.insert(column, "[masked]".to_string());
+            continue;
+        }
+        if config.ignore_columns.contains(&column) {
+            values.insert(column, "[ignored]".to_string());
+            continue;
+        }
+        let value = row
+            .and_then(|row| row.values.get(&column))
+            .and_then(|value| value.as_ref())
+            .map_or_else(|| "null".to_string(), |value| value.to_string());
+        values.insert(column, value);
+    }
+    values
 }
 
 pub(crate) fn append_reference_table_result(
@@ -2329,10 +2426,30 @@ fn write_reference_row_result_array_field(
         write_json_string_field(json, "tableName", &value.table_name, true);
         write_json_string_field(json, "rowKey", &value.row_key, false);
         write_json_string_field(json, "classification", &value.classification, false);
+        write_json_object_string_field(json, "keyValues", &value.key_values);
+        write_json_object_string_field(json, "repositoryValues", &value.repository_values);
+        write_json_object_string_field(json, "databaseValues", &value.database_values);
         write_json_array_field(json, "changedColumns", &value.changed_columns);
+        write_json_array_field(json, "ignoredColumns", &value.ignored_columns);
         write_json_array_field(json, "maskedColumns", &value.masked_columns);
         write_json_array_field(json, "warnings", &value.warnings);
         json.push('}');
     }
     json.push(']');
+}
+
+fn write_json_object_string_field(
+    json: &mut String,
+    name: &str,
+    values: &BTreeMap<String, String>,
+) {
+    json.push(',');
+    write!(json, "\"{}\":{{", escape_json(name)).ok();
+    for (index, (key, value)) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        write!(json, "\"{}\":\"{}\"", escape_json(key), escape_json(value)).ok();
+    }
+    json.push('}');
 }
