@@ -3,10 +3,14 @@ use crate::postgres::{
     inspect::empty_inspection_report, render_rls_policy_sql, resolve_postgres_url, RlsPolicyInfo,
 };
 use crate::project::{PathKind, DEFAULT_REGISTRY, EXPECTED_PATHS};
-use crate::reference_data::data_compare_postgres_command;
 use crate::reference_data::{
     append_reference_table_result, empty_reference_data_compare_report,
     parse_reference_data_registry, parse_reference_data_table_state, reference_row_key,
+    ReferenceDataForeignKeyReference,
+};
+use crate::reference_data::{
+    data_compare_postgres_command, reference_data_review_script_preview_from_compare,
+    reference_data_review_script_write_from_compare,
 };
 use crate::release::empty_release_report;
 use crate::release::release_postgres_command;
@@ -445,6 +449,63 @@ fn reference_row(values: &[(&str, Option<&str>)]) -> ReferenceDataRow {
             .map(|(key, value)| (key.to_string(), value.map(|value| value.to_string())))
             .collect(),
     }
+}
+
+fn reference_data_review_compare_fixture() -> ReferenceDataCompareReport {
+    let (config, mut state) = reference_config_and_state();
+    for row in &mut state.rows {
+        if row.values.get("code").and_then(Option::as_deref) == Some("WIRE") {
+            row.values
+                .insert("name".to_string(), Some("Wire's Transfer".to_string()));
+        }
+    }
+    let database_rows = vec![
+        reference_row(&[
+            ("code", Some("CASH")),
+            ("name", Some("Cash")),
+            ("is_active", Some("true")),
+            ("sort_order", Some("10")),
+            ("updated_at", Some("different ignored value")),
+            ("secret_note", Some("database-secret-value")),
+        ]),
+        reference_row(&[
+            ("code", Some("QRPH")),
+            ("name", Some("QRPh Live")),
+            ("is_active", Some("true")),
+            ("sort_order", Some("20")),
+            ("updated_at", Some("different ignored value")),
+            ("secret_note", Some("database-secret-qrph")),
+        ]),
+        reference_row(&[
+            ("code", Some("CARD")),
+            ("name", Some("Card")),
+            ("is_active", Some("true")),
+            ("sort_order", Some("30")),
+            ("secret_note", Some("database-secret-card")),
+        ]),
+    ];
+    let mut table = compare_reference_data_table(
+        &config,
+        &state,
+        &database_rows,
+        &reference_database_columns(),
+    );
+    table
+        .foreign_key_references
+        .push(ReferenceDataForeignKeyReference {
+            constraint_name: "city_country_id_fkey".to_string(),
+            referencing_schema: "public".to_string(),
+            referencing_table: "city".to_string(),
+            referencing_columns: vec!["country_id".to_string()],
+            referenced_schema: "dbstate_ref".to_string(),
+            referenced_table: "payment_methods".to_string(),
+            referenced_columns: vec!["code".to_string()],
+        });
+    let mut report = empty_reference_data_compare_report();
+    report.success = true;
+    report.selected_tables = vec![table.table_name.clone()];
+    append_reference_table_result(&mut report, table);
+    report
 }
 
 #[test]
@@ -5260,6 +5321,149 @@ fn reference_data_compare_masks_columns_without_exposing_values() {
 }
 
 #[test]
+fn slice34c_reference_data_review_script_preview_generates_insert_and_update_candidates() {
+    let compare = reference_data_review_compare_fixture();
+    let report =
+        reference_data_review_script_preview_from_compare(&compare, "reference_data_review")
+            .expect("review script preview");
+    let sql = &report.script_content;
+
+    assert!(report.success);
+    assert_eq!(report.insert_count, 1);
+    assert_eq!(report.update_count, 1);
+    assert_eq!(report.database_only_count, 1);
+    assert_eq!(report.delete_generated_count, 0);
+    assert!(sql.contains("-- REVIEW ONLY."));
+    assert!(sql.contains("-- DbState does not execute this SQL."));
+    assert!(sql.contains("-- Source: Repository reference-data"));
+    assert!(sql.contains("-- Target: PostgreSQL database"));
+    assert!(sql.contains("INSERT INTO \"dbstate_ref\".\"payment_methods\""));
+    assert!(sql.contains("\"code\", \"is_active\", \"name\", \"sort_order\""));
+    assert!(sql.contains("'Wire''s Transfer'"));
+    assert!(sql.contains("UPDATE \"dbstate_ref\".\"payment_methods\""));
+    assert!(sql.contains("SET \"name\" = 'QRPh Desired'"));
+    assert!(sql.contains("WHERE \"code\" = 'QRPH';"));
+    assert!(!sql.contains("\"updated_at\""));
+    assert!(!sql.contains("\"secret_note\""));
+    assert!(!sql.contains("repo-secret"));
+    assert!(!sql.contains("database-secret"));
+}
+
+#[test]
+fn slice34c_database_only_rows_generate_manual_review_comments_not_delete() {
+    let compare = reference_data_review_compare_fixture();
+    let report =
+        reference_data_review_script_preview_from_compare(&compare, "reference_data_review")
+            .expect("review script preview");
+    let sql = &report.script_content;
+
+    assert_eq!(report.manual_review_count, 1);
+    assert_eq!(report.database_only_count, 1);
+    assert_eq!(report.delete_generated_count, 0);
+    assert!(sql.contains("-- REVIEW REQUIRED: database-only reference-data row."));
+    assert!(sql
+        .contains("-- DbState does not generate DELETE for reference-data rows in Private Beta."));
+    assert!(sql.contains("-- No DELETE generated."));
+    assert!(sql.contains("public.city.country_id -> dbstate_ref.payment_methods.code"));
+    assert!(!sql.contains("DELETE FROM"));
+    assert!(!sql.contains("MERGE"));
+    assert!(report.risk_content.contains("\"reviewOnly\":true"));
+    assert!(report.risk_content.contains("\"executesSql\":false"));
+    assert!(report.risk_content.contains("\"mutatesPostgres\":false"));
+    assert!(report.risk_content.contains("\"deleteGenerated\":false"));
+}
+
+#[test]
+fn slice34c_review_script_json_contract_is_safe_and_data_oriented() {
+    let compare = reference_data_review_compare_fixture();
+    let report =
+        reference_data_review_script_preview_from_compare(&compare, "reference_data_review")
+            .expect("review script preview");
+    let json = report.to_json();
+
+    for expected in [
+        "\"scriptContent\"",
+        "\"summaryContent\"",
+        "\"riskContent\"",
+        "\"manifestContent\"",
+        "\"insertCount\":1",
+        "\"updateCount\":1",
+        "\"manualReviewCount\":1",
+        "\"deleteGeneratedCount\":0",
+        "database/releases/0001_reference_data_review.reference-data.sql",
+    ] {
+        assert!(
+            json.contains(expected),
+            "missing review script JSON field {expected}"
+        );
+    }
+    assert!(json.contains("[masked]") || !json.contains("secret_note"));
+    assert!(!json.contains("repo-secret"));
+    assert!(!json.contains("database-secret"));
+    assert!(!json.contains("postgres://"));
+}
+
+#[test]
+fn slice34c_review_script_write_requires_typed_confirmation_before_connection() {
+    let dir = create_temp_dir("slice34c-review-script-confirmation");
+    create_complete_structure(&dir);
+    let body = format!(
+        r#"{{ "repositoryPath": "{}", "postgresUrl": "postgres://user:secret@example.invalid/db", "selectedTables": ["public.payment_method"], "scriptName": "reference_data_review", "confirmationText": "WRONG" }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let response = service_response(
+        "POST",
+        "/api/v1/reference-data/review-script/write",
+        &body,
+        &dir,
+    );
+
+    assert_eq!(response.status_code, 400);
+    assert!(response.body.contains("GENERATE REVIEW DATA SCRIPT"));
+    assert!(!dir
+        .join("database/releases/0001_reference_data_review.reference-data.sql")
+        .exists());
+}
+
+#[test]
+fn slice34c_review_script_write_creates_artifacts_under_releases_and_preview_reads_sql() {
+    let dir = create_temp_dir("slice34c-review-script-write");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let mut compare = reference_data_review_compare_fixture();
+    compare.repository_path = display_path(&dir);
+    compare.git_root = Some(display_path(&dir));
+    compare.is_git_repository = true;
+    let report =
+        reference_data_review_script_write_from_compare(&dir, &compare, "reference_data_review")
+            .expect("write review script artifacts");
+
+    assert!(report.success);
+    assert_eq!(report.created_artifacts.len(), 4);
+    for path in &report.created_artifacts {
+        assert!(path.starts_with("database/releases/"));
+        assert!(dir.join(path).exists(), "missing generated artifact {path}");
+    }
+    assert!(dir
+        .join("database/releases/0001_reference_data_review.reference-data.sql")
+        .exists());
+    assert!(!dir
+        .join("database/reference-data/0001_reference_data_review.reference-data.sql")
+        .exists());
+    let body = format!(
+        r#"{{ "repositoryPath": "{}", "artifactPath": "database/releases/0001_reference_data_review.reference-data.sql" }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let preview = service_response("POST", "/api/v1/releases/artifact-preview", &body, &dir);
+
+    assert_eq!(preview.status_code, 200);
+    assert!(preview.body.contains("REVIEW ONLY"));
+    assert!(!preview.body.contains("Apply"));
+    assert!(!preview.body.contains("Execute"));
+    assert!(!preview.body.contains("Sync to Database"));
+}
+
+#[test]
 fn data_compare_json_includes_expected_fields_and_no_secrets() {
     let mut report = empty_reference_data_compare_report();
     report.compare_scope = "all".to_string();
@@ -5717,6 +5921,8 @@ fn slice12_ui_javascript_calls_only_approved_endpoints() {
         "/api/v1/reference-data/export/preview",
         "/api/v1/reference-data/export/write",
         "/api/v1/postgres/data-compare",
+        "/api/v1/reference-data/review-script/preview",
+        "/api/v1/reference-data/review-script/write",
         "/api/v1/postgres/object-ddl",
         "/api/v1/postgres/repository-sync/preview",
         "/api/v1/postgres/repository-sync/write",
@@ -6688,6 +6894,55 @@ fn slice34b_schema_object_diff_chrome_is_preserved() {
     ));
     assert!(js.contains("dataDiffView.hidden = !referenceDataMode"));
     assert!(js.contains("element.hidden = referenceDataMode"));
+}
+
+#[test]
+fn slice34c_reference_data_review_script_ui_contract_is_review_only() {
+    let html = ui_html();
+    let js = ui_js();
+    let combined = format!("{html}\n{js}");
+
+    for expected in [
+        "data-testid=\"reference-data-review-script-panel\"",
+        "Preview Review-Only Data Script",
+        "Generate Review-Only Data Script",
+        "GENERATE REVIEW DATA SCRIPT",
+        "DbState does not execute this SQL",
+        "DbState does not generate DELETE for database-only rows in Private Beta",
+        "Database-only rows require manual review",
+        "potentially affected foreign keys",
+        "Script generation includes non-in-sync rows for selected tables",
+        "referenceDataReviewScriptPreview: \"/api/v1/reference-data/review-script/preview\"",
+        "referenceDataReviewScriptWrite: \"/api/v1/reference-data/review-script/write\"",
+        "confirmReferenceDataReviewScript",
+        "renderReferenceDataReviewScriptResult",
+        "selectedReferenceDataReviewTables",
+        "reference-data-review-artifact-preview",
+        "previewReleaseArtifact",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "missing Slice 34C UI contract {expected}"
+        );
+    }
+
+    for forbidden in [
+        "data-action=\"reference-data-apply\"",
+        "data-action=\"reference-data-execute\"",
+        "data-action=\"reference-data-sync-to-database\"",
+        "data-action=\"reference-data-edit-row\"",
+        "data-action=\"reference-data-delete-row\"",
+        "Apply Reference Data",
+        "Execute Reference Data",
+        "Sync to Database",
+        "Edit Reference Data Row",
+        "Delete Reference Data Row",
+    ] {
+        assert!(
+            !combined.contains(forbidden),
+            "Slice 34C UI exposes forbidden control {forbidden}"
+        );
+    }
 }
 
 #[test]

@@ -314,6 +314,12 @@ pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> Ser
         ("POST", "/api/v1/postgres/data-compare") => {
             service_reference_data_compare_endpoint(body, cwd)
         }
+        ("POST", "/api/v1/reference-data/review-script/preview") => {
+            service_reference_data_review_script_endpoint(body, cwd, true)
+        }
+        ("POST", "/api/v1/reference-data/review-script/write") => {
+            service_reference_data_review_script_endpoint(body, cwd, false)
+        }
         ("POST", "/api/v1/postgres/object-ddl") => service_object_ddl_endpoint(body, cwd),
         ("POST", "/api/v1/postgres/repository-sync/preview") => {
             service_repository_sync_endpoint("repository-sync preview", body, cwd, true)
@@ -374,6 +380,8 @@ pub fn service_route_definitions() -> Vec<(&'static str, &'static str)> {
         ("POST", "/api/v1/reference-data/export/preview"),
         ("POST", "/api/v1/reference-data/export/write"),
         ("POST", "/api/v1/postgres/data-compare"),
+        ("POST", "/api/v1/reference-data/review-script/preview"),
+        ("POST", "/api/v1/reference-data/review-script/write"),
         ("POST", "/api/v1/postgres/object-ddl"),
         ("POST", "/api/v1/postgres/repository-sync/preview"),
         ("POST", "/api/v1/postgres/repository-sync/write"),
@@ -1017,6 +1025,96 @@ fn service_reference_data_compare_endpoint(body: &str, cwd: &Path) -> ServiceHtt
         Err(error) => return service_error_response(400, command, &error),
     };
     match data_compare_postgres_with_connection(&workspace, &connection.url, &selection) {
+        Ok(report) => service_json_response(200, &report.to_json()),
+        Err(error) => {
+            service_error_response(400, command, &redact_message(&error, &connection.url))
+        }
+    }
+}
+
+fn service_reference_data_review_script_endpoint(
+    body: &str,
+    cwd: &Path,
+    dry_run: bool,
+) -> ServiceHttpResponse {
+    let command = if dry_run {
+        "reference-data review-script preview"
+    } else {
+        "reference-data review-script write"
+    };
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, command, &error);
+    }
+    if !dry_run {
+        let confirmed = matches!(
+            request_bool(&request, "confirmReferenceDataReviewScript"),
+            Some(true)
+        ) && matches!(
+            request_string(&request, "confirmationText").as_deref(),
+            Some("GENERATE REVIEW DATA SCRIPT")
+        );
+        if !confirmed {
+            return service_error_response(
+                400,
+                command,
+                "Reference-data review script generation requires confirmReferenceDataReviewScript true and confirmationText GENERATE REVIEW DATA SCRIPT.",
+            );
+        }
+    }
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, command, &error),
+        };
+    let connection = match resolve_service_postgres_connection(&request) {
+        Ok(Some(connection)) => connection,
+        Ok(None) => {
+            return service_error_response(
+                400,
+                command,
+                "Missing PostgreSQL connection URL. Provide a session URL, saved profile, or DBSTATE_POSTGRES_URL.",
+            )
+        }
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    if !is_postgres_connection_url(&connection.url) {
+        return service_error_response(400, command, &invalid_postgres_url_message());
+    }
+    let selection = match reference_data_selection_from_request(&request) {
+        Ok(selection) => selection,
+        Err(error) => return service_error_response(400, command, &error),
+    };
+    let script_name = match request_string(&request, "scriptName") {
+        Some(value) if !value.trim().is_empty() => value,
+        _ => {
+            return service_error_response(
+                400,
+                command,
+                "Review script name is required. Provide scriptName.",
+            )
+        }
+    };
+    let result = if dry_run {
+        reference_data_review_script_preview_with_connection(
+            &workspace,
+            &connection.url,
+            &selection,
+            &script_name,
+        )
+    } else {
+        reference_data_review_script_write_with_connection(
+            &workspace,
+            &connection.url,
+            &selection,
+            &script_name,
+        )
+    };
+    match result {
         Ok(report) => service_json_response(200, &report.to_json()),
         Err(error) => {
             service_error_response(400, command, &redact_message(&error, &connection.url))

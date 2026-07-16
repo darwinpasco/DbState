@@ -440,6 +440,25 @@ rows:
             </tbody>
           </table>
         </div>
+        <section id="reference-data-review-script-panel" class="subsection" data-testid="reference-data-review-script-panel" hidden>
+          <h3>Review script artifact</h3>
+          <p class="note">Script generation includes non-in-sync rows for selected tables. INSERT/UPDATE statements are review-only. DbState does not execute this SQL. DbState does not generate DELETE for database-only rows in Private Beta. Database-only rows require manual review; potentially affected foreign keys may be listed where determinable.</p>
+          <div class="form-grid">
+            <label for="reference-data-review-script-name">Script name
+              <input id="reference-data-review-script-name" type="text" value="reference_data_review" autocomplete="off" spellcheck="false">
+            </label>
+            <label for="reference-data-review-script-confirmation">Type GENERATE REVIEW DATA SCRIPT
+              <input id="reference-data-review-script-confirmation" type="text" autocomplete="off" spellcheck="false">
+            </label>
+          </div>
+          <div class="button-row">
+            <button type="button" data-action="reference-data-review-script-preview" data-testid="preview-reference-data-review-script">Preview Review-Only Data Script</button>
+            <button type="button" data-action="reference-data-review-script-write" data-testid="generate-reference-data-review-script" disabled>Generate Review-Only Data Script</button>
+          </div>
+          <dl class="summary-list compact" id="reference-data-review-script-summary" data-testid="reference-data-review-script-summary"></dl>
+          <div id="reference-data-review-script-artifacts" data-testid="reference-data-review-script-artifacts"></div>
+          <pre id="reference-data-review-script-preview" data-testid="reference-data-review-script-preview">No review-only data script preview generated yet.</pre>
+        </section>
       </section>
 
       <section class="workflow-panel" id="step-object-diff">
@@ -1578,6 +1597,8 @@ const UI_JS: &str = r#"(function () {
     referenceDataExportPreview: "/api/v1/reference-data/export/preview",
     referenceDataExportWrite: "/api/v1/reference-data/export/write",
     dataCompare: "/api/v1/postgres/data-compare",
+    referenceDataReviewScriptPreview: "/api/v1/reference-data/review-script/preview",
+    referenceDataReviewScriptWrite: "/api/v1/reference-data/review-script/write",
     objectDdl: "/api/v1/postgres/object-ddl",
     repositorySyncPreview: "/api/v1/postgres/repository-sync/preview",
     repositorySyncWrite: "/api/v1/postgres/repository-sync/write",
@@ -3510,6 +3531,7 @@ const UI_JS: &str = r#"(function () {
     byId("results-count").textContent = visibleRows.length + " table summary row(s)";
     byId("included-count").textContent = "Reference-data rows available in Reports / Raw JSON";
     renderSelectedObject();
+    updateReferenceDataReviewScriptWriteButton();
     renderReleasePlan();
   }
 
@@ -4358,6 +4380,10 @@ const UI_JS: &str = r#"(function () {
     if (dataDiffView) {
       dataDiffView.hidden = !referenceDataMode;
     }
+    const reviewScriptPanel = byId("reference-data-review-script-panel");
+    if (reviewScriptPanel) {
+      reviewScriptPanel.hidden = !referenceDataMode;
+    }
     document.querySelectorAll(".object-diff-tabs").forEach(function (element) {
       element.hidden = referenceDataMode;
     });
@@ -4893,6 +4919,87 @@ const UI_JS: &str = r#"(function () {
     }
   }
 
+  function selectedReferenceDataReviewTables() {
+    const tables = state.rows.filter(function (row) {
+      return row.objectType === "referenceDataTable" && rowMatchesWorkflowMode(row, "referenceDataRepoToDatabase");
+    }).map(function (row) {
+      return row.raw && row.raw.tableName ? row.raw.tableName : row.schema + "." + row.name;
+    }).filter(Boolean);
+    return Array.from(new Set(tables)).sort();
+  }
+
+  function referenceDataReviewScriptBody(write) {
+    const selectedTables = selectedReferenceDataReviewTables();
+    if (!selectedTables.length) {
+      throw new Error("Run Reference Data Compare: Repository to Database before generating a review script.");
+    }
+    const body = attachWorkspacePath(attachConnection({
+      selectedTables: selectedTables,
+      scriptName: value("reference-data-review-script-name") || "reference_data_review"
+    }));
+    if (write) {
+      body.confirmReferenceDataReviewScript = true;
+      body.confirmationText = value("reference-data-review-script-confirmation");
+    }
+    return body;
+  }
+
+  function updateReferenceDataReviewScriptWriteButton() {
+    const button = document.querySelector("[data-action='reference-data-review-script-write']");
+    if (!button) {
+      return;
+    }
+    button.disabled = value("reference-data-review-script-confirmation") !== "GENERATE REVIEW DATA SCRIPT" || !selectedReferenceDataReviewTables().length;
+  }
+
+  function renderReferenceDataReviewScriptResult(data) {
+    const summary = byId("reference-data-review-script-summary");
+    const preview = byId("reference-data-review-script-preview");
+    const artifacts = byId("reference-data-review-script-artifacts");
+    if (!summary || !preview || !artifacts) {
+      return;
+    }
+    updateSummaryElement(summary, {
+      success: data.success,
+      dryRun: data.dryRun,
+      selectedTables: Array.isArray(data.selectedTables) ? data.selectedTables.join(", ") : "",
+      affectedRows: data.affectedRows || 0,
+      insertCandidates: data.insertCount || 0,
+      updateCandidates: data.updateCount || 0,
+      manualReviewRows: data.manualReviewCount || 0,
+      databaseOnlyRows: data.databaseOnlyCount || 0,
+      deleteGeneratedCount: data.deleteGeneratedCount || 0,
+      foreignKeyWarnings: data.foreignKeyWarningCount || 0
+    });
+    preview.textContent = data.scriptContent || "No review-only data script content returned.";
+    artifacts.innerHTML = "";
+    const createdArtifacts = Array.isArray(data.createdArtifacts) ? data.createdArtifacts : [];
+    const plannedArtifacts = Array.isArray(data.plannedArtifacts) ? data.plannedArtifacts : [];
+    const paths = createdArtifacts.length ? createdArtifacts : plannedArtifacts;
+    if (!paths.length) {
+      artifacts.textContent = "No artifact paths returned.";
+      return;
+    }
+    const list = document.createElement("ul");
+    paths.forEach(function (path) {
+      const item = document.createElement("li");
+      const pathSpan = document.createElement("span");
+      pathSpan.textContent = textOrEmpty(path);
+      item.appendChild(pathSpan);
+      if (createdArtifacts.length) {
+        item.appendChild(document.createTextNode(" "));
+        const button = document.createElement("button");
+        button.type = "button";
+        button.textContent = "Preview";
+        button.setAttribute("data-action", "reference-data-review-artifact-preview");
+        button.setAttribute("data-artifact-path", path);
+        item.appendChild(button);
+      }
+      list.appendChild(item);
+    });
+    artifacts.appendChild(list);
+  }
+
   async function previewReleaseArtifact(artifactPath) {
     const meta = byId("release-artifact-preview-meta");
     const content = byId("release-artifact-preview-content");
@@ -5259,6 +5366,12 @@ const UI_JS: &str = r#"(function () {
       if (label === "Reference-data YAML preview" || label === "Reference-data YAML write") {
         renderReferenceDataExportPreview(data);
       }
+      if (label === "Reference-data review script preview" || label === "Reference-data review script write") {
+        renderReferenceDataReviewScriptResult(data);
+        applyWorkflowChrome();
+        updateReferenceDataReviewScriptWriteButton();
+        return;
+      }
       if (label === "Reference-data YAML write" && data.success) {
         requestJson(approvedEndpoints.referenceDataStatus, attachWorkspacePath({})).then(updateReferenceDataOptions).catch(function () {});
       }
@@ -5529,6 +5642,7 @@ const UI_JS: &str = r#"(function () {
 
   byId("reference-data-export-search").addEventListener("input", renderReferenceDataDatabaseTables);
   byId("reference-data-write-confirmation").addEventListener("input", updateReferenceDataWriteButton);
+  byId("reference-data-review-script-confirmation").addEventListener("input", updateReferenceDataReviewScriptWriteButton);
 
   document.querySelector("[data-action='reference-data-load-database-tables']").addEventListener("click", function () {
     try {
@@ -5555,6 +5669,35 @@ const UI_JS: &str = r#"(function () {
     } catch (error) {
       responseSummary.textContent = "Reference-data YAML write: " + error.message;
     }
+  });
+
+  document.querySelector("[data-action='reference-data-review-script-preview']").addEventListener("click", function () {
+    try {
+      run("Reference-data review script preview", approvedEndpoints.referenceDataReviewScriptPreview, referenceDataReviewScriptBody(false), { step: "results" });
+    } catch (error) {
+      responseSummary.textContent = "Reference-data review script preview: " + error.message;
+    }
+  });
+
+  document.querySelector("[data-action='reference-data-review-script-write']").addEventListener("click", function () {
+    try {
+      if (value("reference-data-review-script-confirmation") !== "GENERATE REVIEW DATA SCRIPT") {
+        throw new Error("Type GENERATE REVIEW DATA SCRIPT before generating review-only data script artifacts.");
+      }
+      run("Reference-data review script write", approvedEndpoints.referenceDataReviewScriptWrite, referenceDataReviewScriptBody(true), { step: "results" });
+    } catch (error) {
+      responseSummary.textContent = "Reference-data review script write: " + error.message;
+    }
+  });
+
+  byId("reference-data-review-script-artifacts").addEventListener("click", function (event) {
+    const button = event.target.closest("[data-action='reference-data-review-artifact-preview']");
+    if (!button) {
+      return;
+    }
+    previewReleaseArtifact(button.getAttribute("data-artifact-path")).catch(function (error) {
+      responseSummary.textContent = "Reference-data review artifact preview: " + error.message;
+    });
   });
 
   document.querySelector("[data-action='repository-sync-preview']").addEventListener("click", function () {
