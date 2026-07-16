@@ -630,6 +630,16 @@ rows:
     </main>
   </div>
 
+  <div class="modal-backdrop" id="app-modal" hidden>
+    <div class="modal-dialog" role="dialog" aria-modal="true" aria-labelledby="app-modal-title">
+      <h2 id="app-modal-title">DbState</h2>
+      <div id="app-modal-body"></div>
+      <div class="button-row">
+        <button type="button" data-action="modal-close">Close</button>
+      </div>
+    </div>
+  </div>
+
   <footer class="status-strip" aria-label="Operation status">
     <span>Last operation: <strong id="last-operation">none</strong></span>
     <span>Status: <strong id="last-status">not run</strong></span>
@@ -1533,6 +1543,14 @@ const UI_JS: &str = r#"(function () {
     profiles: "/api/v1/connections/profiles",
     connectionTest: "/api/v1/connections/test"
   };
+
+  const shellActionEndpointByAction = Object.freeze({
+    "health": approvedEndpoints.health,
+    "workspace-status": approvedEndpoints.workspaceValidate,
+    "repo-status": approvedEndpoints.repoStatus,
+    "init-plan": approvedEndpoints.initPlan,
+    "connection-test": approvedEndpoints.connectionTest
+  });
 
   const state = {
     lastResponse: null,
@@ -4948,11 +4966,13 @@ const UI_JS: &str = r#"(function () {
 
   document.getElementById("profile-select").addEventListener("change", updateSelectedProfileDetails);
 
-  document.querySelector("[data-action='profiles-refresh']").addEventListener("click", function () {
+  document.querySelector("[data-action='profiles-refresh']").addEventListener("click", function (event) {
+    event.preventDefault();
     run("Connection profiles", approvedEndpoints.profiles, null, { step: "source-target", profiles: true });
   });
 
-  document.querySelector("[data-action='profile-save']").addEventListener("click", function () {
+  document.querySelector("[data-action='profile-save']").addEventListener("click", function (event) {
+    event.preventDefault();
     try {
       const body = profileRequestBody();
       const existing = state.profiles.some(function (profile) {
@@ -4966,7 +4986,8 @@ const UI_JS: &str = r#"(function () {
     }
   });
 
-  document.querySelector("[data-action='profile-delete']").addEventListener("click", function () {
+  document.querySelector("[data-action='profile-delete']").addEventListener("click", function (event) {
+    event.preventDefault();
     const profileName = value("profile-select") || value("profile-name");
     if (!profileName) {
       responseSummary.textContent = "Delete connection profile: select a profile first.";
@@ -4975,8 +4996,9 @@ const UI_JS: &str = r#"(function () {
     run("Delete connection profile", profilePath(profileName), null, { step: "source-target", profiles: true, method: "DELETE" });
   });
 
-  document.querySelector("[data-action='connection-test']").addEventListener("click", function () {
-    run("Connection test", approvedEndpoints.connectionTest, attachConnection({}), { step: "source-target" });
+  document.querySelector("[data-action='connection-test']").addEventListener("click", function (event) {
+    event.preventDefault();
+    run("Connection test", shellActionEndpointByAction["connection-test"], attachConnection({}), { step: "source-target" });
   });
 
   document.querySelector("[data-action='workspace-browse']").addEventListener("click", openDirectoryPicker);
@@ -5003,12 +5025,14 @@ const UI_JS: &str = r#"(function () {
     selectDirectoryAsWorkspace();
   });
 
-  document.querySelector("[data-action='health']").addEventListener("click", function () {
-    run("Health", approvedEndpoints.health, null, { summaryId: "workspace-summary", step: "workspace" });
+  document.querySelector("[data-action='health']").addEventListener("click", function (event) {
+    event.preventDefault();
+    run("Health", shellActionEndpointByAction["health"], null, { summaryId: "workspace-summary", step: "workspace" });
   });
 
-  document.querySelector("[data-action='workspace-status']").addEventListener("click", async function () {
-    const data = await requestJson(approvedEndpoints.workspaceValidate, attachWorkspacePath({}));
+  document.querySelector("[data-action='workspace-status']").addEventListener("click", async function (event) {
+    event.preventDefault();
+    const data = await requestJson(shellActionEndpointByAction["workspace-status"], attachWorkspacePath({}));
     state.lastResponse = data;
     jsonViewer.textContent = redactedJson(data);
     updateStatus("Workspace validate", data);
@@ -5019,18 +5043,20 @@ const UI_JS: &str = r#"(function () {
     }
   });
 
-  document.querySelector("[data-action='repo-status']").addEventListener("click", async function () {
+  document.querySelector("[data-action='repo-status']").addEventListener("click", async function (event) {
+    event.preventDefault();
     if (!(await guardGitWorkspaceBefore("repo-status"))) {
       return;
     }
-    run("Repository status", approvedEndpoints.repoStatus, attachWorkspacePath({}), { summaryId: "workspace-summary", step: "workspace" });
+    run("Repository status", shellActionEndpointByAction["repo-status"], attachWorkspacePath({}), { summaryId: "workspace-summary", step: "workspace" });
   });
 
-  document.querySelector("[data-action='init-plan']").addEventListener("click", async function () {
+  document.querySelector("[data-action='init-plan']").addEventListener("click", async function (event) {
+    event.preventDefault();
     if (!(await guardGitWorkspaceBefore("init-plan"))) {
       return;
     }
-    run("Init plan", approvedEndpoints.initPlan, attachWorkspacePath({ dryRun: true }), { summaryId: "workspace-summary", step: "workspace" });
+    run("Init plan", shellActionEndpointByAction["init-plan"], attachWorkspacePath({ dryRun: true }), { summaryId: "workspace-summary", step: "workspace" });
   });
 
   byId("init-confirmation").addEventListener("input", updateInitWriteButton);
@@ -5254,7 +5280,10 @@ const UI_JS: &str = r#"(function () {
 
   document.querySelector("[data-action='copy-json']").addEventListener("click", copyRedactedJson);
 
-  document.querySelector("[data-action='modal-close']").addEventListener("click", closeModal);
+  document.querySelector("[data-action='modal-close']").addEventListener("click", function (event) {
+    event.preventDefault();
+    closeModal();
+  });
   document.addEventListener("keydown", function (event) {
     if (event.key === "Escape") {
       closeModal();
