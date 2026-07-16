@@ -5988,6 +5988,155 @@ fn slice22_object_diff_markers_are_visual_only_and_beta_colored() {
     assert!(!js.contains("line-through"));
 }
 
+fn count_occurrences(haystack: &str, needle: &str) -> usize {
+    haystack.match_indices(needle).count()
+}
+
+fn js_handler_for_action<'a>(js: &'a str, action: &str) -> &'a str {
+    let marker = format!("document.querySelector(\"[data-action='{action}']\")");
+    let start = js.find(&marker).unwrap_or_else(|| {
+        panic!("missing handler marker {marker}");
+    });
+    let remaining = &js[start..];
+    let next_handler = remaining
+        .get(marker.len()..)
+        .and_then(|tail| {
+            tail.find("\n  document.querySelector(")
+                .map(|index| marker.len() + index)
+        })
+        .unwrap_or(remaining.len());
+    &remaining[..next_handler]
+}
+
+#[test]
+fn shell_workspace_controls_have_independent_endpoint_handlers() {
+    let html = ui_html();
+    let js = ui_js();
+
+    for (test_id, action, label) in [
+        ("workspace-health", "health", "Health"),
+        ("workspace-check", "workspace-status", "Check Workspace"),
+        ("workspace-repo-status", "repo-status", "Repo Status"),
+        ("workspace-init-plan", "init-plan", "Init Plan"),
+    ] {
+        assert!(
+            html.contains(&format!(
+                "data-action=\"{action}\" data-testid=\"{test_id}\""
+            )),
+            "missing shell control action/test id {action}/{test_id}"
+        );
+        assert!(html.contains(label), "missing shell control label {label}");
+        assert_eq!(
+            count_occurrences(html, &format!("data-action=\"{action}\"")),
+            1,
+            "duplicate shell action {action}"
+        );
+        assert_eq!(
+            count_occurrences(html, &format!("data-testid=\"{test_id}\"")),
+            1,
+            "duplicate shell test id {test_id}"
+        );
+    }
+
+    let health = js_handler_for_action(js, "health");
+    assert!(health.contains("run(\"Health\", approvedEndpoints.health"));
+    assert!(!health.contains("approvedEndpoints.repoStatus"));
+    assert!(!health.contains("approvedEndpoints.workspaceValidate"));
+    assert!(!health.contains("approvedEndpoints.initPlan"));
+
+    let workspace = js_handler_for_action(js, "workspace-status");
+    assert!(workspace.contains("requestJson(approvedEndpoints.workspaceValidate"));
+    assert!(workspace.contains("updateStatus(\"Workspace validate\", data)"));
+    assert!(!workspace.contains("approvedEndpoints.repoStatus"));
+    assert!(!workspace.contains("run(\"Repository status\""));
+    assert!(!workspace.contains("approvedEndpoints.initPlan"));
+
+    let repo = js_handler_for_action(js, "repo-status");
+    assert!(repo.contains("guardGitWorkspaceBefore(\"repo-status\")"));
+    assert!(repo.contains("run(\"Repository status\", approvedEndpoints.repoStatus"));
+    assert!(!repo.contains("approvedEndpoints.workspaceValidate"));
+    assert!(!repo.contains("approvedEndpoints.initPlan"));
+
+    let init_plan = js_handler_for_action(js, "init-plan");
+    assert!(init_plan.contains("guardGitWorkspaceBefore(\"init-plan\")"));
+    assert!(init_plan.contains("run(\"Init plan\", approvedEndpoints.initPlan"));
+    assert!(init_plan.contains("attachWorkspacePath({ dryRun: true })"));
+    assert!(!init_plan.contains("approvedEndpoints.repoStatus"));
+}
+
+#[test]
+fn shell_connection_controls_have_independent_profile_and_session_wiring() {
+    let html = ui_html();
+    let js = ui_js();
+
+    for expected in [
+        "id=\"connection-mode\" data-testid=\"connection-mode\"",
+        "<option value=\"sessionUrl\">Use session URL</option>",
+        "<option value=\"profile\">Use saved profile</option>",
+        "id=\"session-url-panel\" data-testid=\"target-connection-input\"",
+        "id=\"postgres-url\" data-testid=\"source-connection-input\" type=\"password\"",
+        "id=\"profile-panel\" hidden",
+        "id=\"profile-select\"",
+        "id=\"profile-password\" type=\"password\"",
+        "data-action=\"profiles-refresh\"",
+        "data-action=\"profile-save\"",
+        "data-action=\"profile-delete\"",
+        "data-action=\"connection-test\" data-testid=\"source-target-run\"",
+        "Passwords, tokens, and full URLs are never saved.",
+    ] {
+        assert!(
+            html.contains(expected),
+            "missing connection shell UI {expected}"
+        );
+    }
+
+    for unique in [
+        "<select id=\"connection-mode\"",
+        "<input id=\"postgres-url\"",
+        "<select id=\"profile-select\"",
+        "<input id=\"profile-password\"",
+        "data-action=\"profiles-refresh\"",
+        "data-action=\"profile-save\"",
+        "data-action=\"profile-delete\"",
+        "data-action=\"connection-test\"",
+    ] {
+        assert_eq!(
+            count_occurrences(html, unique),
+            1,
+            "duplicate connection shell selector {unique}"
+        );
+    }
+
+    assert!(js.contains("document.getElementById(\"connection-mode\").addEventListener(\"change\""));
+    assert!(js.contains("selectedConnectionMode() === \"profile\""));
+    assert!(js.contains("run(\"Connection profiles\", approvedEndpoints.profiles"));
+    assert!(js.contains("document.getElementById(\"profile-select\").addEventListener(\"change\", updateSelectedProfileDetails)"));
+
+    let refresh = js_handler_for_action(js, "profiles-refresh");
+    assert!(refresh.contains("run(\"Connection profiles\", approvedEndpoints.profiles"));
+
+    let save = js_handler_for_action(js, "profile-save");
+    assert!(save.contains("profileRequestBody()"));
+    assert!(save.contains("approvedEndpoints.profiles"));
+    assert!(save.contains("method: method"));
+
+    let delete = js_handler_for_action(js, "profile-delete");
+    assert!(delete.contains("profilePath(profileName)"));
+    assert!(delete.contains("method: \"DELETE\""));
+
+    let connection_test = js_handler_for_action(js, "connection-test");
+    assert!(connection_test.contains("run(\"Connection test\", approvedEndpoints.connectionTest"));
+    assert!(connection_test.contains("attachConnection({})"));
+    assert!(!connection_test.contains("approvedEndpoints.profiles"));
+
+    assert!(js.contains("if (mode === \"sessionUrl\")"));
+    assert!(js.contains("body.postgresUrl = url"));
+    assert!(js.contains("body.connection = { profileName: profileName }"));
+    assert!(js.contains("body.connection.password = password"));
+    assert!(!js.contains("localStorage"));
+    assert!(!js.contains("sessionStorage"));
+}
+
 #[test]
 fn slice22_current_private_beta_text_avoids_older_slice_labels() {
     let combined = format!("{}\n{}\n{}", ui_html(), ui_css(), ui_js());
