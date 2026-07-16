@@ -1911,10 +1911,12 @@ pub(crate) fn reference_data_review_script_preview_from_compare(
 ) -> Result<ReferenceDataReviewScriptReport, String> {
     let slug = reference_data_review_script_slug(script_name)?;
     let artifacts = ReferenceDataReviewArtifactPaths {
-        sql: format!("database/releases/0001_{slug}.reference-data.sql"),
-        summary: format!("database/releases/0001_{slug}.reference-data.summary.md"),
-        risk: format!("database/releases/0001_{slug}.reference-data.risk.json"),
-        manifest: format!("database/releases/0001_{slug}.reference-data.manifest.json"),
+        sql: format!("database/releases/reference-data/0001_{slug}.reference-data.sql"),
+        summary: format!("database/releases/reference-data/0001_{slug}.reference-data.summary.md"),
+        risk: format!("database/releases/reference-data/0001_{slug}.reference-data.risk.json"),
+        manifest: format!(
+            "database/releases/reference-data/0001_{slug}.reference-data.manifest.json"
+        ),
     };
     let mut report = empty_reference_data_review_script_report(true);
     report.success = true;
@@ -1941,6 +1943,8 @@ pub(crate) fn reference_data_review_script_write_from_compare(
     script_name: &str,
 ) -> Result<ReferenceDataReviewScriptReport, String> {
     let slug = reference_data_review_script_slug(script_name)?;
+    fs::create_dir_all(root.join("database/releases/reference-data"))
+        .map_err(|error| format!("Could not create reference-data artifact folder: {error}"))?;
     let artifacts = plan_reference_data_review_artifact_paths(root, &slug)?;
     let mut report = empty_reference_data_review_script_report(false);
     report.success = true;
@@ -2068,6 +2072,14 @@ fn reference_data_review_script_with_connection(
         return Ok(report);
     }
 
+    if let Err(error) = fs::create_dir_all(root.join("database/releases/reference-data")) {
+        report.errors.push(format!(
+            "Could not create database/releases/reference-data for review script artifacts: {error}"
+        ));
+        report.success = false;
+        return Ok(report);
+    }
+
     let generated = [
         (&artifacts.sql, report.script_content.clone()),
         (&artifacts.summary, report.summary_content.clone()),
@@ -2165,10 +2177,10 @@ fn plan_reference_data_review_artifact_paths(
     for sequence in 1..=9999 {
         let prefix = format!("{sequence:04}_{slug}.reference-data");
         let artifacts = ReferenceDataReviewArtifactPaths {
-            sql: format!("database/releases/{prefix}.sql"),
-            summary: format!("database/releases/{prefix}.summary.md"),
-            risk: format!("database/releases/{prefix}.risk.json"),
-            manifest: format!("database/releases/{prefix}.manifest.json"),
+            sql: format!("database/releases/reference-data/{prefix}.sql"),
+            summary: format!("database/releases/reference-data/{prefix}.summary.md"),
+            risk: format!("database/releases/reference-data/{prefix}.risk.json"),
+            manifest: format!("database/releases/reference-data/{prefix}.manifest.json"),
         };
         for relative_path in artifacts.relative_paths() {
             ensure_reference_data_review_release_path(&relative_path)?;

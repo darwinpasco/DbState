@@ -17,15 +17,17 @@ Do not use production, UAT, staging, or shared databases for tests unless read-o
 
 ## Artifact Bundle
 
-Release bundles are written under `database/releases/` only.
+Schema/object release bundles are written under `database/releases/objects/`.
+Reference-data review script bundles are written under `database/releases/reference-data/`.
+Both artifact kinds remain under `database/releases/` and are review-only.
 
 Current bundle files:
 
 ```text
-database/releases/0001_<release-name>.sql
-database/releases/0001_<release-name>.summary.md
-database/releases/0001_<release-name>.risk.json
-database/releases/0001_<release-name>.manifest.json
+database/releases/objects/0001_<release-name>.sql
+database/releases/objects/0001_<release-name>.summary.md
+database/releases/objects/0001_<release-name>.risk.json
+database/releases/objects/0001_<release-name>.manifest.json
 ```
 
 If the first sequence already exists, DbState chooses the next available sequence.
