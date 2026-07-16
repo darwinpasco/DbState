@@ -5452,6 +5452,42 @@ fn slice11_service_routes_include_only_approved_endpoints() {
 }
 
 #[test]
+fn shell_control_service_routes_return_expected_json_contracts() {
+    let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    env::remove_var("DBSTATE_POSTGRES_URL");
+    let dir = create_temp_dir("shell-control-service-routes");
+    init_git_repo(&dir);
+
+    let health = service_response("GET", "/api/v1/health", "", &dir);
+    assert_eq!(health.status_code, 200);
+    assert_common_json_contract(&health.body);
+    assert!(health.body.contains("\"service\":\"dbstate\""));
+
+    let workspace = service_response("POST", "/api/v1/workspace/validate", "{}", &dir);
+    assert_eq!(workspace.status_code, 200);
+    assert_common_json_contract(&workspace.body);
+    assert!(workspace.body.contains("dbstateProjectStatus"));
+    assert!(workspace.body.contains("isGitRepository"));
+    assert!(workspace.body.contains("missingPaths"));
+
+    let repo = service_response("POST", "/api/v1/repo/status", "{}", &dir);
+    assert_eq!(repo.status_code, 200);
+    assert_common_json_contract(&repo.body);
+    assert!(repo.body.contains("\"command\":\"repo status\""));
+
+    let init_plan = service_response("POST", "/api/v1/init/plan", r#"{ "dryRun": true }"#, &dir);
+    assert_eq!(init_plan.status_code, 200);
+    assert_common_json_contract(&init_plan.body);
+    assert!(init_plan.body.contains("\"command\":\"init\""));
+    assert!(init_plan.body.contains("\"plannedCreates\""));
+
+    let connection = service_response("POST", "/api/v1/connections/test", "{}", &dir);
+    assert_eq!(connection.status_code, 400);
+    assert_common_json_contract(&connection.body);
+    assert!(connection.body.contains("Missing PostgreSQL connection"));
+}
+
+#[test]
 fn release_artifact_preview_endpoint_reads_release_sql_artifact() {
     let dir = create_temp_dir("slice25-release-artifact-preview");
     init_git_repo(&dir);
@@ -5992,8 +6028,27 @@ fn count_occurrences(haystack: &str, needle: &str) -> usize {
     haystack.match_indices(needle).count()
 }
 
+fn js_bound_click_actions(js: &str) -> Vec<String> {
+    let marker = "document.querySelector(\"[data-action='";
+    let mut actions = Vec::new();
+    let mut remaining = js;
+    while let Some(start) = remaining.find(marker) {
+        let after_marker = &remaining[start + marker.len()..];
+        if let Some(end) = after_marker.find("']\")") {
+            let after_selector = &after_marker[end + 4..];
+            if after_selector.starts_with(".addEventListener") {
+                actions.push(after_marker[..end].to_string());
+            }
+            remaining = after_selector;
+        } else {
+            break;
+        }
+    }
+    actions
+}
+
 fn js_handler_for_action<'a>(js: &'a str, action: &str) -> &'a str {
-    let marker = format!("document.querySelector(\"[data-action='{action}']\")");
+    let marker = format!("document.querySelector(\"[data-action='{action}']\").addEventListener");
     let start = js.find(&marker).unwrap_or_else(|| {
         panic!("missing handler marker {marker}");
     });
@@ -6006,6 +6061,55 @@ fn js_handler_for_action<'a>(js: &'a str, action: &str) -> &'a str {
         })
         .unwrap_or(remaining.len());
     &remaining[..next_handler]
+}
+
+#[test]
+fn shell_click_handlers_have_runtime_dom_targets_and_prevent_default() {
+    let html = ui_html();
+    let js = ui_js();
+    let actions = js_bound_click_actions(js);
+
+    assert!(
+        actions.contains(&"modal-close".to_string()),
+        "modal close handler must be bound at runtime"
+    );
+
+    for action in &actions {
+        assert!(
+            html.contains(&format!("data-action=\"{action}\"")),
+            "startup click handler has no matching DOM action {action}"
+        );
+    }
+
+    for action in [
+        "health",
+        "workspace-status",
+        "repo-status",
+        "init-plan",
+        "profiles-refresh",
+        "profile-save",
+        "profile-delete",
+        "connection-test",
+        "modal-close",
+    ] {
+        let handler = js_handler_for_action(js, action);
+        assert!(
+            handler.contains("event.preventDefault();"),
+            "shell handler {action} must prevent default click behavior"
+        );
+    }
+
+    for expected in [
+        "id=\"app-modal\"",
+        "id=\"app-modal-title\"",
+        "id=\"app-modal-body\"",
+        "data-action=\"modal-close\"",
+    ] {
+        assert!(
+            html.contains(expected),
+            "missing modal DOM target {expected}"
+        );
+    }
 }
 
 #[test]
@@ -6038,14 +6142,27 @@ fn shell_workspace_controls_have_independent_endpoint_handlers() {
         );
     }
 
+    for expected in [
+        "\"health\": approvedEndpoints.health",
+        "\"workspace-status\": approvedEndpoints.workspaceValidate",
+        "\"repo-status\": approvedEndpoints.repoStatus",
+        "\"init-plan\": approvedEndpoints.initPlan",
+        "\"connection-test\": approvedEndpoints.connectionTest",
+    ] {
+        assert!(
+            js.contains(expected),
+            "missing shell action endpoint dispatch {expected}"
+        );
+    }
+
     let health = js_handler_for_action(js, "health");
-    assert!(health.contains("run(\"Health\", approvedEndpoints.health"));
+    assert!(health.contains("run(\"Health\", shellActionEndpointByAction[\"health\"]"));
     assert!(!health.contains("approvedEndpoints.repoStatus"));
     assert!(!health.contains("approvedEndpoints.workspaceValidate"));
     assert!(!health.contains("approvedEndpoints.initPlan"));
 
     let workspace = js_handler_for_action(js, "workspace-status");
-    assert!(workspace.contains("requestJson(approvedEndpoints.workspaceValidate"));
+    assert!(workspace.contains("requestJson(shellActionEndpointByAction[\"workspace-status\"]"));
     assert!(workspace.contains("updateStatus(\"Workspace validate\", data)"));
     assert!(!workspace.contains("approvedEndpoints.repoStatus"));
     assert!(!workspace.contains("run(\"Repository status\""));
@@ -6053,13 +6170,15 @@ fn shell_workspace_controls_have_independent_endpoint_handlers() {
 
     let repo = js_handler_for_action(js, "repo-status");
     assert!(repo.contains("guardGitWorkspaceBefore(\"repo-status\")"));
-    assert!(repo.contains("run(\"Repository status\", approvedEndpoints.repoStatus"));
+    assert!(
+        repo.contains("run(\"Repository status\", shellActionEndpointByAction[\"repo-status\"]")
+    );
     assert!(!repo.contains("approvedEndpoints.workspaceValidate"));
     assert!(!repo.contains("approvedEndpoints.initPlan"));
 
     let init_plan = js_handler_for_action(js, "init-plan");
     assert!(init_plan.contains("guardGitWorkspaceBefore(\"init-plan\")"));
-    assert!(init_plan.contains("run(\"Init plan\", approvedEndpoints.initPlan"));
+    assert!(init_plan.contains("run(\"Init plan\", shellActionEndpointByAction[\"init-plan\"]"));
     assert!(init_plan.contains("attachWorkspacePath({ dryRun: true })"));
     assert!(!init_plan.contains("approvedEndpoints.repoStatus"));
 }
@@ -6125,7 +6244,8 @@ fn shell_connection_controls_have_independent_profile_and_session_wiring() {
     assert!(delete.contains("method: \"DELETE\""));
 
     let connection_test = js_handler_for_action(js, "connection-test");
-    assert!(connection_test.contains("run(\"Connection test\", approvedEndpoints.connectionTest"));
+    assert!(connection_test
+        .contains("run(\"Connection test\", shellActionEndpointByAction[\"connection-test\"]"));
     assert!(connection_test.contains("attachConnection({})"));
     assert!(!connection_test.contains("approvedEndpoints.profiles"));
 
