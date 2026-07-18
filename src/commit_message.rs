@@ -226,7 +226,9 @@ fn generate(cwd: &Path, style: Style, intent: Option<&str>) -> Report {
             .cmp(&right.object_type)
             .then(left.object_name.cmp(&right.object_name))
     });
-    report.breaking = changes.iter().any(|change| change.breaking_reason.is_some());
+    report.breaking = changes
+        .iter()
+        .any(|change| change.breaking_reason.is_some());
     report.title = build_title(&changes, style, intent, report.breaking);
     report.body = build_body(&changes, report.ticket.as_deref());
     report
@@ -259,7 +261,11 @@ fn git_line(root: &Path, args: &[&str]) -> Option<String> {
         return None;
     }
     let value = String::from_utf8_lossy(&output.stdout).trim().to_string();
-    if value.is_empty() { None } else { Some(value) }
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 fn staged_rows(root: &Path) -> Result<Vec<(String, String, Option<String>)>, String> {
@@ -500,12 +506,7 @@ fn ticket_from_branch(branch: &str) -> Option<String> {
     None
 }
 
-fn build_title(
-    changes: &[Change],
-    style: Style,
-    intent: Option<&str>,
-    breaking: bool,
-) -> String {
+fn build_title(changes: &[Change], style: Style, intent: Option<&str>, breaking: bool) -> String {
     let summary = intent
         .map(normalize_intent)
         .unwrap_or_else(|| summarize(changes));
@@ -572,7 +573,7 @@ fn summarize(changes: &[Change]) -> String {
         .map(|(object_type, count)| {
             let label = if *count == 1 {
                 (*object_type).to_string()
-            } else if **object_type == "reference data" {
+            } else if *object_type == "reference data" {
                 "reference-data tables".to_string()
             } else {
                 format!("{object_type}s")
@@ -585,16 +586,10 @@ fn summarize(changes: &[Change]) -> String {
 }
 
 fn normalize_intent(value: &str) -> String {
-    let value = value
-        .trim()
-        .trim_end_matches(|character: char| matches!(character, '.' | '!' | '?'));
+    let value = value.trim().trim_end_matches(['.', '!', '?']);
     let mut characters = value.chars();
     match characters.next() {
-        Some(first) => format!(
-            "{}{}",
-            first.to_lowercase(),
-            characters.collect::<String>()
-        ),
+        Some(first) => format!("{}{}", first.to_lowercase(), characters.collect::<String>()),
         None => "update database state".to_string(),
     }
 }
@@ -602,11 +597,7 @@ fn normalize_intent(value: &str) -> String {
 fn capitalize(value: &str) -> String {
     let mut characters = value.chars();
     match characters.next() {
-        Some(first) => format!(
-            "{}{}",
-            first.to_uppercase(),
-            characters.collect::<String>()
-        ),
+        Some(first) => format!("{}{}", first.to_uppercase(), characters.collect::<String>()),
         None => String::new(),
     }
 }

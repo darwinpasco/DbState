@@ -2,7 +2,7 @@ use crate::postgres::{
     inspect_postgres, invalid_postgres_url_message, is_postgres_connection_url,
     quote_postgres_identifier, resolve_postgres_url,
 };
-use crate::project::project_structure_allows_release_subfolder_backfill;
+use crate::project::{project_structure_allows_release_subfolder_backfill, GitHandoffWorkflow};
 use crate::repository::plan::{analyze_table_difference, parse_repository_table_columns};
 use crate::repository::{
     ensure_database_object_path, plan_postgres_with_inventory, DependencyWarning, ExportSelection,
@@ -173,14 +173,6 @@ pub fn release_postgres_with_inventory(
                 .to_string(),
         );
     }
-    if project.is_dirty && !dry_run {
-        report.errors.push(
-            "Release artifact generation is blocked because the working tree has changes. Commit/stash changes or use --dry-run."
-                .to_string(),
-        );
-        return report;
-    }
-
     let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
     if !root.join("database/releases").is_dir() {
         report.errors.push(
@@ -197,12 +189,6 @@ pub fn release_postgres_with_inventory(
     report.blocked_items = plan.blocked_items.clone();
     report.dependency_warnings = plan.dependency_warnings.clone();
     report.warnings.extend(plan.warnings.clone());
-    if report.is_dirty && dry_run {
-        report.warnings.push(
-            "Release artifact generation will be blocked because the working tree has changes. Commit or stash changes before generating release artifacts."
-                .to_string(),
-        );
-    }
     report.errors = plan.errors.clone();
     report.deferred_object_types = plan.deferred_object_types.clone();
     report.repository_path = plan.repository_path.clone();
@@ -237,6 +223,21 @@ pub fn release_postgres_with_inventory(
 
     if dry_run {
         report.success = report.errors.is_empty();
+        return report;
+    }
+
+    let guard = scoped_write_guard(
+        &root,
+        report.branch.as_deref(),
+        project.default_branch.as_deref(),
+        &report.planned_artifacts,
+        GitHandoffWorkflow::SchemaRelease,
+        release_name,
+    );
+    report.warnings.extend(guard.warnings);
+    if !guard.allowed {
+        report.errors.extend(guard.errors);
+        update_release_risk(&mut report);
         return report;
     }
 

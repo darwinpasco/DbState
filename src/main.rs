@@ -11,7 +11,8 @@ fn main() -> ExitCode {
         println!("{}\n  {}", usage(), commit_message::usage());
         return ExitCode::SUCCESS;
     }
-    if matches!(args.as_slice(), [command, help] if command == "commit-message" && (help == "--help" || help == "-h")) {
+    if matches!(args.as_slice(), [command, help] if command == "commit-message" && (help == "--help" || help == "-h"))
+    {
         println!("{}", commit_message::usage());
         return ExitCode::SUCCESS;
     }

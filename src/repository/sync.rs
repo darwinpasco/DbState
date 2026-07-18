@@ -1,7 +1,7 @@
 use crate::postgres::{
     invalid_postgres_url_message, is_postgres_connection_url, resolve_postgres_url,
 };
-use crate::project::project_structure_allows_release_subfolder_backfill;
+use crate::project::{project_structure_allows_release_subfolder_backfill, GitHandoffWorkflow};
 use crate::repository::discovery::render_database_objects_for_selection;
 use crate::repository::objects::*;
 use crate::*;
@@ -215,14 +215,6 @@ pub fn export_postgres_with_inventory(
                 .to_string(),
         );
     }
-    if project.is_dirty && !dry_run {
-        report.errors.push(
-            "Export is blocked because the working tree has changes. Commit/stash changes or use --dry-run."
-                .to_string(),
-        );
-        return report;
-    }
-
     let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
     let plan = match plan_export(&root, inventory, selection) {
         Ok(plan) => plan,
@@ -242,6 +234,20 @@ pub fn export_postgres_with_inventory(
 
     if dry_run {
         report.success = report.errors.is_empty();
+        return report;
+    }
+
+    let guard = scoped_write_guard(
+        &root,
+        report.branch.as_deref(),
+        project.default_branch.as_deref(),
+        &report.planned_files,
+        GitHandoffWorkflow::SchemaExport,
+        &report.export_scope,
+    );
+    report.warnings.extend(guard.warnings);
+    if !guard.allowed {
+        report.errors.extend(guard.errors);
         return report;
     }
 
@@ -429,14 +435,6 @@ pub fn sync_postgres_with_inventory(
                 .to_string(),
         );
     }
-    if project.is_dirty && !dry_run {
-        report.errors.push(
-            "Synchronization is blocked because the working tree has changes. Commit/stash changes or use --dry-run."
-                .to_string(),
-        );
-        return report;
-    }
-
     let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
     let plan = match plan_sync(&root, inventory, selection) {
         Ok(plan) => plan,
@@ -456,6 +454,25 @@ pub fn sync_postgres_with_inventory(
 
     if dry_run {
         report.success = report.errors.is_empty();
+        return report;
+    }
+
+    let intended_write_paths: Vec<String> = plan
+        .writes
+        .iter()
+        .map(|write| write.relative_path.clone())
+        .collect();
+    let guard = scoped_write_guard(
+        &root,
+        report.branch.as_deref(),
+        project.default_branch.as_deref(),
+        &intended_write_paths,
+        GitHandoffWorkflow::SchemaExport,
+        &report.sync_scope,
+    );
+    report.warnings.extend(guard.warnings);
+    if !guard.allowed {
+        report.errors.extend(guard.errors);
         return report;
     }
 

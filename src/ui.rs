@@ -26,6 +26,7 @@ const UI_HTML: &str = r#"<!doctype html>
   <section class="context-strip" aria-label="Workspace summary">
     <span>Workspace: <strong id="header-workspace">service working directory</strong></span>
     <span>Branch: <strong id="header-branch">unknown</strong></span>
+    <span>Protected: <strong id="header-protected-branch">unknown</strong></span>
     <span>Working tree: <strong id="header-tree">unknown</strong></span>
   </section>
 
@@ -39,7 +40,8 @@ const UI_HTML: &str = r#"<!doctype html>
       <button type="button" class="workflow-step" data-step="warnings" data-testid="tab-warnings">6. Warnings</button>
       <button type="button" class="workflow-step" data-step="release-plan" data-testid="tab-release-plan">7. Release Plan</button>
       <button type="button" class="workflow-step" data-step="reports" data-testid="tab-reports-raw-json">8. Reports / Raw JSON</button>
-      <button type="button" class="workflow-step" data-step="about">9. About / Safety</button>
+      <button type="button" class="workflow-step" data-step="git-workflow" data-testid="tab-git-workflow">9. Git Workflow</button>
+      <button type="button" class="workflow-step" data-step="about">10. About / Safety</button>
     </nav>
 
     <main class="workflow-main">
@@ -93,6 +95,11 @@ const UI_HTML: &str = r#"<!doctype html>
           <div class="directory-list" id="directory-list"></div>
         </div>
         <dl class="summary-list" id="workspace-summary"></dl>
+        <section class="subsection" data-testid="workspace-git-workflow-pointer">
+          <h3>Git Workflow</h3>
+          <p class="note">Open Git Workflow for recommended branch guidance, generated commit text, intended write paths, written/generated files, and manual Git commands.</p>
+          <button type="button" class="secondary-button" data-action="open-git-workflow" data-testid="open-git-workflow">Open Git Workflow</button>
+        </section>
       </section>
 
       <section class="workflow-panel" id="step-source-target">
@@ -119,7 +126,9 @@ const UI_HTML: &str = r#"<!doctype html>
                   <dt>Workspace</dt><dd id="repository-workspace">service working directory</dd>
                   <dt>Git root</dt><dd id="repository-git-root">unknown</dd>
                   <dt>Branch</dt><dd id="repository-branch">unknown</dd>
+                  <dt>Protected branch</dt><dd id="repository-protected-branch">unknown</dd>
                   <dt>Working tree</dt><dd id="repository-tree">unknown</dd>
+                  <dt>Dirty path count</dt><dd id="repository-dirty-path-count">unknown</dd>
                   <dt>DbState project</dt><dd id="repository-project">unknown</dd>
                   <dt>Dirty</dt><dd id="repository-dirty">unknown</dd>
                 </dl>
@@ -363,7 +372,7 @@ rows:
         </section>
         <div id="repository-sync-controls" class="subsection" hidden>
           <h3>Schema Compare: Database to Repository</h3>
-          <p class="note">Preview reads PostgreSQL and the selected repository without writing files. Write repository changes writes only under the selected repository's database/objects/ paths, requires a clean working tree, and never changes PostgreSQL.</p>
+          <p class="note">Preview reads PostgreSQL and the selected repository without writing files. Write repository changes writes only under the selected repository's database/objects/ paths, respects protected branch and scoped dirty-target guardrails, and never changes PostgreSQL.</p>
           <label for="repository-write-confirmation">Typed confirmation
             <input id="repository-write-confirmation" type="text" autocomplete="off">
           </label>
@@ -642,6 +651,58 @@ rows:
           <span id="copy-json-status" class="note"></span>
         </div>
         <pre id="json-viewer" data-testid="raw-json-panel">{}</pre>
+      </section>
+
+      <section class="workflow-panel" id="step-git-workflow">
+        <div class="panel-heading">
+          <h2>Git Workflow</h2>
+          <p>Review branch safety, DbState file changes, and manual Git handoff guidance for the selected workflow.</p>
+        </div>
+        <section class="subsection" id="git-handoff-panel" data-testid="git-handoff-panel">
+          <h3>Git Handoff</h3>
+          <p class="note">Advisory only. DbState never runs git add, commit, push, pull, fetch, tag, switch, checkout, or branch commands.</p>
+          <dl class="summary-list compact" id="git-handoff-summary" data-testid="git-handoff-summary">
+            <dt>Current branch</dt><dd id="git-handoff-current-branch">unknown</dd>
+            <dt>Protected branch</dt><dd id="git-handoff-protected-branch">unknown</dd>
+            <dt>Worktree</dt><dd id="git-handoff-worktree">unknown</dd>
+            <dt>Dirty path count</dt><dd id="git-handoff-dirty-count">unknown</dd>
+            <dt>Suggested branch name</dt><dd id="git-handoff-branch-name">unknown</dd>
+            <dt>Suggested commit title</dt><dd id="git-handoff-commit-title">unknown</dd>
+          </dl>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-action="regenerate-commit-message" data-testid="regenerate-commit-message">Generate / Regenerate Commit Message</button>
+          </div>
+          <div class="split-pane">
+            <section>
+              <h4>DbState Intended Write Paths</h4>
+              <pre id="git-handoff-intended-paths" data-testid="git-handoff-intended-paths">No intended write paths yet.</pre>
+            </section>
+            <section>
+              <h4>DbState Written/Generated Paths</h4>
+              <pre id="git-handoff-written-paths" data-testid="git-handoff-written-paths">No written/generated paths yet.</pre>
+            </section>
+          </div>
+          <h4>Recommended Branch</h4>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="git-handoff-recommended-branch" data-testid="copy-recommended-branch">Copy Recommended Branch command</button>
+          </div>
+          <pre id="git-handoff-recommended-branch" data-testid="git-handoff-recommended-branch">Run a write or generate action to get branch guidance.</pre>
+          <h4>Suggested Manual Git Commands</h4>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="git-handoff-commands" data-testid="copy-manual-git-commands">Copy Suggested Manual Git Commands</button>
+          </div>
+          <pre id="git-handoff-commands" data-testid="git-handoff-commands">Run a write or generate action to get post-review commands.</pre>
+          <h4>Suggested Commit Title</h4>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="git-handoff-commit-title-text" data-testid="copy-commit-title">Copy Suggested commit title</button>
+          </div>
+          <pre id="git-handoff-commit-title-text" data-testid="git-handoff-commit-title-text">No suggested commit title yet.</pre>
+          <h4>Suggested Commit Body</h4>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="git-handoff-commit-body" data-testid="copy-commit-body">Copy Suggested commit body</button>
+          </div>
+          <pre id="git-handoff-commit-body" data-testid="git-handoff-commit-body">No suggested commit body yet.</pre>
+        </section>
       </section>
 
       <section class="workflow-panel" id="step-about">
@@ -1643,7 +1704,11 @@ const UI_JS: &str = r#"(function () {
     workspace: {
       isGitRepository: false,
       dbstateProjectStatus: "",
-      gitRoot: ""
+      gitRoot: "",
+      branch: "",
+      isProtectedBranch: false,
+      workingTreeStatus: "",
+      dirtyPathCount: 0
     },
     included: new Set(),
     releaseSelectedRefs: new Set(),
@@ -1653,7 +1718,9 @@ const UI_JS: &str = r#"(function () {
     objectDiffMode: "fullContext",
     previousWorkflowMode: "inspect",
     releaseResponse: null,
-    lastOperation: "none"
+    lastOperation: "none",
+    gitHandoffWorkflow: "",
+    gitHandoffBranchCommand: ""
   };
 
   const jsonViewer = document.getElementById("json-viewer");
@@ -2055,12 +2122,31 @@ const UI_JS: &str = r#"(function () {
       byId("repository-git-root").textContent = gitRoot;
     }
     if (data.branch) {
+      state.workspace.branch = data.branch;
       byId("header-branch").textContent = data.branch;
       byId("repository-branch").textContent = data.branch;
     }
+    if (typeof data.isProtectedBranch === "boolean") {
+      state.workspace.isProtectedBranch = data.isProtectedBranch;
+      byId("header-protected-branch").textContent = data.isProtectedBranch ? "yes" : "no";
+      byId("repository-protected-branch").textContent = data.isProtectedBranch ? "yes" : "no";
+    } else if (data.branch) {
+      const protectedBranch = isProtectedBranchName(data.branch);
+      state.workspace.isProtectedBranch = protectedBranch;
+      byId("header-protected-branch").textContent = protectedBranch ? "yes" : "no";
+      byId("repository-protected-branch").textContent = protectedBranch ? "yes" : "no";
+    }
     if (data.workingTreeStatus) {
+      state.workspace.workingTreeStatus = data.workingTreeStatus;
       byId("header-tree").textContent = data.workingTreeStatus;
       byId("repository-tree").textContent = data.workingTreeStatus;
+    }
+    if (typeof data.dirtyPathCount === "number") {
+      state.workspace.dirtyPathCount = data.dirtyPathCount;
+      byId("repository-dirty-path-count").textContent = data.dirtyPathCount;
+    } else if (Array.isArray(data.dirtyPaths)) {
+      state.workspace.dirtyPathCount = data.dirtyPaths.length;
+      byId("repository-dirty-path-count").textContent = data.dirtyPaths.length;
     }
     if (data.dbstateProjectStatus) {
       byId("repository-project").textContent = data.dbstateProjectStatus;
@@ -2070,6 +2156,233 @@ const UI_JS: &str = r#"(function () {
       byId("repository-dirty").textContent = data.isDirty ? "dirty" : "clean";
     }
     updateInitWriteButton();
+    updateGitHandoff(data, state.lastOperation || "Workspace");
+  }
+
+  function isProtectedBranchName(branch) {
+    return ["main", "master", "dev", "develop"].indexOf(branch) >= 0;
+  }
+
+  function gitHandoffWorkflow(label, data) {
+    const command = textOrEmpty(data && data.command);
+    if (label === "Generate Release Artifact" || command.indexOf("release postgres") >= 0) {
+      return "schema-release";
+    }
+    if (label === "Preview Repository Sync" || label === "Write Selected Repository Changes" || command.indexOf("sync postgres") >= 0) {
+      return "schema-export";
+    }
+    if (label === "Reference-data review script write" || label === "Reference-data review script preview" || command.indexOf("review-script") >= 0) {
+      return "reference-data-review";
+    }
+    if (label === "Reference-data YAML write" || label === "Reference-data YAML preview" || command.indexOf("reference-data export") >= 0) {
+      return "reference-data-export";
+    }
+    if (label === "Initialize DbState Project" || command === "init") {
+      return "project-init";
+    }
+    return workflowBranchSegment(currentWorkflowMode());
+  }
+
+  function workflowBranchSegment(mode) {
+    if (isSchemaRepositoryToDatabaseMode(mode)) {
+      return "schema-release";
+    }
+    if (isSchemaDatabaseToRepositoryMode(mode)) {
+      return "schema-export";
+    }
+    if (isReferenceDataRepositoryToDatabaseMode(mode)) {
+      return "reference-data-review";
+    }
+    if (isReferenceDataDatabaseToRepositoryMode(mode)) {
+      return "reference-data-export";
+    }
+    return "workspace";
+  }
+
+  function gitHandoffCommit(workflow) {
+    if (workflow === "schema-release") {
+      return {
+        title: "review: generate schema release artifacts",
+        body: "Generated review-only schema release artifacts under database/releases/objects/.\n\nNo SQL was executed.\nNo database changes were applied."
+      };
+    }
+    if (workflow === "schema-export") {
+      return {
+        title: "sync: update schema objects from PostgreSQL",
+        body: "Updated repository desired-state files from PostgreSQL.\n\nNo database changes were applied."
+      };
+    }
+    if (workflow === "reference-data-review") {
+      return {
+        title: "review: generate reference-data review script",
+        body: "Generated review-only reference-data artifacts under database/releases/reference-data/.\n\nIncludes INSERT candidates for repository-only rows, UPDATE candidates for different rows, and manual-review comments for database-only rows.\nNo DELETE statements were generated.\nNo data was applied."
+      };
+    }
+    if (workflow === "reference-data-export") {
+      return {
+        title: "sync: export reference data from PostgreSQL",
+        body: "Exported selected PostgreSQL reference-data tables to repository YAML files.\n\nUpdated database/reference-data/dbstate.reference-data.yml and/or database/reference-data/tables/.\nNo PostgreSQL data was changed."
+      };
+    }
+    return {
+      title: "chore: initialize DbState project structure",
+      body: "Initialize local DbState project folders and default reference-data registry.\n\nNo SQL was executed.\nNo database changes were applied."
+    };
+  }
+
+  function pathTypeSummary(paths) {
+    const counts = {
+      schemaObjects: 0,
+      schemaArtifacts: 0,
+      referenceDataYaml: 0,
+      referenceDataArtifacts: 0,
+      projectStructure: 0,
+      other: 0
+    };
+    paths.forEach(function (path) {
+      if (path.indexOf("database/objects/") === 0) {
+        counts.schemaObjects += 1;
+      } else if (path.indexOf("database/releases/objects/") === 0) {
+        counts.schemaArtifacts += 1;
+      } else if (path.indexOf("database/reference-data/") === 0) {
+        counts.referenceDataYaml += 1;
+      } else if (path.indexOf("database/releases/reference-data/") === 0) {
+        counts.referenceDataArtifacts += 1;
+      } else if (path.indexOf("database/") === 0) {
+        counts.projectStructure += 1;
+      } else {
+        counts.other += 1;
+      }
+    });
+    const parts = [];
+    if (counts.schemaObjects) {
+      parts.push(counts.schemaObjects + " schema desired-state file(s)");
+    }
+    if (counts.schemaArtifacts) {
+      parts.push(counts.schemaArtifacts + " schema release artifact(s)");
+    }
+    if (counts.referenceDataYaml) {
+      parts.push(counts.referenceDataYaml + " reference-data YAML file(s)");
+    }
+    if (counts.referenceDataArtifacts) {
+      parts.push(counts.referenceDataArtifacts + " reference-data review artifact(s)");
+    }
+    if (counts.projectStructure) {
+      parts.push(counts.projectStructure + " DbState project structure path(s)");
+    }
+    if (counts.other) {
+      parts.push(counts.other + " other path(s)");
+    }
+    return parts.length ? parts.join(", ") : "No DbState file paths available.";
+  }
+
+  function generatedGitCommit(workflow, intended, written, data) {
+    const base = gitHandoffCommit(workflow);
+    const filePaths = written.length ? written : intended;
+    if (!filePaths.length) {
+      return base;
+    }
+    const source = written.length ? "Written/generated files" : "Intended write paths";
+    const statusPaths = Array.isArray(data && data.dirtyPaths) && data.dirtyPaths.length
+      ? "\n\nCurrent dirty paths observed by read-only Git status:\n" + data.dirtyPaths.map(function (path) { return "- " + path; }).join("\n")
+      : "";
+    return {
+      title: base.title,
+      body: base.body + "\n\n" + source + ":\n" + filePaths.map(function (path) { return "- " + path; }).join("\n") + "\n\nChange summary: " + pathTypeSummary(filePaths) + "." + statusPaths
+    };
+  }
+
+  function handoffPaths(data, kind) {
+    const paths = [];
+    (Array.isArray(data && data[kind]) ? data[kind] : []).forEach(function (path) {
+      if (path && paths.indexOf(path) < 0) {
+        paths.push(path);
+      }
+    });
+    return paths;
+  }
+
+  function intendedWritePaths(data) {
+    let paths = [];
+    ["plannedCreates", "plannedUpdates", "plannedFiles", "plannedArtifacts"].forEach(function (key) {
+      paths = paths.concat(handoffPaths(data, key));
+    });
+    if (data && data.registryPath) {
+      paths.push(data.registryPath);
+    }
+    if (Array.isArray(data && data.tablePreviews)) {
+      data.tablePreviews.forEach(function (preview) {
+        if (preview.file) {
+          paths.push(preview.file);
+        }
+      });
+    }
+    return Array.from(new Set(paths)).sort();
+  }
+
+  function writtenPaths(data) {
+    let paths = [];
+    ["createdPaths", "createdFiles", "updatedFiles", "filesCreated", "filesUpdated", "createdArtifacts"].forEach(function (key) {
+      paths = paths.concat(handoffPaths(data, key));
+    });
+    return Array.from(new Set(paths)).sort();
+  }
+
+  function safeSlug(value) {
+    const slug = textOrEmpty(value).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+    return slug || "dbstate-write";
+  }
+
+  function timestampSlug() {
+    const now = new Date();
+    const pad = function (value) { return String(value).padStart(2, "0"); };
+    return String(now.getFullYear()) + pad(now.getMonth() + 1) + pad(now.getDate()) + "-" + pad(now.getHours()) + pad(now.getMinutes()) + pad(now.getSeconds());
+  }
+
+  function shortId() {
+    return Math.floor(Math.random() * 0xffffff).toString(16).padStart(6, "0");
+  }
+
+  function updateGitHandoff(data, label, options) {
+    const config = options || {};
+    const branch = textOrEmpty((data && data.branch) || state.workspace.branch || "unknown");
+    const protectedBranch = typeof (data && data.isProtectedBranch) === "boolean" ? data.isProtectedBranch : state.workspace.isProtectedBranch || isProtectedBranchName(branch);
+    const workflow = gitHandoffWorkflow(label || state.lastOperation, data || {});
+    const summarySlug = safeSlug((data && (data.releaseName || data.scriptName || data.exportScope || data.syncScope || data.command)) || label || workflow);
+    const branchName = "dbstate/" + workflow + "/" + timestampSlug() + "-" + shortId() + "-" + summarySlug;
+    const intended = intendedWritePaths(data || {});
+    const written = writtenPaths(data || {});
+    const commit = generatedGitCommit(workflow, intended, written, data || {});
+    const existingTitle = textOrEmpty(byId("git-handoff-commit-title-text").textContent);
+    const existingBody = textOrEmpty(byId("git-handoff-commit-body").textContent);
+    const titlePlaceholder = "No suggested commit title yet.";
+    const bodyPlaceholder = "No suggested commit body yet.";
+    const nextTitle = textOrEmpty(commit.title) || (existingTitle && existingTitle !== titlePlaceholder ? existingTitle : gitHandoffCommit(workflow).title);
+    const nextBody = textOrEmpty(commit.body) || (existingBody && existingBody !== bodyPlaceholder ? existingBody : gitHandoffCommit(workflow).body);
+    let branchCommand = "git switch -c " + branchName;
+    if (!config.regenerateBranch && state.gitHandoffWorkflow === workflow && state.gitHandoffBranchCommand) {
+      branchCommand = state.gitHandoffBranchCommand;
+    }
+    state.gitHandoffWorkflow = workflow;
+    state.gitHandoffBranchCommand = branchCommand;
+    const dirtyCount = typeof (data && data.dirtyPathCount) === "number" ? data.dirtyPathCount : state.workspace.dirtyPathCount;
+    const worktree = textOrEmpty((data && data.workingTreeStatus) || state.workspace.workingTreeStatus || "unknown");
+    byId("git-handoff-current-branch").textContent = branch;
+    byId("git-handoff-protected-branch").textContent = protectedBranch ? "yes" : "no";
+    byId("git-handoff-worktree").textContent = worktree;
+    byId("git-handoff-dirty-count").textContent = dirtyCount;
+    byId("git-handoff-branch-name").textContent = branchCommand.replace(/^git switch -c\s+/, "");
+    byId("git-handoff-commit-title").textContent = nextTitle;
+    byId("git-handoff-commit-title-text").textContent = nextTitle;
+    byId("git-handoff-intended-paths").textContent = intended.length ? intended.join("\n") : "No intended write paths yet.";
+    byId("git-handoff-written-paths").textContent = written.length ? written.join("\n") : "No written/generated paths yet.";
+    byId("git-handoff-recommended-branch").textContent = branchCommand;
+    byId("git-handoff-commands").textContent = [
+      "git status --short",
+      intended.concat(written).length ? "git add " + Array.from(new Set(intended.concat(written))).join(" ") : "git add <reviewed DbState paths>",
+      "git commit -m \"" + nextTitle + "\""
+    ].join("\n");
+    byId("git-handoff-commit-body").textContent = nextBody;
   }
 
   function updateConnectionModePanels() {
@@ -5479,24 +5792,48 @@ const UI_JS: &str = r#"(function () {
     const text = jsonViewer.textContent || "{}";
     const status = byId("copy-json-status");
     try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(text);
-      } else {
-        const textarea = document.createElement("textarea");
-        textarea.value = text;
-        textarea.setAttribute("readonly", "readonly");
-        textarea.style.position = "fixed";
-        textarea.style.left = "-9999px";
-        document.body.appendChild(textarea);
-        textarea.select();
-        if (!document.execCommand("copy")) {
-          throw new Error("Clipboard API unavailable.");
-        }
-        document.body.removeChild(textarea);
-      }
+      await copyTextToClipboard(text);
       status.textContent = "Copied";
     } catch (error) {
       status.textContent = "Copy failed";
+    }
+  }
+
+  async function copyTextToClipboard(text) {
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    const textarea = document.createElement("textarea");
+    textarea.value = text;
+    textarea.setAttribute("readonly", "readonly");
+    textarea.style.position = "fixed";
+    textarea.style.left = "-9999px";
+    document.body.appendChild(textarea);
+    textarea.select();
+    if (!document.execCommand("copy")) {
+      document.body.removeChild(textarea);
+      throw new Error("Clipboard API unavailable.");
+    }
+    document.body.removeChild(textarea);
+  }
+
+  async function copyElementText(targetId, button) {
+    const target = byId(targetId);
+    if (!target) {
+      return;
+    }
+    try {
+      await copyTextToClipboard(target.textContent || "");
+      button.textContent = "Copied";
+      setTimeout(function () {
+        button.textContent = button.dataset.originalText || "Copy";
+      }, 1200);
+    } catch (error) {
+      button.textContent = "Copy failed";
+      setTimeout(function () {
+        button.textContent = button.dataset.originalText || "Copy";
+      }, 1200);
     }
   }
 
@@ -5544,7 +5881,11 @@ const UI_JS: &str = r#"(function () {
         return;
       }
       if (label === "Reference-data YAML write" && data.success) {
+        responseSummary.textContent = "Repository files written. Review the generated files, then open Git Workflow to review the suggested branch, commit message, and manual Git commands.";
         requestJson(approvedEndpoints.referenceDataStatus, attachWorkspacePath({})).then(updateReferenceDataOptions).catch(function () {});
+      }
+      if (label === "Write Selected Repository Changes" && data.success) {
+        responseSummary.textContent = "Repository files written. Review the generated files, then open Git Workflow to review the suggested branch, commit message, and manual Git commands.";
       }
       const rows = rowsFromResponse(data, label);
       updateObjectTypeFilterOptions(rows, label);
@@ -5557,7 +5898,9 @@ const UI_JS: &str = r#"(function () {
           repository: data.repositoryPath || "",
           gitRoot: data.gitRoot || "",
           branch: data.branch || "",
+          protectedBranch: typeof data.isProtectedBranch === "boolean" ? data.isProtectedBranch : "",
           tree: data.workingTreeStatus || "",
+          dirtyPaths: typeof data.dirtyPathCount === "number" ? data.dirtyPathCount : "",
           project: data.dbstateProjectStatus || "",
           missingPaths: Array.isArray(data.missingPaths) ? data.missingPaths.length : 0,
           warnings: Array.isArray(data.warnings) ? data.warnings.length : 0,
@@ -5985,6 +6328,26 @@ const UI_JS: &str = r#"(function () {
   });
 
   document.querySelector("[data-action='copy-json']").addEventListener("click", copyRedactedJson);
+
+  document.querySelector("[data-action='open-git-workflow']").addEventListener("click", function (event) {
+    event.preventDefault();
+    updateGitHandoff(state.lastResponse || {}, state.lastOperation || "Git Workflow");
+    showStep("git-workflow");
+  });
+
+  document.querySelector("[data-action='regenerate-commit-message']").addEventListener("click", function (event) {
+    event.preventDefault();
+    updateGitHandoff(state.lastResponse || {}, state.lastOperation || "Git Workflow");
+    responseSummary.textContent = "Git Workflow: regenerated commit message guidance from latest DbState file context.";
+  });
+
+  document.querySelectorAll("[data-copy-target]").forEach(function (button) {
+    button.dataset.originalText = button.textContent;
+    button.addEventListener("click", function (event) {
+      event.preventDefault();
+      copyElementText(button.dataset.copyTarget, button);
+    });
+  });
 
   document.querySelector("[data-action='modal-close']").addEventListener("click", function (event) {
     event.preventDefault();
