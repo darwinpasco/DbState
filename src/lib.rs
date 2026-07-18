@@ -119,7 +119,8 @@ pub use crate::repository::{
     ExportSelection, PlanItem, PlanReport, PlanSelection, SyncReport,
 };
 pub use project::{
-    init_project, status_report, DbStateProjectStatus, ProjectReport, WorkingTreeStatus,
+    init_project, scoped_write_guard, status_report, suggested_branch_name, DbStateProjectStatus,
+    GitHandoffWorkflow, ProjectReport, ScopedWriteGuard, WorkingTreeStatus,
 };
 pub use service::{
     load_connection_profiles, parse_service_args, run_service, service_response,

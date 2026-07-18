@@ -61,6 +61,15 @@ fn init_git_repo(path: &Path) {
         .output()
         .expect("run git init");
     assert!(output.status.success(), "git init failed");
+    set_git_head_branch(path, "feature/dbstate-test");
+}
+
+fn set_git_head_branch(path: &Path, branch: &str) {
+    fs::write(
+        path.join(".git/HEAD"),
+        format!("ref: refs/heads/{branch}\n"),
+    )
+    .expect("set test git branch");
 }
 
 fn commit_all(path: &Path, message: &str) {
@@ -681,7 +690,7 @@ fn init_does_not_create_secret_or_connection_files() {
 }
 
 #[test]
-fn dirty_working_tree_warning_is_reported_and_init_is_blocked() {
+fn dirty_working_tree_warning_is_reported_and_init_allows_unrelated_paths() {
     let dir = create_temp_dir("dirty");
     init_git_repo(&dir);
     fs::write(dir.join("untracked.txt"), "dirty").expect("write dirty file");
@@ -691,9 +700,13 @@ fn dirty_working_tree_warning_is_reported_and_init_is_blocked() {
     assert!(!status.warnings.is_empty());
 
     let init = init_project(&dir, false).expect("init project");
-    assert!(!init.success);
-    assert!(init.created_paths.is_empty());
-    assert!(!dir.join("database").exists());
+    assert!(init.success, "{:?}", init.errors);
+    assert!(!init.created_paths.is_empty());
+    assert!(dir.join("database").exists());
+    assert!(init
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("unrelated changes")));
 }
 
 #[test]
@@ -1358,7 +1371,7 @@ fn export_requires_git_repository_and_dbstate_structure() {
 }
 
 #[test]
-fn export_write_is_blocked_when_working_tree_is_dirty() {
+fn export_write_allows_dirty_working_tree_when_paths_are_unrelated() {
     let dir = create_temp_dir("export-dirty");
     init_git_repo(&dir);
     create_complete_structure(&dir);
@@ -1368,9 +1381,12 @@ fn export_write_is_blocked_when_working_tree_is_dirty() {
     let report =
         export_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
 
-    assert!(!report.success);
-    assert!(report.errors[0].contains("working tree has changes"));
-    assert!(report.created_files.is_empty());
+    assert!(report.success, "{:?}", report.errors);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("unrelated changes")));
+    assert!(!report.created_files.is_empty());
 }
 
 #[test]
@@ -1579,7 +1595,7 @@ fn sync_requires_git_repository_and_dbstate_structure() {
 }
 
 #[test]
-fn sync_write_is_blocked_when_working_tree_is_dirty() {
+fn sync_write_allows_dirty_working_tree_when_paths_are_unrelated() {
     let dir = create_temp_dir("sync-dirty");
     init_git_repo(&dir);
     create_complete_structure(&dir);
@@ -1589,10 +1605,398 @@ fn sync_write_is_blocked_when_working_tree_is_dirty() {
     let report =
         sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
 
+    assert!(report.success, "{:?}", report.errors);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("unrelated changes")));
+    assert!(!report.created_files.is_empty());
+}
+
+#[test]
+fn slice35_protected_branch_blocks_write_actions() {
+    let dir = create_temp_dir("slice35-protected-branch");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    set_git_head_branch(&dir, "dev");
+
+    let report =
+        sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
+
     assert!(!report.success);
-    assert!(report.errors[0].contains("working tree has changes"));
+    assert!(report
+        .errors
+        .iter()
+        .any(|error| error.contains("Write blocked on protected branch: dev")));
+    assert!(report
+        .errors
+        .iter()
+        .any(|error| error.contains("git switch -c dbstate/schema-export/")));
+    assert!(report.created_files.is_empty());
+}
+
+#[test]
+fn slice35_dirty_overlapping_target_paths_block_write_actions() {
+    let dir = create_temp_dir("slice35-overlap");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let table_path = dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql");
+    fs::write(&table_path, "-- stale table definition\n").expect("write stale table file");
+    commit_all(&dir, "stale table");
+    fs::write(&table_path, "-- local uncommitted table definition\n").expect("dirty table file");
+
+    let report =
+        sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
+
+    assert!(!report.success);
+    assert!(report.errors.iter().any(|error| {
+        error.contains("Write blocked because the target file has uncommitted changes")
+            && error.contains("database/objects/tables/dbstate_slice2.sample_accounts.sql")
+    }));
+    assert!(report.updated_files.is_empty());
+}
+
+#[test]
+fn slice35_untracked_target_path_overwrite_is_blocked() {
+    let dir = create_temp_dir("slice35-untracked-target");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let table_path = dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql");
+    fs::write(&table_path, "-- untracked local table definition\n")
+        .expect("write untracked target file");
+
+    let report = sync_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::Table {
+            schema: "dbstate_slice2".to_string(),
+            table: "sample_accounts".to_string(),
+        },
+        false,
+    );
+
+    assert!(!report.success);
+    assert!(report.errors.iter().any(|error| {
+        error.contains("Write blocked because the target file has uncommitted changes")
+            && error.contains("database/objects/tables/dbstate_slice2.sample_accounts.sql")
+    }));
     assert!(report.created_files.is_empty());
     assert!(report.updated_files.is_empty());
+}
+
+#[test]
+fn slice35_staged_target_path_changes_block_write_actions() {
+    let dir = create_temp_dir("slice35-staged-target");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let table_path = dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql");
+    fs::write(&table_path, "-- stale table definition\n").expect("write stale table file");
+    commit_all(&dir, "stale table");
+    fs::write(&table_path, "-- staged local table definition\n").expect("dirty table file");
+    let add = Command::new("git")
+        .arg("add")
+        .arg("database/objects/tables/dbstate_slice2.sample_accounts.sql")
+        .current_dir(&dir)
+        .output()
+        .expect("stage target file");
+    assert!(add.status.success(), "git add target failed");
+
+    let report =
+        sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
+
+    assert!(!report.success);
+    assert!(report.errors.iter().any(|error| {
+        error.contains("Write blocked because the target file has uncommitted changes")
+            && error.contains("database/objects/tables/dbstate_slice2.sample_accounts.sql")
+    }));
+    assert!(report.created_files.is_empty());
+    assert!(report.updated_files.is_empty());
+}
+
+#[test]
+fn slice35_deleted_target_path_blocks_write_actions() {
+    let dir = create_temp_dir("slice35-deleted-target");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let table_path = dir.join("database/objects/tables/dbstate_slice2.sample_accounts.sql");
+    fs::write(&table_path, "-- stale table definition\n").expect("write stale table file");
+    commit_all(&dir, "stale table");
+    fs::remove_file(&table_path).expect("delete target file");
+
+    let report =
+        sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
+
+    assert!(!report.success);
+    assert!(report.errors.iter().any(|error| {
+        error.contains("Write blocked because the target file has uncommitted changes")
+            && error.contains("database/objects/tables/dbstate_slice2.sample_accounts.sql")
+    }));
+    assert!(report.created_files.is_empty());
+    assert!(report.updated_files.is_empty());
+}
+
+#[test]
+fn slice35_renamed_target_path_blocks_write_actions() {
+    let dir = create_temp_dir("slice35-renamed-target");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let table_path = "database/objects/tables/dbstate_slice2.sample_accounts.sql";
+    fs::write(dir.join(table_path), "-- stale table definition\n").expect("write stale table file");
+    commit_all(&dir, "stale table");
+    let rename = Command::new("git")
+        .arg("mv")
+        .arg(table_path)
+        .arg("database/objects/tables/dbstate_slice2.sample_accounts_renamed.sql")
+        .current_dir(&dir)
+        .output()
+        .expect("rename target file");
+    assert!(rename.status.success(), "git mv target failed");
+
+    let status = status_report(&dir, CommandKind::RepoStatus);
+    assert!(status.dirty_paths.contains(&table_path.to_string()));
+    assert!(status.dirty_paths.contains(
+        &"database/objects/tables/dbstate_slice2.sample_accounts_renamed.sql".to_string()
+    ));
+
+    let report =
+        sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
+
+    assert!(!report.success);
+    assert!(report.errors.iter().any(|error| {
+        error.contains("Write blocked because the target file has uncommitted changes")
+            && error.contains(table_path)
+    }));
+    assert!(report.created_files.is_empty());
+    assert!(report.updated_files.is_empty());
+}
+
+#[test]
+fn slice35_non_overlapping_dbstate_managed_changes_allow_scoped_write_with_warning() {
+    let dir = create_temp_dir("slice35-managed-unrelated");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let unrelated_object = dir.join("database/objects/schemas/local_only.sql");
+    fs::write(&unrelated_object, render_schema_sql("local_only"))
+        .expect("write unrelated object file");
+    commit_all(&dir, "local object");
+    fs::write(&unrelated_object, "-- local object work in progress\n")
+        .expect("modify unrelated object file");
+
+    let report =
+        sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
+
+    assert!(report.success, "{:?}", report.errors);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("unrelated changes")));
+    assert!(!report.created_files.is_empty());
+}
+
+#[test]
+fn slice35_status_reports_untracked_paths_with_spaces_and_unicode() {
+    let dir = create_temp_dir("slice35-path-visibility");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let nested = dir.join("database/objects/tables/nested folder");
+    fs::create_dir_all(&nested).expect("create nested folder");
+    fs::write(nested.join("customer email Δ.sql"), "-- local object\n")
+        .expect("write unicode path");
+
+    let report = status_report(&dir, CommandKind::RepoStatus);
+
+    assert!(report.is_dirty);
+    assert_eq!(report.dirty_paths.len(), 1);
+    assert!(report
+        .dirty_paths
+        .contains(&"database/objects/tables/nested folder/customer email Δ.sql".to_string()));
+    assert!(report.to_text().contains("Dirty path count: 1"));
+    assert!(report
+        .to_json()
+        .contains("database/objects/tables/nested folder/customer email Δ.sql"));
+}
+
+#[test]
+fn slice35_scoped_write_guard_rejects_unsafe_target_paths() {
+    let dir = create_temp_dir("slice35-unsafe-targets");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+
+    let guard = scoped_write_guard(
+        &dir,
+        Some("feature/dbstate-test"),
+        None,
+        &[
+            "../outside.sql".to_string(),
+            "/absolute/outside.sql".to_string(),
+            "C:/outside.sql".to_string(),
+        ],
+        GitHandoffWorkflow::SchemaExport,
+        "unsafe target paths",
+    );
+
+    assert!(!guard.allowed);
+    assert_eq!(guard.errors.len(), 3);
+    assert!(guard
+        .errors
+        .iter()
+        .all(|error| error.contains("target path is not safe")));
+}
+
+#[test]
+fn slice35_suggested_branch_names_include_workflow_timestamp_id_and_slug() {
+    let branch = suggested_branch_name(
+        GitHandoffWorkflow::ReferenceDataExport,
+        Some("20260717-143240"),
+        Some("c2a8f4"),
+        "public country",
+    );
+
+    assert_eq!(
+        branch,
+        "dbstate/reference-data-export/20260717-143240-c2a8f4-public-country"
+    );
+}
+
+#[test]
+fn slice35_commit_message_generation_per_workflow() {
+    assert_eq!(
+        GitHandoffWorkflow::SchemaRelease.commit_title(),
+        "review: generate schema release artifacts"
+    );
+    assert!(GitHandoffWorkflow::SchemaRelease
+        .commit_body()
+        .contains("database/releases/objects/"));
+    assert!(GitHandoffWorkflow::SchemaRelease
+        .commit_body()
+        .contains("No SQL was executed"));
+
+    assert_eq!(
+        GitHandoffWorkflow::SchemaExport.commit_title(),
+        "sync: update schema objects from PostgreSQL"
+    );
+    assert!(GitHandoffWorkflow::SchemaExport
+        .commit_body()
+        .contains("No database changes were applied"));
+
+    assert_eq!(
+        GitHandoffWorkflow::ReferenceDataReview.commit_title(),
+        "review: generate reference-data review script"
+    );
+    let reference_review = GitHandoffWorkflow::ReferenceDataReview.commit_body();
+    assert!(reference_review.contains("INSERT candidates"));
+    assert!(reference_review.contains("UPDATE candidates"));
+    assert!(reference_review.contains("No DELETE statements"));
+    assert!(reference_review.contains("No data was applied"));
+
+    assert_eq!(
+        GitHandoffWorkflow::ReferenceDataExport.commit_title(),
+        "sync: export reference data from PostgreSQL"
+    );
+    assert!(GitHandoffWorkflow::ReferenceDataExport
+        .commit_body()
+        .contains("database/reference-data"));
+}
+
+#[test]
+fn slice35_read_only_actions_are_allowed_on_protected_branch() {
+    let dir = create_temp_dir("slice35-readonly-protected");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    set_git_head_branch(&dir, "dev");
+    fs::write(dir.join("dirty.txt"), "dirty").expect("dirty unrelated file");
+
+    let report = compare_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All);
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.branch.as_deref(), Some("dev"));
+    assert!(report.is_dirty);
+}
+
+#[test]
+fn slice35_git_handoff_ui_contract_is_present() {
+    let html = ui_html();
+    let js = ui_js();
+    let combined = format!("{html}\n{js}");
+
+    for expected in [
+        "data-testid=\"tab-git-workflow\"",
+        "data-testid=\"workspace-git-workflow-pointer\"",
+        "data-testid=\"git-handoff-panel\"",
+        "Open Git Workflow",
+        "Current branch",
+        "Protected branch",
+        "DbState Intended Write Paths",
+        "DbState Written/Generated Paths",
+        "Recommended Branch",
+        "Suggested Manual Git Commands",
+        "Suggested Commit Title",
+        "Suggested Commit Body",
+        "data-testid=\"copy-recommended-branch\"",
+        "data-testid=\"copy-manual-git-commands\"",
+        "data-testid=\"copy-commit-title\"",
+        "data-testid=\"copy-commit-body\"",
+        "Generate / Regenerate Commit Message",
+        "\"git switch -c \" + branchName",
+        "state.gitHandoffBranchCommand",
+        "git status --short",
+        "git add ",
+        "git commit -m",
+        "review: generate schema release artifacts",
+        "sync: update schema objects from PostgreSQL",
+        "review: generate reference-data review script",
+        "sync: export reference data from PostgreSQL",
+        "DbState never runs git add, commit, push, pull, fetch, tag, switch, checkout, or branch commands.",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "missing Git Handoff UI contract {expected}"
+        );
+    }
+
+    assert!(!combined.contains("data-testid=\"schema-database-to-repository-git-file-lists\""));
+    assert!(!combined.contains("DbState Intended Objects to be Written"));
+    assert!(!combined.contains("DbState Written / Generated Files"));
+    assert!(!combined.contains("repository-sync-intended-objects"));
+    assert!(!combined.contains("repository-sync-written-files"));
+    assert!(!js.contains("renderRepositorySyncGitLists(data);"));
+    assert!(
+        js.contains("Repository files written. Review the generated files, then open Git Workflow")
+    );
+    assert!(js.contains(
+        "const existingTitle = textOrEmpty(byId(\"git-handoff-commit-title-text\").textContent);"
+    ));
+    assert!(js.contains(
+        "const existingBody = textOrEmpty(byId(\"git-handoff-commit-body\").textContent);"
+    ));
+    assert!(js.contains("existingTitle && existingTitle !== titlePlaceholder ? existingTitle"));
+    assert!(js.contains("existingBody && existingBody !== bodyPlaceholder ? existingBody"));
+    assert!(js.contains("Written/generated files"));
+    assert!(js.contains("Intended write paths"));
+    assert!(js.contains("Change summary: "));
+    assert!(js.contains("const filePaths = written.length ? written : intended;"));
+
+    let commands_start = js
+        .find("byId(\"git-handoff-commands\").textContent = [")
+        .expect("manual command block exists");
+    let commands_end = js[commands_start..]
+        .find("].join(\"\\n\");")
+        .map(|index| commands_start + index)
+        .expect("manual command block end exists");
+    let commands_block = &js[commands_start..commands_end];
+    assert!(!commands_block.contains("git switch"));
+
+    let branch_start = js
+        .find("let branchCommand = \"git switch -c \" + branchName;")
+        .expect("recommended branch block exists");
+    let branch_block = &js[branch_start..branch_start + 500.min(js.len() - branch_start)];
+    assert!(branch_block.contains("git switch -c"));
+    assert!(js.contains("byId(\"git-handoff-recommended-branch\").textContent = branchCommand;"));
 }
 
 #[test]
@@ -3020,10 +3424,15 @@ fn release_requires_git_repository_and_dbstate_structure() {
 }
 
 #[test]
-fn release_write_is_blocked_when_working_tree_is_dirty() {
+fn release_write_allows_dirty_working_tree_when_paths_are_unrelated() {
     let dir = create_temp_dir("release-dirty");
     init_git_repo(&dir);
     create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/local_only.sql"),
+        render_schema_sql("local_only"),
+    )
+    .expect("write repo-only schema");
     commit_all(&dir, "complete structure");
     fs::write(dir.join("dirty.txt"), "dirty").expect("write dirty file");
 
@@ -3031,14 +3440,18 @@ fn release_write_is_blocked_when_working_tree_is_dirty() {
         &dir,
         &sample_inventory(),
         &ExportSelection::All,
-        &PlanSelection::include_all(),
+        &PlanSelection::from_options(vec!["schema:local_only".to_string()], Vec::new())
+            .expect("plan selection"),
         "slice7",
         false,
     );
 
-    assert!(!report.success);
-    assert!(report.errors[0].contains("working tree has changes"));
-    assert!(report.created_artifacts.is_empty());
+    assert!(report.success, "{:?}", report.errors);
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("unrelated changes")));
+    assert!(!report.created_artifacts.is_empty());
 }
 
 #[test]
@@ -6244,8 +6657,6 @@ fn slice12_ui_javascript_calls_only_approved_endpoints() {
         "git fetch",
         "git pull",
         "git push",
-        "git add",
-        "git commit",
     ] {
         assert!(
             !js.contains(forbidden),
@@ -7874,7 +8285,7 @@ fn slice15_repository_sync_preview_uses_dry_run_and_does_not_write_without_conne
 }
 
 #[test]
-fn slice15_repository_sync_write_rejects_dirty_tree_before_files_are_written() {
+fn slice15_repository_sync_write_allows_unrelated_dirty_tree() {
     let dir = create_temp_dir("slice15-dirty-write");
     init_git_repo(&dir);
     create_complete_structure(&dir);
@@ -7884,13 +8295,13 @@ fn slice15_repository_sync_write_rejects_dirty_tree_before_files_are_written() {
     let report =
         sync_postgres_with_inventory(&dir, &sample_inventory(), &ExportSelection::All, false);
 
-    assert!(!report.success);
-    assert!(report.created_files.is_empty());
+    assert!(report.success, "{:?}", report.errors);
+    assert!(!report.created_files.is_empty());
     assert!(report.updated_files.is_empty());
     assert!(report
-        .errors
+        .warnings
         .iter()
-        .any(|error| error.contains("working tree has changes")));
+        .any(|warning| warning.contains("unrelated changes")));
 }
 
 #[test]
@@ -8662,7 +9073,9 @@ fn init_write_service_endpoint_does_not_overwrite_existing_registry() {
 
 #[test]
 fn slice13_ui_javascript_includes_repository_path_without_persistence() {
+    let html = ui_html();
     let js = ui_js();
+    let combined = format!("{html}\n{js}");
 
     assert!(js.contains("repositoryPath"));
     assert!(js.contains("workspace-path"));
@@ -8673,8 +9086,9 @@ fn slice13_ui_javascript_includes_repository_path_without_persistence() {
     assert!(!js.contains("git fetch"));
     assert!(!js.contains("git pull"));
     assert!(!js.contains("git push"));
-    assert!(!js.contains("git add"));
-    assert!(!js.contains("git commit"));
+    assert!(combined.contains("Suggested Manual Git Commands"));
+    assert!(js.contains("git add "));
+    assert!(js.contains("git commit -m"));
 }
 
 #[test]

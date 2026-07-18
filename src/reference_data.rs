@@ -2,7 +2,7 @@ use crate::postgres::{
     invalid_postgres_url_message, is_postgres_connection_url, quote_postgres_identifier,
     resolve_postgres_url,
 };
-use crate::project::project_structure_allows_release_subfolder_backfill;
+use crate::project::{project_structure_allows_release_subfolder_backfill, GitHandoffWorkflow};
 use crate::repository::safe_file_component;
 use crate::*;
 use ::postgres::{Client, NoTls};
@@ -544,13 +544,6 @@ fn reference_data_export_with_connection(
                 .to_string(),
         );
     }
-    if write_files && project.is_dirty {
-        report.errors.push(
-            "Working tree has uncommitted changes. Reference-data file write requires a clean working tree."
-                .to_string(),
-        );
-        return Ok(report);
-    }
     if selections.is_empty() {
         report
             .errors
@@ -601,6 +594,33 @@ fn reference_data_export_with_connection(
 
     report.registry_yaml = render_reference_data_registry_yaml(&combined_tables);
     if write_files {
+        let mut intended_paths =
+            vec!["database/reference-data/dbstate.reference-data.yml".to_string()];
+        intended_paths.extend(
+            report
+                .table_previews
+                .iter()
+                .map(|preview| preview.file.clone()),
+        );
+        let summary = report
+            .table_previews
+            .first()
+            .map(|preview| preview.table_name.as_str())
+            .unwrap_or("reference data export");
+        let guard = scoped_write_guard(
+            &root,
+            report.branch.as_deref(),
+            project.default_branch.as_deref(),
+            &intended_paths,
+            GitHandoffWorkflow::ReferenceDataExport,
+            summary,
+        );
+        report.warnings.extend(guard.warnings);
+        if !guard.allowed {
+            report.errors.extend(guard.errors);
+            report.success = false;
+            return Ok(report);
+        }
         write_reference_data_export_files(&root, &mut report)?;
     }
     report.success = report.errors.is_empty();
@@ -2069,20 +2089,6 @@ fn reference_data_review_script_with_connection(
                 .to_string(),
         );
     }
-    if project.is_dirty && !dry_run {
-        report.errors.push(
-            "Reference-data review script generation is blocked because the working tree has changes. Commit/stash changes or use preview."
-                .to_string(),
-        );
-        return Ok(report);
-    }
-    if project.is_dirty && dry_run {
-        report.warnings.push(
-            "Reference-data review script generation will be blocked while the working tree has changes."
-                .to_string(),
-        );
-    }
-
     let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
     if !root.join("database/releases").is_dir() {
         report.errors.push(
@@ -2099,6 +2105,23 @@ fn reference_data_review_script_with_connection(
         }
     };
     report.planned_artifacts = artifacts.relative_paths();
+
+    if !dry_run {
+        let guard = scoped_write_guard(
+            &root,
+            report.branch.as_deref(),
+            project.default_branch.as_deref(),
+            &report.planned_artifacts,
+            GitHandoffWorkflow::ReferenceDataReview,
+            script_name,
+        );
+        report.warnings.extend(guard.warnings);
+        if !guard.allowed {
+            report.errors.extend(guard.errors);
+            report.success = false;
+            return Ok(report);
+        }
+    }
 
     let compare = data_compare_postgres_with_connection(cwd, connection_url, selection)?;
     report.selected_tables = compare.selected_tables.clone();
