@@ -95,6 +95,30 @@ fn commit_all(path: &Path, message: &str) {
     assert!(commit.status.success(), "git commit failed");
 }
 
+fn stage_path(path: &Path, relative: &str) {
+    let add = Command::new("git")
+        .arg("add")
+        .arg("--")
+        .arg(relative)
+        .current_dir(path)
+        .output()
+        .expect("run git add path");
+    assert!(
+        add.status.success(),
+        "git add {relative} failed: {}",
+        String::from_utf8_lossy(&add.stderr)
+    );
+}
+
+fn run_commit_message_text(path: &Path, args: &[&str]) -> (u8, String) {
+    let args = args
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect::<Vec<_>>();
+    let result = crate::commit_message::run(&args, path).expect("run commit-message");
+    (result.exit_code, result.output)
+}
+
 fn create_complete_structure(root: &Path) {
     for expected in EXPECTED_PATHS {
         let target = root.join(expected.relative);
@@ -1941,17 +1965,61 @@ fn slice35_git_handoff_ui_contract_is_present() {
         "data-testid=\"copy-manual-git-commands\"",
         "data-testid=\"copy-commit-title\"",
         "data-testid=\"copy-commit-body\"",
+        "data-testid=\"copy-full-commit-command\"",
+        "data-testid=\"git-handoff-full-commit-command\"",
+        "Suggested Full Commit Command - PowerShell",
+        "Suggested Pull Request",
+        "Suggested PR Title",
+        "Suggested PR Body",
+        "data-testid=\"copy-pr-title\"",
+        "data-testid=\"copy-pr-body\"",
+        "data-testid=\"git-handoff-pr-title\"",
+        "data-testid=\"git-handoff-pr-body\"",
+        "GitHub may not automatically copy the commit body into the Pull Request description.",
         "Generate / Regenerate Commit Message",
         "\"git switch -c \" + branchName",
         "state.gitHandoffBranchCommand",
         "git status --short",
         "git add ",
-        "git commit -m",
+        "git-handoff-large-add-note",
+        "manualGitCommandsForPaths",
+        "managedGitAddFolder",
+        "values.length <= 20",
+        "database/objects/",
+        "database/reference-data/",
+        "database/releases/objects/",
+        "database/releases/reference-data/",
+        "Large change set detected. DbState grouped git add commands by managed folder. Review git status before committing.",
+        "git commit -m $commitTitle -m $commitBody",
+        "normalizeCommitBodyForPowerShell",
+        "powerShellCommitBodyExpression",
+        "powerShellFullCommitCommand",
+        "suggestedPullRequestBody",
+        "updateSuggestedPullRequest",
+        "isPreWriteBranchGuidance",
+        "pullRequestReviewWarnings",
+        "pullRequestFileSection",
+        "pullRequestChangeSummary",
+        "Large file list summarized by category/count",
+        "git-handoff-large-add-note",
+        "manualGitCommandsForPaths",
+        "managedGitAddFolder",
+        "values.length <= 20",
+        "Large change set detected. DbState grouped git add commands by managed folder. Review git status before committing.",
+        "database/objects/",
+        "database/reference-data/",
+        "database/releases/objects/",
+        "database/releases/reference-data/",
+        "DbState did not run SQL, apply database changes, mutate PostgreSQL, or run Git commands.",
+        "$commitBody = \" + powerShellCommitBodyExpression(body)",
+        ") -join [Environment]::NewLine",
         "review: generate schema release artifacts",
         "sync: update schema objects from PostgreSQL",
         "review: generate reference-data review script",
         "sync: export reference data from PostgreSQL",
         "DbState never runs git add, commit, push, pull, fetch, tag, switch, checkout, or branch commands.",
+        "Already on working branch: ",
+        "writeSucceededOnWorkingBranch",
     ] {
         assert!(
             combined.contains(expected),
@@ -1965,9 +2033,15 @@ fn slice35_git_handoff_ui_contract_is_present() {
     assert!(!combined.contains("repository-sync-intended-objects"));
     assert!(!combined.contains("repository-sync-written-files"));
     assert!(!js.contains("renderRepositorySyncGitLists(data);"));
-    assert!(
-        js.contains("Repository files written. Review the generated files, then open Git Workflow")
-    );
+    assert!(js.contains("Repository files written. Review the generated files and Git handoff details below before committing manually."));
+    assert!(js.contains("writeGenerateSuccessOpensGitWorkflow(label, data)"));
+    assert!(js.contains("openGitWorkflowAfterWrite(label, data);"));
+    assert!(js.contains("showStep(\"git-workflow\");"));
+    assert!(js.contains("\"Database to Repository Write\""));
+    assert!(js.contains("\"Reference-data YAML write\""));
+    assert!(js.contains("\"Generate Release Artifact\""));
+    assert!(js.contains("\"Reference-data review script write\""));
+    assert!(js.contains("\"Initialize DbState Project\""));
     assert!(js.contains(
         "const existingTitle = textOrEmpty(byId(\"git-handoff-commit-title-text\").textContent);"
     ));
@@ -1982,21 +2056,534 @@ fn slice35_git_handoff_ui_contract_is_present() {
     assert!(js.contains("const filePaths = written.length ? written : intended;"));
 
     let commands_start = js
-        .find("byId(\"git-handoff-commands\").textContent = [")
-        .expect("manual command block exists");
+        .find("function managedGitAddFolder")
+        .expect("manual command helper exists");
     let commands_end = js[commands_start..]
-        .find("].join(\"\\n\");")
+        .find("function pathCategory")
         .map(|index| commands_start + index)
         .expect("manual command block end exists");
     let commands_block = &js[commands_start..commands_end];
+    assert!(commands_block.contains("values.length <= 20"));
+    assert!(commands_block.contains("\"git add \" + values.join(\" \")"));
+    assert!(commands_block.contains("\"git add \" + group"));
+    assert!(commands_block.contains("database/objects/"));
+    assert!(commands_block.contains("database/reference-data/"));
+    assert!(commands_block.contains("database/releases/objects/"));
+    assert!(commands_block.contains("database/releases/reference-data/"));
     assert!(!commands_block.contains("git switch"));
+    assert!(!commands_block.contains("git commit"));
+    assert!(!commands_block.contains("git branch"));
+    assert!(!commands_block.contains("git push"));
+    assert!(!commands_block.contains("git pull"));
+    assert!(!commands_block.contains("git fetch"));
+    assert!(!commands_block.contains("git tag"));
 
     let branch_start = js
         .find("let branchCommand = \"git switch -c \" + branchName;")
         .expect("recommended branch block exists");
     let branch_block = &js[branch_start..branch_start + 500.min(js.len() - branch_start)];
     assert!(branch_block.contains("git switch -c"));
-    assert!(js.contains("byId(\"git-handoff-recommended-branch\").textContent = branchCommand;"));
+    assert!(js.contains("byId(\"git-handoff-recommended-branch\").textContent = branchDisplay;"));
+    assert!(js.contains("data && data.success === true && written.length && !protectedBranch"));
+    assert!(js.contains("byId(\"git-handoff-large-add-note\").hidden = !manualCommands.grouped;"));
+    let full_commit_start = js
+        .find("function updateSuggestedFullCommitCommand()")
+        .expect("full commit command function exists");
+    let full_commit_block =
+        &js[full_commit_start..full_commit_start + 900.min(js.len() - full_commit_start)];
+    assert!(full_commit_block.contains("powerShellFullCommitCommand(title, body)"));
+    assert!(full_commit_block.contains("git-handoff-commit-title-text"));
+    assert!(full_commit_block.contains("git-handoff-commit-body"));
+    assert!(full_commit_block.contains("git-handoff-full-commit-command"));
+    assert!(!full_commit_block.contains("replace(/\\r?\\n/g, \"\\\\n\")"));
+    let pr_start = js
+        .find("function suggestedPullRequestBody")
+        .expect("suggested PR body function exists");
+    let pr_block = &js[pr_start..pr_start + 1700.min(js.len() - pr_start)];
+    assert!(pr_block.contains("## Summary"));
+    assert!(pr_block.contains("## Written/generated files or changed files"));
+    assert!(pr_block.contains("## Change summary"));
+    assert!(pr_block.contains("## Safety statement"));
+    assert!(pr_block.contains("## Review notes/warnings"));
+    assert!(pr_block.contains("const warnings = pullRequestReviewWarnings(data || {}, filePaths);"));
+    assert!(!pr_block.contains("Array.isArray(data && data.warnings)"));
+    assert!(js.contains("suggestedPullRequestBody(safeTitle, safeBody"));
+    let pr_filter_start = js
+        .find("function isPreWriteBranchGuidance")
+        .expect("PR warning filter exists");
+    let pr_filter_end = js[pr_filter_start..]
+        .find("function suggestedPullRequestBody")
+        .map(|index| pr_filter_start + index)
+        .expect("PR warning filter block ends");
+    let pr_filter_block = &js[pr_filter_start..pr_filter_end];
+    assert!(pr_filter_block.contains("git switch -c"));
+    assert!(pr_filter_block.contains("suggested manual branch command"));
+    assert!(pr_filter_block.contains("branch command before writing files"));
+    assert!(pr_filter_block.contains("create branch first"));
+    assert!(pr_filter_block.contains("!isPreWriteBranchGuidance(warning)"));
+    assert!(pr_filter_block
+        .contains("Large file list summarized by category/count; review Git diff before merge."));
+}
+
+#[test]
+fn slice36_commit_message_outside_git_returns_safe_error() {
+    let dir = create_temp_dir("slice36-outside-git");
+
+    let (exit_code, output) = run_commit_message_text(&dir, &[]);
+
+    assert_eq!(exit_code, 2);
+    assert!(output.contains("Current path is not inside a Git repository."));
+    assert!(!output.contains("postgres://"));
+}
+
+#[test]
+fn slice36_commit_message_no_staged_files_returns_clear_error() {
+    let dir = create_temp_dir("slice36-no-staged");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+
+    let (exit_code, output) = run_commit_message_text(&dir, &[]);
+
+    assert_eq!(exit_code, 2);
+    assert!(output.contains("No staged files were found"));
+    assert!(!output.contains("Suggested Commit Title"));
+}
+
+#[test]
+fn slice36_unstaged_dbstate_files_are_not_included() {
+    let dir = create_temp_dir("slice36-unstaged");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let table = dir.join("database/objects/tables/public.customers.sql");
+    fs::write(
+        &table,
+        "CREATE TABLE public.customers (\n  customer_id integer\n);\n",
+    )
+    .expect("write table");
+
+    let (exit_code, output) = run_commit_message_text(&dir, &[]);
+
+    assert_eq!(exit_code, 2);
+    assert!(output.contains("No staged files were found"));
+    assert!(!output.contains("public.customers"));
+}
+
+#[test]
+fn slice36_staged_table_addition_generates_semantic_message() {
+    let dir = create_temp_dir("slice36-table-add");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let relative = "database/objects/tables/public.customers.sql";
+    fs::write(
+        dir.join(relative),
+        "CREATE TABLE public.customers (\n  customer_id integer,\n  email text\n);\n",
+    )
+    .expect("write table");
+    stage_path(&dir, relative);
+
+    let (exit_code, output) = run_commit_message_text(&dir, &[]);
+
+    assert_eq!(exit_code, 0);
+    assert!(output.contains("Suggested Commit Title"));
+    assert!(output.contains("feat(public): add table public.customers"));
+    assert!(output.contains("Technical changes:"));
+    assert!(output.contains("- add table public.customers"));
+    assert!(output.contains("Analyzed DbState files"));
+    assert!(output.contains(relative));
+}
+
+#[test]
+fn slice36_plain_style_generates_plain_title() {
+    let dir = create_temp_dir("slice36-plain");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let relative = "database/objects/tables/public.customers.sql";
+    fs::write(
+        dir.join(relative),
+        "CREATE TABLE public.customers (id integer);\n",
+    )
+    .expect("write table");
+    stage_path(&dir, relative);
+
+    let (exit_code, output) = run_commit_message_text(&dir, &["--style", "plain"]);
+
+    assert_eq!(exit_code, 0);
+    assert!(output.contains("Add table public.customers"));
+    assert!(!output.contains("feat("));
+}
+
+#[test]
+fn slice36_intent_changes_title_not_technical_body() {
+    let dir = create_temp_dir("slice36-intent");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let relative = "database/objects/tables/public.customers.sql";
+    fs::write(
+        dir.join(relative),
+        "CREATE TABLE public.customers (id integer);\n",
+    )
+    .expect("write table");
+    stage_path(&dir, relative);
+
+    let (_, default_output) = run_commit_message_text(&dir, &[]);
+    let (_, intent_output) =
+        run_commit_message_text(&dir, &["--intent", "Support customer email verification"]);
+
+    assert!(intent_output.contains("feat(public): support customer email verification"));
+    assert!(intent_output.contains("Support customer email verification"));
+    assert!(default_output.contains("- add table public.customers"));
+    assert!(intent_output.contains("- add table public.customers"));
+}
+
+#[test]
+fn slice36_branch_ticket_inference_adds_refs_line() {
+    let dir = create_temp_dir("slice36-ticket");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    set_git_head_branch(&dir, "feature/DB-184-customer-email");
+    let relative = "database/objects/tables/public.customers.sql";
+    fs::write(
+        dir.join(relative),
+        "CREATE TABLE public.customers (id integer);\n",
+    )
+    .expect("write table");
+    stage_path(&dir, relative);
+
+    let (exit_code, output) = run_commit_message_text(&dir, &[]);
+
+    assert_eq!(exit_code, 0);
+    assert!(output.contains("Refs: DB-184"));
+}
+
+#[test]
+fn slice36_mixed_staged_files_warns_and_lists_ignored_files() {
+    let dir = create_temp_dir("slice36-mixed");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let table = "database/objects/tables/public.customers.sql";
+    let app = "app/config.txt";
+    fs::create_dir_all(dir.join("app")).expect("create app");
+    fs::write(
+        dir.join(table),
+        "CREATE TABLE public.customers (id integer);\n",
+    )
+    .expect("write table");
+    fs::write(dir.join(app), "feature flag\n").expect("write app file");
+    stage_path(&dir, table);
+    stage_path(&dir, app);
+
+    let (exit_code, output) = run_commit_message_text(&dir, &[]);
+
+    assert_eq!(exit_code, 0);
+    assert!(output.contains("Ignored non-DbState staged files"));
+    assert!(output.contains(app));
+    assert!(output.contains("Ignored 1 staged non-DbState file(s)."));
+}
+
+#[test]
+fn slice36_table_modification_with_added_column_is_described() {
+    let dir = create_temp_dir("slice36-add-column");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let relative = "database/objects/tables/public.customers.sql";
+    fs::write(
+        dir.join(relative),
+        "CREATE TABLE public.customers (\n  customer_id integer\n);\n",
+    )
+    .expect("write table");
+    commit_all(&dir, "add table");
+    fs::write(
+        dir.join(relative),
+        "CREATE TABLE public.customers (\n  customer_id integer,\n  email text\n);\n",
+    )
+    .expect("update table");
+    stage_path(&dir, relative);
+
+    let (exit_code, output) = run_commit_message_text(&dir, &[]);
+
+    assert_eq!(exit_code, 0);
+    assert!(output.contains("add column email to table public.customers"));
+}
+
+#[test]
+fn slice36_deleted_and_renamed_dbstate_objects_are_breaking() {
+    let delete_dir = create_temp_dir("slice36-delete");
+    init_git_repo(&delete_dir);
+    create_complete_structure(&delete_dir);
+    let table = "database/objects/tables/public.customers.sql";
+    fs::write(
+        delete_dir.join(table),
+        "CREATE TABLE public.customers (id integer);\n",
+    )
+    .expect("write table");
+    commit_all(&delete_dir, "add table");
+    fs::remove_file(delete_dir.join(table)).expect("delete table");
+    stage_path(&delete_dir, table);
+
+    let (delete_exit, delete_output) = run_commit_message_text(&delete_dir, &[]);
+
+    assert_eq!(delete_exit, 0);
+    assert!(delete_output.contains("BREAKING CHANGE:"));
+    assert!(delete_output.contains("removes table public.customers"));
+
+    let rename_dir = create_temp_dir("slice36-rename");
+    init_git_repo(&rename_dir);
+    create_complete_structure(&rename_dir);
+    fs::write(
+        rename_dir.join(table),
+        "CREATE TABLE public.customers (id integer);\n",
+    )
+    .expect("write table");
+    commit_all(&rename_dir, "add table");
+    let renamed = "database/objects/tables/public.accounts.sql";
+    let rename = Command::new("git")
+        .args(["mv", table, renamed])
+        .current_dir(&rename_dir)
+        .output()
+        .expect("git mv table");
+    assert!(rename.status.success(), "git mv failed");
+
+    let (rename_exit, rename_output) = run_commit_message_text(&rename_dir, &[]);
+
+    assert_eq!(rename_exit, 0);
+    assert!(rename_output.contains("BREAKING CHANGE:"));
+    assert!(rename_output.contains("rename table public.customers to public.accounts"));
+}
+
+#[test]
+fn slice36_semantic_types_cover_index_function_reference_data_and_release_artifacts() {
+    let dir = create_temp_dir("slice36-types");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let index = "database/objects/indexes/public.customers_email_idx.sql";
+    let function = "database/objects/functions/public.normalize_email.email_text.sql";
+    let reference = "database/reference-data/tables/public.country.yml";
+    let release = "database/releases/reference-data/0001_country.reference-data.sql";
+    fs::write(
+        dir.join(index),
+        "CREATE INDEX customers_email_idx ON public.customers (email);\n",
+    )
+    .expect("write index");
+    fs::write(
+        dir.join(function),
+        "CREATE OR REPLACE FUNCTION public.normalize_email(email text) RETURNS text LANGUAGE sql AS $$ SELECT lower(email) $$;\n",
+    )
+    .expect("write function");
+    fs::create_dir_all(dir.join("database/reference-data/tables")).expect("reference data tables");
+    fs::write(dir.join(reference), "rows:\n  - country_id: 1\n").expect("write reference data");
+    fs::write(dir.join(release), "-- REVIEW ONLY.\n").expect("write release artifact");
+    for relative in [index, function, reference, release] {
+        stage_path(&dir, relative);
+    }
+
+    let (exit_code, output) = run_commit_message_text(&dir, &[]);
+
+    assert_eq!(exit_code, 0);
+    assert!(output.contains("perf(database):"));
+    assert!(output.contains("add index public.customers_email_idx"));
+    assert!(output.contains("add function public.normalize_email.email_text"));
+    assert!(output.contains("add reference data public.country"));
+    assert!(output.contains("add reference-data review artifact 0001_country"));
+}
+
+#[test]
+fn slice36_regenerating_after_staged_set_changes_updates_message() {
+    let dir = create_temp_dir("slice36-regenerate");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let table = "database/objects/tables/public.customers.sql";
+    let index = "database/objects/indexes/public.customers_email_idx.sql";
+    fs::write(
+        dir.join(table),
+        "CREATE TABLE public.customers (id integer);\n",
+    )
+    .expect("write table");
+    stage_path(&dir, table);
+    let (_, first) = run_commit_message_text(&dir, &[]);
+    fs::write(
+        dir.join(index),
+        "CREATE INDEX customers_email_idx ON public.customers (email);\n",
+    )
+    .expect("write index");
+    stage_path(&dir, index);
+    let (_, second) = run_commit_message_text(&dir, &[]);
+
+    assert!(first.contains("add table public.customers"));
+    assert!(!first.contains("customers_email_idx"));
+    assert!(second.contains("customers_email_idx"));
+    assert_ne!(first, second);
+}
+
+#[test]
+fn slice36_json_output_has_required_fields_and_no_secret_content() {
+    let dir = create_temp_dir("slice36-json");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let relative = "database/objects/tables/public.customers.sql";
+    fs::write(
+        dir.join(relative),
+        "CREATE TABLE public.customers (\n  url text DEFAULT 'postgres://user:password@example.invalid/db'\n);\n",
+    )
+    .expect("write table");
+    stage_path(&dir, relative);
+
+    let (exit_code, output) = run_commit_message_text(&dir, &["--json"]);
+
+    assert_eq!(exit_code, 0);
+    for field in [
+        "\"command\":\"commit-message\"",
+        "\"success\":true",
+        "\"scope\":\"staged\"",
+        "\"style\":\"conventional\"",
+        "\"branch\":",
+        "\"ticket\":",
+        "\"title\":",
+        "\"body\":",
+        "\"message\":",
+        "\"breakingChange\":",
+        "\"stagedFiles\":",
+        "\"analyzedFiles\":",
+        "\"ignoredFiles\":",
+        "\"warnings\":",
+        "\"errors\":",
+    ] {
+        assert!(output.contains(field), "missing JSON field marker {field}");
+    }
+    assert!(!output.contains("postgres://"));
+    assert!(!output.contains("password@example"));
+}
+
+#[test]
+fn slice36_commit_message_service_endpoint_is_read_only_and_json() {
+    let dir = create_temp_dir("slice36-service");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let relative = "database/objects/tables/public.customers.sql";
+    fs::write(
+        dir.join(relative),
+        "CREATE TABLE public.customers (id integer);\n",
+    )
+    .expect("write table");
+    stage_path(&dir, relative);
+    let body = format!(
+        r#"{{ "repositoryPath": "{}" }}"#,
+        escape_json(&display_path(&dir))
+    );
+
+    let response = service_response("POST", "/api/v1/git/commit-message", &body, &dir);
+
+    assert_eq!(response.status_code, 200);
+    assert!(response.body.contains("\"command\":\"commit-message\""));
+    assert!(response.body.contains("add table public.customers"));
+}
+
+#[test]
+fn slice36_git_workflow_ui_uses_staged_commit_message_endpoint() {
+    let html = ui_html();
+    let js = ui_js();
+    let combined = format!("{html}\n{js}");
+
+    for expected in [
+        "Commit message is generated from staged changes.",
+        "No staged changes found. Stage reviewed DbState paths manually, then regenerate.",
+        "data-testid=\"copy-full-commit-message\"",
+        "data-testid=\"copy-full-commit-command\"",
+        "data-testid=\"git-handoff-full-commit-command\"",
+        "Suggested Full Commit Command - PowerShell",
+        "Suggested Pull Request",
+        "Suggested PR Title",
+        "Suggested PR Body",
+        "data-testid=\"copy-pr-title\"",
+        "data-testid=\"copy-pr-body\"",
+        "data-testid=\"git-handoff-pr-title\"",
+        "data-testid=\"git-handoff-pr-body\"",
+        "GitHub may not automatically copy the commit body into the Pull Request description.",
+        "data-testid=\"git-handoff-staged-change-summary\"",
+        "commitMessage: \"/api/v1/git/commit-message\"",
+        "regenerateCommitMessageFromStagedChanges",
+        "approvedEndpoints.commitMessage",
+        "Analyzed DbState files",
+        "Ignored non-DbState staged files",
+        "updateSuggestedFullCommitCommand",
+        "normalizeCommitBodyForPowerShell",
+        "powerShellDoubleQuoted",
+        "powerShellSingleQuoted",
+        "powerShellCommitBodyExpression",
+        "powerShellFullCommitCommand",
+        "suggestedPullRequestBody",
+        "updateSuggestedPullRequest",
+        "isPreWriteBranchGuidance",
+        "pullRequestReviewWarnings",
+        "pullRequestFileSection",
+        "pullRequestChangeSummary",
+        "Large file list summarized by category/count",
+        "DbState did not run SQL, apply database changes, mutate PostgreSQL, or run Git commands.",
+        "## Summary",
+        "## Written/generated files or changed files",
+        "## Change summary",
+        "## Safety statement",
+        "## Review notes/warnings",
+        "$commitTitle = ",
+        "$commitBody = \" + powerShellCommitBodyExpression(body)",
+        "git commit -m $commitTitle -m $commitBody",
+        "return \"@(\\r\\n\" + lines.map(powerShellSingleQuoted).join(\"\\r\\n\") + \"\\r\\n) -join [Environment]::NewLine\";",
+        "writeGenerateSuccessOpensGitWorkflow",
+        "data.success !== true",
+        "Repository files written. Review the generated files and Git handoff details below before committing manually.",
+        "Already on working branch: ",
+        "writeSucceededOnWorkingBranch",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "missing Slice 36 UI contract {expected}"
+        );
+    }
+    assert!(js.contains("style: \"conventional\""));
+    assert!(!js.contains("git add ."));
+    let commands_start = js
+        .find("function managedGitAddFolder")
+        .expect("manual commands helper exists");
+    let commands_end = js[commands_start..]
+        .find("function pathCategory")
+        .map(|index| commands_start + index)
+        .expect("manual commands block ends");
+    let commands_block = &js[commands_start..commands_end];
+    assert!(commands_block.contains("values.length <= 20"));
+    assert!(commands_block.contains("\"git add \" + values.join(\" \")"));
+    assert!(commands_block.contains("\"git add \" + group"));
+    assert!(commands_block.contains("database/objects/"));
+    assert!(commands_block.contains("database/reference-data/"));
+    assert!(commands_block.contains("database/releases/objects/"));
+    assert!(commands_block.contains("database/releases/reference-data/"));
+    assert!(!commands_block.contains("git commit"));
+    assert!(!commands_block.contains("git switch"));
+    assert!(!js.contains("replace(/\\r?\\n/g, \"\\\\n\")"));
+    assert!(js.contains("return \"@'\\r\\n\" + normalized + \"\\r\\n'@\";"));
+    assert!(js.contains("const raw = textOrEmpty(value).replace(/\\\\n/g, \"\\n\")"));
+    assert!(js.contains("line.replace(/[ \\t]+$/g, \"\")"));
+    assert!(js.contains("previousBlank"));
+    assert!(js.contains("lines.some(function (line) { return line === \"'@\"; })"));
+    assert!(js.contains("values.length <= 12"));
+    assert!(js.contains("pathCategory(path)"));
+    assert!(js.contains("prBodyTarget.textContent = suggestedPullRequestBody"));
+    assert!(js.contains("!isPreWriteBranchGuidance(warning)"));
+    assert!(js.contains("suggested manual branch command"));
+    assert!(js.contains("branch command before writing files"));
+    assert!(js.contains("create branch first"));
+    assert!(js.contains("data && data.success === true && written.length && !protectedBranch"));
+    assert!(!js.contains("gh pr create"));
+    assert!(!js.contains("api.github.com"));
 }
 
 #[test]
@@ -6302,6 +6889,7 @@ fn slice11_service_routes_include_only_approved_endpoints() {
         ("DELETE", "/api/v1/connections/profiles/{name}"),
         ("POST", "/api/v1/connections/test"),
         ("POST", "/api/v1/repo/status"),
+        ("POST", "/api/v1/git/commit-message"),
         ("POST", "/api/v1/init/plan"),
         ("POST", "/api/v1/init/write"),
         ("POST", "/api/v1/postgres/inspect"),

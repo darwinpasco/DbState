@@ -73,6 +73,7 @@ struct ConnectionTestReport {
 }
 
 mod cli;
+pub mod commit_message;
 mod git;
 mod json;
 mod object_ddl;

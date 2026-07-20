@@ -1,9 +1,7 @@
 use std::env;
 use std::process::ExitCode;
 
-use dbstate::{run_cli, run_service, service_usage, usage, OutputFormat};
-
-mod commit_message;
+use dbstate::{commit_message, run_cli, run_service, service_usage, usage, OutputFormat};
 
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().skip(1).collect();
