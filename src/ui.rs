@@ -3499,6 +3499,16 @@ const UI_JS: &str = r#"(function () {
         };
       }
     }
+    if (normalized.indexOf("database/objects/domains/") >= 0) {
+      const dot = fileBase.indexOf(".");
+      if (dot > 0) {
+        return {
+          objectType: "domain",
+          schema: fileBase.slice(0, dot),
+          name: fileBase.slice(dot + 1)
+        };
+      }
+    }
     if (normalized.indexOf("database/objects/sequences/") >= 0) {
       const dot = fileBase.indexOf(".");
       if (dot > 0) {
@@ -3870,6 +3880,22 @@ const UI_JS: &str = r#"(function () {
             objectType: "enum",
             schema: item.schemaName,
             name: item.enumName,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: item
+          });
+        });
+      }
+      if (Array.isArray(data.domains)) {
+        data.domains.forEach(function (item) {
+          rows.push({
+            objectRef: "domain:" + item.schemaName + "." + item.domainName,
+            objectType: "domain",
+            schema: item.schemaName,
+            name: item.domainName,
             status: "inspected",
             operation: "",
             warnings: [],

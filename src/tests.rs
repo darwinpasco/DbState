@@ -1,4 +1,9 @@
 use super::*;
+use crate::ci::{
+    ci_apply_function_retry_for_test, ci_apply_order_for_test, ci_reference_data_summary_for_test,
+    ci_release_summary_for_test, ci_skips_bootstrap_public_schema_for_test,
+    format_ci_sql_execution_message, validate_disposable_database, CiSqlExecutionError,
+};
 use crate::postgres::{
     inspect::empty_inspection_report, render_rls_policy_sql, resolve_postgres_url, RlsPolicyInfo,
 };
@@ -16,8 +21,9 @@ use crate::release::empty_release_report;
 use crate::release::release_postgres_command;
 use crate::repository::discovery::discover_repository_objects;
 use crate::repository::objects::{
-    constraint_file_path, function_file_path, function_identity_slug, grant_file_path,
-    materialized_view_file_path, rls_policy_file_path, trigger_file_path,
+    constraint_file_path, domain_file_path, function_file_path, function_identity_slug,
+    grant_file_path, materialized_view_file_path, rls_policy_file_path, trigger_file_path,
+    DesiredStateObject, RepositoryObjectType,
 };
 use crate::repository::{
     compare_postgres_command, ensure_database_object_path, enum_file_path, export_postgres_command,
@@ -36,7 +42,10 @@ use std::fs;
 use std::process::Command;
 use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
-use std::{collections::BTreeSet, path::PathBuf};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
+};
 
 static ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -119,6 +128,19 @@ fn run_commit_message_text(path: &Path, args: &[&str]) -> (u8, String) {
     (result.exit_code, result.output)
 }
 
+fn run_cli_output(path: &Path, args: &[&str]) -> (u8, String) {
+    let args = args
+        .iter()
+        .map(|value| (*value).to_string())
+        .collect::<Vec<_>>();
+    let result = run_cli(&args, Ok(path)).expect("run cli");
+    let output = match result.format {
+        OutputFormat::Text => result.output.to_text(),
+        OutputFormat::Json => result.output.to_json(),
+    };
+    (result.exit_code, output)
+}
+
 fn create_complete_structure(root: &Path) {
     for expected in EXPECTED_PATHS {
         let target = root.join(expected.relative);
@@ -146,6 +168,7 @@ fn sample_inventory() -> PostgresInventory {
                 schema_name: "dbstate_slice2".to_string(),
                 table_name: "sample_accounts".to_string(),
                 table_type: "BASE TABLE".to_string(),
+                partition_key: None,
             }],
             columns: vec![
                 ColumnInfo {
@@ -198,6 +221,17 @@ fn sample_inventory() -> PostgresInventory {
                 schema_name: "dbstate_slice2".to_string(),
                 enum_name: "account_status".to_string(),
                 labels: vec!["active".to_string(), "closed".to_string()],
+            }],
+            domains: vec![DomainInfo {
+                schema_name: "dbstate_slice2".to_string(),
+                domain_name: "account_year".to_string(),
+                base_type: "integer".to_string(),
+                is_not_null: false,
+                default_expression: None,
+                check_constraints: vec![DomainCheckInfo {
+                    constraint_name: "account_year_check".to_string(),
+                    definition: "CHECK ((VALUE >= 1901) AND (VALUE <= 2155))".to_string(),
+                }],
             }],
             sequences: vec![SequenceInfo {
                 schema_name: "dbstate_slice2".to_string(),
@@ -484,6 +518,64 @@ fn reference_row(values: &[(&str, Option<&str>)]) -> ReferenceDataRow {
     }
 }
 
+fn partitioned_payment_inventory() -> PostgresInventory {
+    PostgresInventory {
+        schemas: vec![SchemaInfo {
+            name: "public".to_string(),
+        }],
+        tables: vec![TableInfo {
+            schema_name: "public".to_string(),
+            table_name: "payment".to_string(),
+            table_type: "PARTITIONED TABLE".to_string(),
+            partition_key: Some("RANGE (payment_date)".to_string()),
+        }],
+        columns: vec![
+            ColumnInfo {
+                schema_name: "public".to_string(),
+                table_name: "payment".to_string(),
+                column_name: "payment_id".to_string(),
+                ordinal_position: 1,
+                data_type: "integer".to_string(),
+                is_nullable: false,
+                has_default: false,
+                default_expression: None,
+            },
+            ColumnInfo {
+                schema_name: "public".to_string(),
+                table_name: "payment".to_string(),
+                column_name: "payment_date".to_string(),
+                ordinal_position: 2,
+                data_type: "timestamp without time zone".to_string(),
+                is_nullable: false,
+                has_default: false,
+                default_expression: None,
+            },
+        ],
+        extensions: Vec::new(),
+        enums: Vec::new(),
+        domains: Vec::new(),
+        sequences: Vec::new(),
+        indexes: Vec::new(),
+        views: Vec::new(),
+        materialized_views: Vec::new(),
+        constraints: vec![ConstraintInfo {
+            schema_name: "public".to_string(),
+            table_name: "payment".to_string(),
+            constraint_name: "payment_pkey".to_string(),
+            constraint_type: "primaryKey".to_string(),
+            definition: "PRIMARY KEY (payment_id, payment_date)".to_string(),
+            columns: vec!["payment_id".to_string(), "payment_date".to_string()],
+            referenced_schema: None,
+            referenced_table: None,
+            referenced_columns: Vec::new(),
+        }],
+        functions: Vec::new(),
+        triggers: Vec::new(),
+        grants: Vec::new(),
+        rls_policies: Vec::new(),
+    }
+}
+
 fn reference_data_review_compare_fixture() -> ReferenceDataCompareReport {
     let (config, mut state) = reference_config_and_state();
     for row in &mut state.rows {
@@ -622,6 +714,9 @@ fn dry_run_init_reports_planned_creates_but_creates_nothing() {
         .contains(&"database/releases/objects".to_string()));
     assert!(report
         .planned_creates
+        .contains(&"database/objects/domains".to_string()));
+    assert!(report
+        .planned_creates
         .contains(&"database/releases/reference-data".to_string()));
     assert!(report.created_paths.is_empty());
     assert!(!dir.join("database").exists());
@@ -640,6 +735,7 @@ fn init_creates_only_missing_folders_and_files() {
         DbStateProjectStatus::CompleteDbStateStructure
     );
     assert!(dir.join("database/objects/tables").is_dir());
+    assert!(dir.join("database/objects/domains").is_dir());
     assert!(dir.join("database/releases/objects").is_dir());
     assert!(dir.join("database/releases/reference-data").is_dir());
     assert!(dir
@@ -865,6 +961,7 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
             schema_name: "app".to_string(),
             table_name: "orders".to_string(),
             table_type: "BASE TABLE".to_string(),
+            partition_key: None,
         }],
         columns: vec![ColumnInfo {
             schema_name: "app".to_string(),
@@ -885,6 +982,17 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
             schema_name: "app".to_string(),
             enum_name: "order_status".to_string(),
             labels: vec!["new".to_string(), "paid".to_string()],
+        }],
+        domains: vec![DomainInfo {
+            schema_name: "app".to_string(),
+            domain_name: "order_year".to_string(),
+            base_type: "integer".to_string(),
+            is_not_null: false,
+            default_expression: None,
+            check_constraints: vec![DomainCheckInfo {
+                constraint_name: "order_year_check".to_string(),
+                definition: "CHECK ((VALUE >= 2000))".to_string(),
+            }],
         }],
         sequences: vec![SequenceInfo {
             schema_name: "app".to_string(),
@@ -1034,6 +1142,8 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
     assert_eq!(inventory.columns[0].column_name, "id");
     assert_eq!(inventory.extensions[0].extension_name, "pgcrypto");
     assert_eq!(inventory.enums[0].labels, vec!["new", "paid"]);
+    assert_eq!(inventory.domains[0].domain_name, "order_year");
+    assert_eq!(inventory.domains[0].base_type, "integer");
     assert_eq!(inventory.sequences[0].sequence_name, "orders_id_seq");
     assert_eq!(inventory.indexes[0].index_name, "orders_created_at_idx");
     assert_eq!(inventory.views[0].view_name, "open_orders");
@@ -1072,6 +1182,9 @@ fn deferred_object_types_are_explicit() {
         .deferred_object_types
         .contains(&"extensions".to_string()));
     assert!(!report.deferred_object_types.contains(&"enums".to_string()));
+    assert!(!report
+        .deferred_object_types
+        .contains(&"domains".to_string()));
     assert!(!report
         .deferred_object_types
         .contains(&"sequences".to_string()));
@@ -1129,6 +1242,10 @@ fn export_paths_stay_under_database_objects() {
     assert_eq!(
         enum_file_path("core", "payment_status").expect("enum path"),
         "database/objects/enums/core.payment_status.sql"
+    );
+    assert_eq!(
+        domain_file_path("core", "payment_year").expect("domain path"),
+        "database/objects/domains/core.payment_year.sql"
     );
     assert_eq!(
         sequence_file_path("core", "payment_id_seq").expect("sequence path"),
@@ -1214,6 +1331,7 @@ fn export_paths_stay_under_database_objects() {
     );
     assert!(schema_file_path("../evil").is_err());
     assert!(table_file_path("core", "bad/name").is_err());
+    assert!(domain_file_path("core", "bad/name").is_err());
     assert!(function_file_path("core", "bad/name", "integer").is_err());
     assert!(trigger_file_path("core", "payments", "bad/name").is_err());
     assert!(materialized_view_file_path("core", "bad/name").is_err());
@@ -1250,6 +1368,22 @@ fn generated_table_sql_matches_golden_expectation() {
 }
 
 #[test]
+fn generated_partitioned_table_sql_includes_partition_key() {
+    let inventory = partitioned_payment_inventory();
+    let sql = render_table_sql_with_partition(
+        "public",
+        "payment",
+        &inventory.columns,
+        inventory.tables[0].partition_key.as_deref(),
+    );
+
+    assert!(sql.contains("CREATE TABLE \"public\".\"payment\" ("));
+    assert!(sql.contains("\"payment_date\" timestamp without time zone NOT NULL"));
+    assert!(sql.contains(") PARTITION BY RANGE (payment_date);"));
+    assert!(!sql.contains("DROP TABLE"));
+}
+
+#[test]
 fn generated_slice16_object_sql_is_deterministic() {
     let inventory = sample_inventory();
 
@@ -1258,6 +1392,11 @@ fn generated_slice16_object_sql_is_deterministic() {
     assert!(render_enum_sql(&inventory.enums[0])
         .contains("CREATE TYPE \"dbstate_slice2\".\"account_status\" AS ENUM"));
     assert!(render_enum_sql(&inventory.enums[0]).contains("'active',"));
+    assert!(render_domain_sql(&inventory.domains[0])
+        .contains("CREATE DOMAIN \"dbstate_slice2\".\"account_year\" AS integer"));
+    assert!(render_domain_sql(&inventory.domains[0])
+        .contains("CONSTRAINT \"account_year_check\" CHECK ((VALUE >= 1901) AND (VALUE <= 2155))"));
+    assert!(!render_domain_sql(&inventory.domains[0]).contains("DROP DOMAIN"));
     assert!(render_sequence_sql(&inventory.sequences[0])
         .contains("CREATE SEQUENCE \"dbstate_slice2\".\"account_number_seq\""));
     assert!(render_index_sql(&inventory.indexes[0])
@@ -1464,6 +1603,70 @@ fn table_export_warns_when_schema_file_is_missing() {
 }
 
 #[test]
+fn table_export_includes_domain_dependencies_for_domain_typed_columns() {
+    let dir = create_temp_dir("export-table-domain");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let mut inventory = sample_inventory();
+    inventory.columns.push(ColumnInfo {
+        schema_name: "dbstate_slice2".to_string(),
+        table_name: "sample_accounts".to_string(),
+        column_name: "account_opened_year".to_string(),
+        ordinal_position: 5,
+        data_type: "account_year".to_string(),
+        is_nullable: true,
+        has_default: false,
+        default_expression: None,
+    });
+
+    let report = export_postgres_with_inventory(
+        &dir,
+        &inventory,
+        &ExportSelection::Table {
+            schema: "dbstate_slice2".to_string(),
+            table: "sample_accounts".to_string(),
+        },
+        true,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert!(report
+        .planned_files
+        .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert!(report
+        .planned_files
+        .contains(&"database/objects/domains/dbstate_slice2.account_year.sql".to_string()));
+}
+
+#[test]
+fn table_export_includes_partitioned_parent_table() {
+    let dir = create_temp_dir("export-partitioned-parent");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+
+    let report = export_postgres_with_inventory(
+        &dir,
+        &partitioned_payment_inventory(),
+        &ExportSelection::Table {
+            schema: "public".to_string(),
+            table: "payment".to_string(),
+        },
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert!(report
+        .created_files
+        .contains(&"database/objects/tables/public.payment.sql".to_string()));
+    let table_sql =
+        fs::read_to_string(dir.join("database/objects/tables/public.payment.sql")).expect("table");
+    assert!(table_sql.contains("CREATE TABLE \"public\".\"payment\""));
+    assert!(table_sql.contains("PARTITION BY RANGE (payment_date);"));
+}
+
+#[test]
 fn export_json_includes_expected_fields_and_no_secrets() {
     let dir = create_temp_dir("export-json");
     init_git_repo(&dir);
@@ -1511,6 +1714,9 @@ fn actual_export_creates_schema_and_table_files() {
         .is_file());
     assert!(dir
         .join("database/objects/tables/dbstate_slice2.sample_accounts.sql")
+        .is_file());
+    assert!(dir
+        .join("database/objects/domains/dbstate_slice2.account_year.sql")
         .is_file());
     assert!(dir
         .join("database/objects/materialized-views/dbstate_slice2.account_summary.sql")
@@ -1569,6 +1775,9 @@ fn sync_dry_run_creates_or_updates_no_files() {
     assert!(report
         .planned_creates
         .contains(&"database/objects/schemas/dbstate_slice2.sql".to_string()));
+    assert!(report
+        .planned_creates
+        .contains(&"database/objects/domains/dbstate_slice2.account_year.sql".to_string()));
     assert!(report.planned_creates.contains(
         &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
             .to_string()
@@ -2363,10 +2572,16 @@ fn slice36_semantic_types_cover_index_function_reference_data_and_release_artifa
     init_git_repo(&dir);
     create_complete_structure(&dir);
     commit_all(&dir, "complete structure");
+    let domain = "database/objects/domains/public.email_domain.sql";
     let index = "database/objects/indexes/public.customers_email_idx.sql";
     let function = "database/objects/functions/public.normalize_email.email_text.sql";
     let reference = "database/reference-data/tables/public.country.yml";
     let release = "database/releases/reference-data/0001_country.reference-data.sql";
+    fs::write(
+        dir.join(domain),
+        "CREATE DOMAIN \"public\".\"email_domain\" AS text;\n",
+    )
+    .expect("write domain");
     fs::write(
         dir.join(index),
         "CREATE INDEX customers_email_idx ON public.customers (email);\n",
@@ -2380,7 +2595,7 @@ fn slice36_semantic_types_cover_index_function_reference_data_and_release_artifa
     fs::create_dir_all(dir.join("database/reference-data/tables")).expect("reference data tables");
     fs::write(dir.join(reference), "rows:\n  - country_id: 1\n").expect("write reference data");
     fs::write(dir.join(release), "-- REVIEW ONLY.\n").expect("write release artifact");
-    for relative in [index, function, reference, release] {
+    for relative in [domain, index, function, reference, release] {
         stage_path(&dir, relative);
     }
 
@@ -2388,6 +2603,7 @@ fn slice36_semantic_types_cover_index_function_reference_data_and_release_artifa
 
     assert_eq!(exit_code, 0);
     assert!(output.contains("perf(database):"));
+    assert!(output.contains("add domain public.email_domain"));
     assert!(output.contains("add index public.customers_email_idx"));
     assert!(output.contains("add function public.normalize_email.email_text"));
     assert!(output.contains("add reference data public.country"));
@@ -2603,6 +2819,9 @@ fn sync_creates_added_object_files() {
     assert!(report
         .created_files
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert!(report
+        .created_files
+        .contains(&"database/objects/domains/dbstate_slice2.account_year.sql".to_string()));
     assert!(report.created_files.contains(
         &"database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
             .to_string()
@@ -2640,6 +2859,32 @@ fn sync_creates_added_object_files() {
     assert!(dir
         .join("database/objects/grants/tables/dbstate_slice2.sample_accounts.public.sql")
         .is_file());
+}
+
+#[test]
+fn sync_creates_partitioned_parent_table_file() {
+    let dir = create_temp_dir("sync-partitioned-parent");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+
+    let report = sync_postgres_with_inventory(
+        &dir,
+        &partitioned_payment_inventory(),
+        &ExportSelection::Table {
+            schema: "public".to_string(),
+            table: "payment".to_string(),
+        },
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert!(report
+        .created_files
+        .contains(&"database/objects/tables/public.payment.sql".to_string()));
+    let table_sql =
+        fs::read_to_string(dir.join("database/objects/tables/public.payment.sql")).expect("table");
+    assert!(table_sql.contains("PARTITION BY RANGE (payment_date);"));
 }
 
 #[test]
@@ -2909,6 +3154,74 @@ fn compare_classifies_rls_policy_objects() {
 }
 
 #[test]
+fn compare_classifies_partitioned_parent_tables() {
+    let table_path = "database/objects/tables/public.payment.sql";
+    let inventory = partitioned_payment_inventory();
+    let partitioned_sql = render_table_sql_with_partition(
+        "public",
+        "payment",
+        &inventory.columns,
+        inventory.tables[0].partition_key.as_deref(),
+    );
+
+    let repo_only_dir = create_temp_dir("compare-partitioned-repo-only");
+    init_git_repo(&repo_only_dir);
+    create_complete_structure(&repo_only_dir);
+    fs::write(
+        repo_only_dir.join("database/objects/schemas/public.sql"),
+        render_schema_sql("public"),
+    )
+    .expect("write schema");
+    fs::write(repo_only_dir.join(table_path), &partitioned_sql).expect("write table");
+    commit_all(&repo_only_dir, "repo-only partitioned table");
+    let mut target_without_payment = inventory.clone();
+    target_without_payment.tables.clear();
+    target_without_payment.columns.clear();
+    target_without_payment.constraints.clear();
+    let repo_only = compare_postgres_with_inventory(
+        &repo_only_dir,
+        &target_without_payment,
+        &ExportSelection::All,
+    );
+    assert!(repo_only.success, "{:?}", repo_only.errors);
+    assert!(repo_only.repo_only.contains(&table_path.to_string()));
+
+    let database_only_dir = create_temp_dir("compare-partitioned-database-only");
+    init_git_repo(&database_only_dir);
+    create_complete_structure(&database_only_dir);
+    fs::write(
+        database_only_dir.join("database/objects/schemas/public.sql"),
+        render_schema_sql("public"),
+    )
+    .expect("write schema");
+    commit_all(&database_only_dir, "schema only");
+    let database_only =
+        compare_postgres_with_inventory(&database_only_dir, &inventory, &ExportSelection::All);
+    assert!(database_only.success, "{:?}", database_only.errors);
+    assert!(database_only
+        .database_only
+        .contains(&table_path.to_string()));
+
+    let changed_dir = create_temp_dir("compare-partitioned-changed");
+    init_git_repo(&changed_dir);
+    create_complete_structure(&changed_dir);
+    fs::write(
+        changed_dir.join("database/objects/schemas/public.sql"),
+        render_schema_sql("public"),
+    )
+    .expect("write schema");
+    fs::write(
+        changed_dir.join(table_path),
+        partitioned_sql.replace("RANGE (payment_date)", "LIST (payment_id)"),
+    )
+    .expect("write changed table");
+    commit_all(&changed_dir, "changed partitioned table");
+    let changed = compare_postgres_with_inventory(&changed_dir, &inventory, &ExportSelection::All);
+    assert!(changed.success, "{:?}", changed.errors);
+    assert!(changed.repo_different.contains(&table_path.to_string()));
+}
+
+#[test]
 fn repository_discovery_finds_rls_policy_files_and_skips_invalid_names() {
     let dir = create_temp_dir("discover-rls-policies");
     init_git_repo(&dir);
@@ -2967,6 +3280,16 @@ fn repository_schema_and_table_files_are_discovered() {
         ),
     )
     .expect("write table");
+    fs::write(
+        dir.join("database/objects/domains/dbstate_slice2.account_year.sql"),
+        render_domain_sql(&sample_inventory().domains[0]),
+    )
+    .expect("write domain");
+    fs::write(
+        dir.join("database/objects/domains/dbstate_slice2.account_year.sql"),
+        render_domain_sql(&sample_inventory().domains[0]),
+    )
+    .expect("write domain");
     fs::write(
         dir.join(
             "database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql",
@@ -3032,6 +3355,9 @@ fn repository_schema_and_table_files_are_discovered() {
         .contains_key("table:dbstate_slice2.sample_accounts"));
     assert!(import
         .objects
+        .contains_key("domain:dbstate_slice2.account_year"));
+    assert!(import
+        .objects
         .contains_key("constraint:dbstate_slice2.sample_accounts.sample_accounts_pkey"));
     assert!(import
         .objects
@@ -3072,6 +3398,8 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
         .expect("write bad table file");
     fs::write(dir.join("database/objects/tables/a.b.c.sql"), "-- bad\n")
         .expect("write bad table file");
+    fs::write(dir.join("database/objects/domains/a.b.c.sql"), "-- bad\n")
+        .expect("write bad domain file");
     fs::write(
         dir.join("database/objects/constraints/primary-keys/a.b.sql"),
         "-- bad\n",
@@ -3106,6 +3434,9 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
     assert!(import
         .skipped
         .contains(&"database/objects/tables/a.b.c.sql".to_string()));
+    assert!(import
+        .skipped
+        .contains(&"database/objects/domains/a.b.c.sql".to_string()));
     assert!(import
         .skipped
         .contains(&"database/objects/constraints/primary-keys/a.b.sql".to_string()));
@@ -3152,6 +3483,11 @@ fn compare_classifies_in_sync_objects() {
     )
     .expect("write table");
     fs::write(
+        dir.join("database/objects/domains/dbstate_slice2.account_year.sql"),
+        render_domain_sql(&sample_inventory().domains[0]),
+    )
+    .expect("write domain");
+    fs::write(
         dir.join(
             "database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql",
         ),
@@ -3181,6 +3517,9 @@ fn compare_classifies_in_sync_objects() {
     assert!(report
         .in_sync
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert!(report
+        .in_sync
+        .contains(&"database/objects/domains/dbstate_slice2.account_year.sql".to_string()));
     assert!(report.in_sync.contains(
         &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
             .to_string()
@@ -3205,6 +3544,11 @@ fn compare_classifies_repo_different_objects() {
         "-- stale table\n",
     )
     .expect("write stale table");
+    fs::write(
+        dir.join("database/objects/domains/dbstate_slice2.account_year.sql"),
+        "-- stale domain\n",
+    )
+    .expect("write stale domain");
     fs::write(
         dir.join(
             "database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql",
@@ -3232,6 +3576,9 @@ fn compare_classifies_repo_different_objects() {
     assert!(report
         .repo_different
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert!(report
+        .repo_different
+        .contains(&"database/objects/domains/dbstate_slice2.account_year.sql".to_string()));
     assert!(report.repo_different.contains(
         &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
             .to_string()
@@ -3257,6 +3604,11 @@ fn compare_classifies_repo_only_objects() {
     )
     .expect("write local only table");
     fs::write(
+        dir.join("database/objects/domains/dbstate_slice2.local_year.sql"),
+        "CREATE DOMAIN \"dbstate_slice2\".\"local_year\" AS integer;\n",
+    )
+    .expect("write local only domain");
+    fs::write(
         dir.join(
             "database/objects/constraints/check-constraints/dbstate_slice2.sample_accounts.local_only_check.sql",
         ),
@@ -3281,6 +3633,9 @@ fn compare_classifies_repo_only_objects() {
     assert!(report
         .repo_only
         .contains(&"database/objects/tables/dbstate_slice2.local_only.sql".to_string()));
+    assert!(report
+        .repo_only
+        .contains(&"database/objects/domains/dbstate_slice2.local_year.sql".to_string()));
     assert!(report.repo_only.contains(
         &"database/objects/constraints/check-constraints/dbstate_slice2.sample_accounts.local_only_check.sql"
             .to_string()
@@ -3310,6 +3665,9 @@ fn compare_classifies_database_only_objects() {
     assert!(report
         .database_only
         .contains(&"database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()));
+    assert!(report
+        .database_only
+        .contains(&"database/objects/domains/dbstate_slice2.account_year.sql".to_string()));
     assert!(report.database_only.contains(
         &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
             .to_string()
@@ -4183,6 +4541,120 @@ fn release_generates_sql_summary_and_risk_json_under_releases() {
 }
 
 #[test]
+fn release_generates_review_only_create_for_repo_only_partitioned_table() {
+    let dir = create_temp_dir("release-partitioned-table");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let inventory = partitioned_payment_inventory();
+    fs::write(
+        dir.join("database/objects/schemas/public.sql"),
+        render_schema_sql("public"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/tables/public.payment.sql"),
+        render_table_sql_with_partition(
+            "public",
+            "payment",
+            &inventory.columns,
+            inventory.tables[0].partition_key.as_deref(),
+        ),
+    )
+    .expect("write partitioned table");
+    commit_all(&dir, "repo-only partitioned table");
+    let mut target_without_payment = inventory.clone();
+    target_without_payment.tables.clear();
+    target_without_payment.columns.clear();
+    target_without_payment.constraints.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_without_payment,
+        &ExportSelection::All,
+        &PlanSelection::from_options(vec!["table:public.payment".to_string()], Vec::new())
+            .expect("plan selection"),
+        "partitioned_payment",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    let sql =
+        fs::read_to_string(dir.join("database/releases/objects/0001_partitioned_payment.sql"))
+            .expect("read release sql");
+    assert!(sql.contains("CREATE TABLE IF NOT EXISTS \"public\".\"payment\""));
+    assert!(sql.contains("PARTITION BY RANGE (payment_date);"));
+    assert!(!sql.contains("DROP TABLE"));
+}
+
+#[test]
+fn release_keeps_changed_and_database_only_partitioned_tables_manual_review_only() {
+    let inventory = partitioned_payment_inventory();
+    let table_path = "database/objects/tables/public.payment.sql";
+
+    let changed_dir = create_temp_dir("release-partitioned-changed");
+    init_git_repo(&changed_dir);
+    create_complete_structure(&changed_dir);
+    fs::write(
+        changed_dir.join("database/objects/schemas/public.sql"),
+        render_schema_sql("public"),
+    )
+    .expect("write schema");
+    fs::write(
+        changed_dir.join(table_path),
+        render_table_sql_with_partition(
+            "public",
+            "payment",
+            &inventory.columns,
+            Some("LIST (payment_id)"),
+        ),
+    )
+    .expect("write changed partitioned table");
+    commit_all(&changed_dir, "changed partitioned table");
+    let changed = release_postgres_with_inventory(
+        &changed_dir,
+        &inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(vec!["table:public.payment".to_string()], Vec::new())
+            .expect("plan selection"),
+        "partitioned_changed",
+        false,
+    );
+    assert!(changed.success, "{:?}", changed.errors);
+    let changed_sql = fs::read_to_string(
+        changed_dir.join("database/releases/objects/0001_partitioned_changed.sql"),
+    )
+    .expect("read changed sql");
+    assert!(changed_sql.contains("REVIEW REQUIRED"));
+    assert!(!changed_sql.contains("DROP TABLE"));
+
+    let database_only_dir = create_temp_dir("release-partitioned-database-only");
+    init_git_repo(&database_only_dir);
+    create_complete_structure(&database_only_dir);
+    fs::write(
+        database_only_dir.join("database/objects/schemas/public.sql"),
+        render_schema_sql("public"),
+    )
+    .expect("write schema");
+    commit_all(&database_only_dir, "schema only");
+    let database_only = release_postgres_with_inventory(
+        &database_only_dir,
+        &inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(vec!["table:public.payment".to_string()], Vec::new())
+            .expect("plan selection"),
+        "partitioned_database_only",
+        false,
+    );
+    assert!(database_only.success, "{:?}", database_only.errors);
+    let database_only_sql = fs::read_to_string(
+        database_only_dir.join("database/releases/objects/0001_partitioned_database_only.sql"),
+    )
+    .expect("read database-only sql");
+    assert!(database_only_sql.contains("object exists only in target database"));
+    assert!(!database_only_sql.contains("DROP TABLE"));
+}
+
+#[test]
 fn release_write_backfills_missing_objects_release_folder() {
     let dir = create_temp_dir("release-backfill-objects-folder");
     init_git_repo(&dir);
@@ -4219,6 +4691,127 @@ fn release_write_backfills_missing_objects_release_folder() {
         warning.contains("database/releases/objects")
             || warning.contains("release artifact subfolders")
     }));
+}
+
+#[test]
+fn repo_only_domain_release_generates_review_only_create_domain_sql() {
+    let dir = create_temp_dir("release-domain-create");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/domains/dbstate_slice2.account_year.sql"),
+        render_domain_sql(&sample_inventory().domains[0]),
+    )
+    .expect("write repo-only domain");
+    commit_all(&dir, "repo-only domain");
+    let mut target_inventory = sample_inventory();
+    target_inventory.domains.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["domain:dbstate_slice2.account_year".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice37_domain",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].operation_kind, "createDomainReviewSql");
+    assert_eq!(report.plan_items[0].operation_label, "Create Domain");
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice37_domain.sql"))
+        .expect("sql");
+    assert!(sql.contains("CREATE DOMAIN \"dbstate_slice2\".\"account_year\" AS integer"));
+    assert!(sql.contains("CONSTRAINT \"account_year_check\""));
+    assert!(!sql.contains("\nDROP DOMAIN"));
+}
+
+#[test]
+fn changed_domain_release_remains_manual_review_only() {
+    let dir = create_temp_dir("release-domain-changed");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/domains/dbstate_slice2.account_year.sql"),
+        "CREATE DOMAIN \"dbstate_slice2\".\"account_year\" AS text;\n",
+    )
+    .expect("write changed domain");
+    commit_all(&dir, "changed domain");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["domain:dbstate_slice2.account_year".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice37_domain_changed",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].operation_kind, "manualReviewRequired");
+    assert!(report.plan_items[0]
+        .operation_explanation
+        .contains("changed domains are manual-review only"));
+    let sql =
+        fs::read_to_string(dir.join("database/releases/objects/0001_slice37_domain_changed.sql"))
+            .expect("sql");
+    assert!(sql.contains("changed domains are manual-review only"));
+    assert!(!sql.contains("\nDROP DOMAIN"));
+    assert!(!sql.contains("\nALTER DOMAIN"));
+}
+
+#[test]
+fn database_only_domain_release_does_not_generate_drop_domain() {
+    let dir = create_temp_dir("release-domain-db-only");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    commit_all(&dir, "complete structure");
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["domain:dbstate_slice2.account_year".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice37_domain_database_only",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.plan_items[0].compare_classification, "databaseOnly");
+    assert_eq!(report.plan_items[0].operation_kind, "databaseOnlyReview");
+    let sql = fs::read_to_string(
+        dir.join("database/releases/objects/0001_slice37_domain_database_only.sql"),
+    )
+    .expect("sql");
+    assert!(sql.contains("domain exists only in target database"));
+    assert!(!sql.contains("\nDROP DOMAIN"));
 }
 
 #[test]
@@ -7950,6 +8543,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "database/objects/tables/",
         "database/objects/extensions/",
         "database/objects/enums/",
+        "database/objects/domains/",
         "database/objects/sequences/",
         "database/objects/indexes/",
         "database/objects/views/",
@@ -7963,6 +8557,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "objectType: \"table\"",
         "objectType: \"extension\"",
         "objectType: \"enum\"",
+        "objectType: \"domain\"",
         "objectType: \"sequence\"",
         "objectType: \"index\"",
         "objectType: \"view\"",
@@ -7983,6 +8578,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "data.columns",
         "data.extensions",
         "data.enums",
+        "data.domains",
         "data.sequences",
         "data.indexes",
         "data.views",
@@ -8814,6 +9410,34 @@ fn slice16a_object_ddl_returns_object_only_full_context_and_related_objects() {
     assert!(grant_response.body.contains("\"group\":\"Target Object\""));
     assert!(grant_response.body.contains("\"group\":\"Grantee Role\""));
     assert!(!grant_response.body.contains("REVOKE"));
+}
+
+#[test]
+fn object_ddl_supports_partitioned_table_sql_files() {
+    let dir = create_temp_dir("object-ddl-partitioned-table");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let inventory = partitioned_payment_inventory();
+    fs::write(
+        dir.join("database/objects/tables/public.payment.sql"),
+        render_table_sql_with_partition(
+            "public",
+            "payment",
+            &inventory.columns,
+            inventory.tables[0].partition_key.as_deref(),
+        ),
+    )
+    .expect("write partitioned table");
+    commit_all(&dir, "partitioned table");
+
+    let body = r#"{ "scope": "all", "objectType": "table", "schema": "public", "objectName": "payment", "relativePath": "database/objects/tables/public.payment.sql" }"#;
+    let response = service_response("POST", "/api/v1/postgres/object-ddl", body, &dir);
+
+    assert_eq!(response.status_code, 200, "{}", response.body);
+    assert_common_json_contract(&response.body);
+    assert!(response.body.contains("\"objectOnly\""));
+    assert!(response.body.contains("CREATE TABLE"));
+    assert!(response.body.contains("PARTITION BY RANGE (payment_date);"));
 }
 
 #[test]
@@ -9953,4 +10577,497 @@ fn cli_rejects_apply_and_database_mutation_commands() {
         "schema:dbstate_slice2".to_string()
     ])
     .is_err());
+}
+
+#[test]
+fn project_status_reports_missing_domain_folder() {
+    let dir = create_temp_dir("missing-domain-folder");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::remove_dir_all(dir.join("database/objects/domains")).expect("remove domains dir");
+
+    let report = status_report(&dir, CommandKind::RepoStatus);
+
+    assert_eq!(
+        report.dbstate_project_status,
+        DbStateProjectStatus::PartialDbStateStructure
+    );
+    assert!(report
+        .missing_paths
+        .contains(&"database/objects/domains".to_string()));
+}
+
+#[test]
+fn slice37_ci_validate_requires_disposable_before_sql_execution() {
+    let dir = create_temp_dir("slice37-requires-disposable");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+
+    let (exit_code, output) = run_cli_output(
+        &dir,
+        &[
+            "ci",
+            "validate",
+            "--repository",
+            ".",
+            "--postgres-url",
+            "postgres://user:sensitive-marker@example.invalid/db",
+        ],
+    );
+
+    assert_eq!(exit_code, 2);
+    assert!(output.contains("Database State CI can execute repository-defined SQL only"));
+    assert!(!output.contains("sensitive-marker"));
+    assert!(!output.contains("example.invalid"));
+}
+
+#[test]
+fn slice37_ci_validate_json_contract_when_disposable_missing() {
+    let dir = create_temp_dir("slice37-json-disposable");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+
+    let (exit_code, output) = run_cli_output(
+        &dir,
+        &[
+            "ci",
+            "validate",
+            "--repository",
+            ".",
+            "--postgres-url",
+            "postgres://user:secret@example.invalid/db",
+            "--json",
+        ],
+    );
+
+    assert_eq!(exit_code, 2);
+    for field in [
+        "\"command\"",
+        "\"success\"",
+        "\"repositoryPath\"",
+        "\"validationTarget\"",
+        "\"scope\"",
+        "\"disposable\"",
+        "\"projectStructure\"",
+        "\"objectFiles\"",
+        "\"referenceData\"",
+        "\"releaseArtifacts\"",
+        "\"comparison\"",
+        "\"warnings\"",
+        "\"errors\"",
+        "\"reportPath\"",
+    ] {
+        assert!(output.contains(field), "missing JSON field {field}");
+    }
+    assert!(output.contains("\"command\":\"ci validate\""));
+    assert!(output.contains("\"success\":false"));
+    assert!(!output.contains("secret"));
+}
+
+#[test]
+fn slice37_ci_validate_missing_repository_returns_clear_error() {
+    let dir = create_temp_dir("slice37-missing-repository");
+    let missing = dir.join("missing");
+
+    let (exit_code, output) = run_cli_output(
+        &dir,
+        &[
+            "ci",
+            "validate",
+            "--repository",
+            missing.to_str().expect("path"),
+            "--postgres-url",
+            "postgres://user:secret@example.invalid/db",
+            "--disposable",
+        ],
+    );
+
+    assert_eq!(exit_code, 2);
+    assert!(output.contains("Repository path is not inside a Git repository."));
+    assert!(!output.contains("secret"));
+}
+
+#[test]
+fn slice37_ci_validate_non_dbstate_repository_returns_clear_error() {
+    let dir = create_temp_dir("slice37-non-dbstate");
+    init_git_repo(&dir);
+    fs::write(dir.join("README.md"), "# Not DbState\n").expect("write readme");
+    commit_all(&dir, "empty repository");
+
+    let (exit_code, output) = run_cli_output(
+        &dir,
+        &[
+            "ci",
+            "validate",
+            "--repository",
+            ".",
+            "--postgres-url",
+            "postgres://user:secret@example.invalid/db",
+            "--disposable",
+        ],
+    );
+
+    assert_eq!(exit_code, 2);
+    assert!(output.contains("DbState PostgreSQL project structure is incomplete"));
+    assert!(!output.contains("secret"));
+}
+
+#[test]
+fn slice37_ci_validate_rejects_dirty_dbstate_managed_worktree() {
+    let dir = create_temp_dir("slice37-dirty-managed");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    fs::write(
+        dir.join("database/objects/tables/public.customer.sql"),
+        "CREATE TABLE \"public\".\"customer\" (\n    \"customer_id\" integer NOT NULL\n);\n",
+    )
+    .expect("write dirty managed file");
+
+    let (exit_code, output) = run_cli_output(
+        &dir,
+        &[
+            "ci",
+            "validate",
+            "--repository",
+            ".",
+            "--postgres-url",
+            "postgres://user:secret@example.invalid/db",
+            "--disposable",
+        ],
+    );
+
+    assert_eq!(exit_code, 2);
+    assert!(output.contains("Database State CI validates committed branch state"));
+    assert!(output.contains("database/objects/tables/public.customer.sql"));
+    assert!(!output.contains("secret"));
+}
+
+#[test]
+fn slice37_ci_validate_rejects_report_paths_under_database() {
+    let dir = create_temp_dir("slice37-report-database");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+
+    let (exit_code, output) = run_cli_output(
+        &dir,
+        &[
+            "ci",
+            "validate",
+            "--repository",
+            ".",
+            "--postgres-url",
+            "postgres://user:secret@example.invalid/db",
+            "--disposable",
+            "--report",
+            "database/ci-report.md",
+        ],
+    );
+
+    assert_eq!(exit_code, 2);
+    assert!(output.contains("CI report path must not be under database/."));
+    assert!(!dir.join("database/ci-report.md").exists());
+}
+
+#[test]
+fn slice37_ci_validate_writes_markdown_report_for_safe_failure() {
+    let dir = create_temp_dir("slice37-report-safe-failure");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+    let report_path = "target/dbstate-ci/database-state-ci-report.md";
+
+    let (exit_code, output) = run_cli_output(
+        &dir,
+        &[
+            "ci",
+            "validate",
+            "--repository",
+            ".",
+            "--postgres-url",
+            "postgres://user:secret@127.0.0.1:1/dbstate_ci",
+            "--disposable",
+            "--report",
+            report_path,
+        ],
+    );
+
+    assert_eq!(exit_code, 2);
+    assert!(output.contains("Report path:"));
+    let report = fs::read_to_string(dir.join(report_path)).expect("read report");
+    assert!(report.contains("# Database State CI Report"));
+    assert!(report.contains("## Safety statement"));
+    assert!(!report.contains("secret"));
+    assert!(!report.contains("postgres://"));
+}
+
+#[test]
+fn slice37_disposable_database_precheck_rejects_user_objects() {
+    let inventory = sample_inventory();
+    let errors = validate_disposable_database(&inventory).expect_err("non-empty database");
+
+    assert!(errors
+        .iter()
+        .any(|error| error.contains("not empty/user-clean")));
+    assert!(errors
+        .iter()
+        .any(|error| error.contains("Detected user object count")));
+}
+
+#[test]
+fn slice37_object_apply_order_is_deterministic() {
+    let objects = vec![
+        desired_object(
+            RepositoryObjectType::Index,
+            "database/objects/indexes/public.customer_email_idx.sql",
+        ),
+        desired_object(
+            RepositoryObjectType::Table,
+            "database/objects/tables/public.customer.sql",
+        ),
+        desired_object(
+            RepositoryObjectType::Domain,
+            "database/objects/domains/public.customer_code.sql",
+        ),
+        desired_object(
+            RepositoryObjectType::Schema,
+            "database/objects/schemas/public.sql",
+        ),
+        desired_object(
+            RepositoryObjectType::Constraint,
+            "database/objects/constraints/foreign-keys/public.orders_customer_id_fkey.sql",
+        ),
+        desired_object(
+            RepositoryObjectType::Constraint,
+            "database/objects/constraints/primary-keys/public.customer_pkey.sql",
+        ),
+    ];
+
+    let ordered = ci_apply_order_for_test(objects);
+
+    assert_eq!(
+        ordered,
+        vec![
+            "database/objects/schemas/public.sql",
+            "database/objects/domains/public.customer_code.sql",
+            "database/objects/tables/public.customer.sql",
+            "database/objects/constraints/primary-keys/public.customer_pkey.sql",
+            "database/objects/constraints/foreign-keys/public.orders_customer_id_fkey.sql",
+            "database/objects/indexes/public.customer_email_idx.sql",
+        ]
+    );
+}
+
+#[test]
+fn slice37_ci_orders_partitioned_parent_table_before_primary_key() {
+    let objects = vec![
+        desired_object(
+            RepositoryObjectType::Constraint,
+            "database/objects/constraints/primary-keys/public.payment.payment_pkey.sql",
+        ),
+        desired_object(
+            RepositoryObjectType::Table,
+            "database/objects/tables/public.payment.sql",
+        ),
+    ];
+
+    let ordered = ci_apply_order_for_test(objects);
+
+    assert_eq!(
+        ordered,
+        vec![
+            "database/objects/tables/public.payment.sql",
+            "database/objects/constraints/primary-keys/public.payment.payment_pkey.sql",
+        ]
+    );
+}
+
+#[test]
+fn slice37_function_dependency_retry_applies_later_dependency_then_retries() {
+    let function_a = desired_object(
+        RepositoryObjectType::Function,
+        "database/objects/functions/public.film_in_stock.p_film_id_integer_p_store_id_integer_out_p_film_count_integer.sql",
+    );
+    let function_b = desired_object(
+        RepositoryObjectType::Function,
+        "database/objects/functions/public.inventory_in_stock.p_inventory_id_integer.sql",
+    );
+    let mut outcomes = BTreeMap::new();
+    outcomes.insert(
+        function_a.relative_path.clone(),
+        vec![
+            Err(CiSqlExecutionError {
+                message: "SQL execution failed for database/objects/functions/public.film_in_stock.p_film_id_integer_p_store_id_integer_out_p_film_count_integer.sql (function): function inventory_in_stock(integer) does not exist\nHint: No function matches the given name and argument types.".to_string(),
+                dependency_style: true,
+            }),
+            Ok(()),
+        ],
+    );
+
+    let report = ci_apply_function_retry_for_test(vec![function_a, function_b], outcomes);
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(report.object_files.applied, 2);
+    assert_eq!(report.object_files.failed, 0);
+    assert!(report.warnings.iter().any(
+        |warning| warning.contains("Deferred database/objects/functions/public.film_in_stock")
+    ));
+    assert!(report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("Retrying 1 deferred PostgreSQL function file")));
+}
+
+#[test]
+fn slice37_function_retry_fails_unrecoverable_syntax_error_without_looping() {
+    let function = desired_object(
+        RepositoryObjectType::Function,
+        "database/objects/functions/public.bad_function.no_args.sql",
+    );
+    let mut outcomes = BTreeMap::new();
+    outcomes.insert(
+        function.relative_path.clone(),
+        vec![Err(CiSqlExecutionError {
+            message: "SQL execution failed for database/objects/functions/public.bad_function.no_args.sql (function): syntax error at or near \"BROKEN\"".to_string(),
+            dependency_style: false,
+        })],
+    );
+
+    let report = ci_apply_function_retry_for_test(vec![function], outcomes);
+
+    assert!(!report.success);
+    assert_eq!(report.object_files.applied, 0);
+    assert_eq!(report.object_files.failed, 1);
+    assert!(report
+        .errors
+        .iter()
+        .any(|error| error.contains("syntax error at or near")));
+    assert!(!report
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("Deferred")));
+}
+
+#[test]
+fn slice37_sql_execution_error_includes_safe_postgresql_diagnostics() {
+    let object = desired_object(
+        RepositoryObjectType::Function,
+        "database/objects/functions/public.film_in_stock.p_film_id_integer_p_store_id_integer_out_p_film_count_integer.sql",
+    );
+    let message = format_ci_sql_execution_message(
+        &object,
+        "function inventory_in_stock(integer) does not exist",
+        Some("Referenced function was not available yet."),
+        Some("No function matches the given name and argument types. You might need to add explicit type casts."),
+        Some("Original(212)"),
+        "postgres://postgres:super-secret@127.0.0.1:55432/dbstate_ci_validation",
+    );
+
+    assert!(message.contains("database/objects/functions/public.film_in_stock"));
+    assert!(message.contains("(function): function inventory_in_stock(integer) does not exist"));
+    assert!(message.contains("Detail: Referenced function was not available yet."));
+    assert!(message.contains("Hint: No function matches the given name and argument types."));
+    assert!(message.contains("Position: Original(212)"));
+    assert!(!message.contains("postgres://"));
+    assert!(!message.contains("super-secret"));
+}
+
+#[test]
+fn slice37_ci_skips_existing_bootstrap_public_schema() {
+    let object = desired_object(
+        RepositoryObjectType::Schema,
+        "database/objects/schemas/public.sql",
+    );
+
+    assert!(ci_skips_bootstrap_public_schema_for_test(&object));
+}
+
+#[test]
+fn slice37_release_artifacts_are_counted_but_not_executed() {
+    let dir = create_temp_dir("slice37-release-summary");
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/releases/objects/0001_review.sql"),
+        "-- REVIEW ONLY.\nSELECT 1;\n",
+    )
+    .expect("write object artifact");
+    fs::write(
+        dir.join("database/releases/reference-data/0001_ref.reference-data.sql"),
+        "-- REVIEW ONLY.\nINSERT INTO ignored VALUES (1);\n",
+    )
+    .expect("write reference artifact");
+
+    let summary = ci_release_summary_for_test(&dir);
+
+    assert_eq!(summary.objects, 1);
+    assert_eq!(summary.reference_data, 1);
+    assert!(!summary.executed);
+    assert!(summary
+        .warnings
+        .iter()
+        .any(|warning| warning.contains("not executed")));
+}
+
+#[test]
+fn slice37_reference_data_yaml_is_validated_without_dml_execution() {
+    let dir = create_temp_dir("slice37-reference-data-validation");
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/reference-data/dbstate.reference-data.yml"),
+        valid_reference_registry_yaml(),
+    )
+    .expect("write registry");
+    fs::create_dir_all(dir.join("database/reference-data/tables")).expect("create tables");
+    fs::write(
+        dir.join("database/reference-data/tables/dbstate_ref.payment_methods.yml"),
+        valid_reference_table_yaml(),
+    )
+    .expect("write table yaml");
+
+    let (summary, errors) = ci_reference_data_summary_for_test(&dir);
+
+    assert!(errors.is_empty(), "{errors:?}");
+    assert!(summary.registry_valid);
+    assert_eq!(summary.table_files, 1);
+}
+
+#[test]
+fn parser_accepts_ci_validate_and_rejects_legacy_url_for_ci() {
+    assert!(ParsedArgs::parse(&[
+        "ci".to_string(),
+        "validate".to_string(),
+        "--repository".to_string(),
+        ".".to_string(),
+        "--postgres-url".to_string(),
+        "postgres://user:secret@example.invalid/db".to_string(),
+        "--disposable".to_string(),
+        "--report".to_string(),
+        "target/dbstate-ci/report.md".to_string(),
+    ])
+    .is_ok());
+    assert!(ParsedArgs::parse(&[
+        "ci".to_string(),
+        "validate".to_string(),
+        "--repository".to_string(),
+        ".".to_string(),
+        "--url".to_string(),
+        "postgres://user:secret@example.invalid/db".to_string(),
+        "--disposable".to_string(),
+    ])
+    .is_err());
+}
+
+fn desired_object(object_type: RepositoryObjectType, relative_path: &str) -> DesiredStateObject {
+    DesiredStateObject {
+        object_type,
+        schema_name: "public".to_string(),
+        table_name: Some("customer".to_string()),
+        object_name: "customer".to_string(),
+        parent_name: None,
+        relative_path: relative_path.to_string(),
+        content: "-- desired state\n".to_string(),
+    }
 }

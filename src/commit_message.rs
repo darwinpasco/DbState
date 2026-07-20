@@ -437,6 +437,7 @@ fn dbstate_path(path: &str) -> Option<(String, String, Option<String>)> {
             "schemas" => "schema",
             "extensions" => "extension",
             "enums" => "enum",
+            "domains" => "domain",
             "sequences" => "sequence",
             "tables" => "table",
             "indexes" => "index",
