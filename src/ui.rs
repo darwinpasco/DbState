@@ -661,6 +661,8 @@ rows:
         <section class="subsection" id="git-handoff-panel" data-testid="git-handoff-panel">
           <h3>Git Handoff</h3>
           <p class="note">Advisory only. DbState never runs git add, commit, push, pull, fetch, tag, switch, checkout, or branch commands.</p>
+          <p class="note" data-testid="git-workflow-staged-scope-note">Commit message is generated from staged changes. DbState does not stage files from the UI.</p>
+          <div id="git-workflow-message" class="response-summary" data-testid="git-workflow-message">Review Git handoff details after a write or generate action.</div>
           <dl class="summary-list compact" id="git-handoff-summary" data-testid="git-handoff-summary">
             <dt>Current branch</dt><dd id="git-handoff-current-branch">unknown</dd>
             <dt>Protected branch</dt><dd id="git-handoff-protected-branch">unknown</dd>
@@ -691,6 +693,7 @@ rows:
           <div class="button-row">
             <button type="button" class="secondary-button" data-copy-target="git-handoff-commands" data-testid="copy-manual-git-commands">Copy Suggested Manual Git Commands</button>
           </div>
+          <p class="note" id="git-handoff-large-add-note" data-testid="git-handoff-large-add-note" hidden>Large change set detected. DbState grouped git add commands by managed folder. Review git status before committing.</p>
           <pre id="git-handoff-commands" data-testid="git-handoff-commands">Run a write or generate action to get post-review commands.</pre>
           <h4>Suggested Commit Title</h4>
           <div class="button-row">
@@ -702,6 +705,30 @@ rows:
             <button type="button" class="secondary-button" data-copy-target="git-handoff-commit-body" data-testid="copy-commit-body">Copy Suggested commit body</button>
           </div>
           <pre id="git-handoff-commit-body" data-testid="git-handoff-commit-body">No suggested commit body yet.</pre>
+          <h4>Full Commit Message</h4>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="git-handoff-full-message" data-testid="copy-full-commit-message">Copy full message</button>
+          </div>
+          <pre id="git-handoff-full-message" data-testid="git-handoff-full-message">No generated commit message yet.</pre>
+          <h4>Suggested Full Commit Command - PowerShell</h4>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="git-handoff-full-commit-command" data-testid="copy-full-commit-command">Copy Suggested Full Commit Command - PowerShell</button>
+          </div>
+          <pre id="git-handoff-full-commit-command" data-testid="git-handoff-full-commit-command">No suggested full commit command yet.</pre>
+          <h3>Suggested Pull Request</h3>
+          <p class="note">GitHub may not automatically copy the commit body into the Pull Request description. Use the Suggested PR Title and Suggested PR Body when opening a Pull Request.</p>
+          <h4>Suggested PR Title</h4>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="git-handoff-pr-title" data-testid="copy-pr-title">Copy Suggested PR Title</button>
+          </div>
+          <pre id="git-handoff-pr-title" data-testid="git-handoff-pr-title">No suggested PR title yet.</pre>
+          <h4>Suggested PR Body</h4>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="git-handoff-pr-body" data-testid="copy-pr-body">Copy Suggested PR Body</button>
+          </div>
+          <pre id="git-handoff-pr-body" data-testid="git-handoff-pr-body">No suggested PR body yet.</pre>
+          <h4>Included Staged Changes</h4>
+          <pre id="git-handoff-staged-change-summary" data-testid="git-handoff-staged-change-summary">No staged changes found. Stage reviewed DbState paths manually, then regenerate.</pre>
         </section>
       </section>
 
@@ -1668,6 +1695,7 @@ const UI_JS: &str = r#"(function () {
     releasePreview: "/api/v1/postgres/release/preview",
     releaseWrite: "/api/v1/postgres/release/write",
     releaseArtifactPreview: "/api/v1/releases/artifact-preview",
+    commitMessage: "/api/v1/git/commit-message",
     workspaceRoots: "/api/v1/workspace/roots",
     workspaceListDirectories: "/api/v1/workspace/list-directories",
     workspaceValidate: "/api/v1/workspace/validate",
@@ -2371,18 +2399,327 @@ const UI_JS: &str = r#"(function () {
     byId("git-handoff-protected-branch").textContent = protectedBranch ? "yes" : "no";
     byId("git-handoff-worktree").textContent = worktree;
     byId("git-handoff-dirty-count").textContent = dirtyCount;
-    byId("git-handoff-branch-name").textContent = branchCommand.replace(/^git switch -c\s+/, "");
+    const writeSucceededOnWorkingBranch = data && data.success === true && written.length && !protectedBranch && branch !== "unknown";
+    const branchDisplay = writeSucceededOnWorkingBranch ? "Already on working branch: " + branch : branchCommand;
+    byId("git-handoff-branch-name").textContent = writeSucceededOnWorkingBranch ? branch : branchCommand.replace(/^git switch -c\s+/, "");
     byId("git-handoff-commit-title").textContent = nextTitle;
     byId("git-handoff-commit-title-text").textContent = nextTitle;
     byId("git-handoff-intended-paths").textContent = intended.length ? intended.join("\n") : "No intended write paths yet.";
     byId("git-handoff-written-paths").textContent = written.length ? written.join("\n") : "No written/generated paths yet.";
-    byId("git-handoff-recommended-branch").textContent = branchCommand;
-    byId("git-handoff-commands").textContent = [
-      "git status --short",
-      intended.concat(written).length ? "git add " + Array.from(new Set(intended.concat(written))).join(" ") : "git add <reviewed DbState paths>",
-      "git commit -m \"" + nextTitle + "\""
-    ].join("\n");
+    byId("git-handoff-recommended-branch").textContent = branchDisplay;
+    const manualCommands = manualGitCommandsForPaths(intended.concat(written));
+    byId("git-handoff-commands").textContent = manualCommands.text;
+    byId("git-handoff-large-add-note").hidden = !manualCommands.grouped;
     byId("git-handoff-commit-body").textContent = nextBody;
+    byId("git-handoff-full-message").textContent = nextTitle && nextBody ? nextTitle + "\n\n" + nextBody : "No generated commit message yet.";
+    updateSuggestedFullCommitCommand();
+    updateSuggestedPullRequest(nextTitle, nextBody, data || {}, intended, written);
+  }
+
+  function normalizeCommitBodyForPowerShell(value) {
+    const raw = textOrEmpty(value).replace(/\\n/g, "\n").replace(/\r\n?/g, "\n");
+    const normalized = [];
+    let previousBlank = false;
+    raw.split("\n").map(function (line) {
+      return line.replace(/[ \t]+$/g, "");
+    }).forEach(function (line) {
+      const blank = line.trim() === "";
+      if (blank && previousBlank) {
+        return;
+      }
+      normalized.push(line);
+      previousBlank = blank;
+    });
+    while (normalized.length && normalized[0].trim() === "") {
+      normalized.shift();
+    }
+    while (normalized.length && normalized[normalized.length - 1].trim() === "") {
+      normalized.pop();
+    }
+    return normalized.join("\r\n");
+  }
+
+  function powerShellDoubleQuoted(value) {
+    return "\"" + textOrEmpty(value).replace(/`/g, "``").replace(/\$/g, "`$").replace(/"/g, "`\"").replace(/\r?\n/g, " ") + "\"";
+  }
+
+  function powerShellSingleQuoted(value) {
+    return "'" + textOrEmpty(value).replace(/'/g, "''") + "'";
+  }
+
+  function powerShellCommitBodyExpression(body) {
+    const normalized = normalizeCommitBodyForPowerShell(body);
+    const lines = normalized ? normalized.split(/\r\n/) : [];
+    if (lines.some(function (line) { return line === "'@"; })) {
+      if (!lines.length) {
+        return "@('') -join [Environment]::NewLine";
+      }
+      return "@(\r\n" + lines.map(powerShellSingleQuoted).join("\r\n") + "\r\n) -join [Environment]::NewLine";
+    }
+    return "@'\r\n" + normalized + "\r\n'@";
+  }
+
+  function powerShellFullCommitCommand(title, body) {
+    return [
+      "$commitTitle = " + powerShellDoubleQuoted(title),
+      "",
+      "$commitBody = " + powerShellCommitBodyExpression(body),
+      "",
+      "git commit -m $commitTitle -m $commitBody"
+    ].join("\r\n");
+  }
+
+  function updateSuggestedFullCommitCommand() {
+    const title = textOrEmpty(byId("git-handoff-commit-title-text").textContent);
+    const body = textOrEmpty(byId("git-handoff-commit-body").textContent);
+    const titlePlaceholder = "No suggested commit title yet.";
+    const bodyPlaceholder = "No suggested commit body yet.";
+    const target = byId("git-handoff-full-commit-command");
+    if (!title || !body || title === titlePlaceholder || body === bodyPlaceholder) {
+      target.textContent = "No suggested full commit command yet.";
+      return;
+    }
+    target.textContent = powerShellFullCommitCommand(title, body);
+  }
+
+  function managedGitAddFolder(path) {
+    const normalized = textOrEmpty(path).replace(/\\/g, "/");
+    if (normalized.startsWith("database/releases/reference-data/")) {
+      return "database/releases/reference-data/";
+    }
+    if (normalized.startsWith("database/releases/objects/")) {
+      return "database/releases/objects/";
+    }
+    if (normalized.startsWith("database/reference-data/")) {
+      return "database/reference-data/";
+    }
+    if (normalized.startsWith("database/objects/")) {
+      return "database/objects/";
+    }
+    return "";
+  }
+
+  function manualGitCommandsForPaths(paths) {
+    const values = Array.from(new Set((paths || []).map(textOrEmpty).filter(Boolean))).sort();
+    if (!values.length) {
+      return {
+        text: ["git status --short", "git add <reviewed DbState paths>"].join("\n"),
+        grouped: false
+      };
+    }
+    if (values.length <= 20) {
+      return {
+        text: ["git status --short", "git add " + values.join(" ")].join("\n"),
+        grouped: false
+      };
+    }
+    const groups = Array.from(new Set(values.map(managedGitAddFolder).filter(Boolean))).sort();
+    if (!groups.length) {
+      return {
+        text: ["git status --short", "git add <reviewed DbState paths>"].join("\n"),
+        grouped: true
+      };
+    }
+    return {
+      text: ["git status --short"].concat(groups.map(function (group) { return "git add " + group; })).join("\n"),
+      grouped: true
+    };
+  }
+
+  function pathCategory(path) {
+    const value = textOrEmpty(path).replace(/\\/g, "/");
+    if (value.startsWith("database/releases/reference-data/")) {
+      return "reference-data review artifacts";
+    }
+    if (value.startsWith("database/releases/objects/")) {
+      return "schema release artifacts";
+    }
+    if (value.startsWith("database/reference-data/")) {
+      return "reference-data files";
+    }
+    if (value.startsWith("database/objects/")) {
+      return "schema/object files";
+    }
+    return "other files";
+  }
+
+  function pullRequestFileSection(paths) {
+    const values = Array.from(new Set((paths || []).map(textOrEmpty).filter(Boolean))).sort();
+    if (!values.length) {
+      return "- No written, generated, or staged DbState files are available yet.";
+    }
+    if (values.length <= 12) {
+      return values.map(function (path) { return "- " + path; }).join("\n");
+    }
+    const counts = {};
+    values.forEach(function (path) {
+      const category = pathCategory(path);
+      counts[category] = (counts[category] || 0) + 1;
+    });
+    const lines = Object.keys(counts).sort().map(function (category) {
+      return "- " + category + ": " + counts[category];
+    });
+    lines.push("- Total files: " + values.length);
+    lines.push("- Large file list summarized by category/count; review Git diff before merge.");
+    return lines.join("\n");
+  }
+
+  function pullRequestChangeSummary(body) {
+    const normalized = normalizeCommitBodyForPowerShell(body).replace(/\r\n/g, "\n");
+    const lines = normalized.split("\n").filter(function (line) {
+      return line.trim() !== "";
+    });
+    if (!lines.length) {
+      return "- Review the staged DbState changes.";
+    }
+    if (lines.length <= 16) {
+      return normalized;
+    }
+    return lines.slice(0, 12).join("\n") + "\n- Additional commit body lines summarized; review Suggested Commit Body for full technical detail.";
+  }
+
+  function isPreWriteBranchGuidance(value) {
+    const lower = textOrEmpty(value).toLowerCase();
+    return lower.indexOf("git switch -c") >= 0
+      || lower.indexOf("suggested manual branch command") >= 0
+      || lower.indexOf("branch command before writing files") >= 0
+      || lower.indexOf("recommended before writing files") >= 0
+      || lower.indexOf("create a working branch first") >= 0
+      || lower.indexOf("create branch first") >= 0
+      || lower.indexOf("after switching branches manually") >= 0;
+  }
+
+  function pullRequestReviewWarnings(data, filePaths) {
+    const values = []
+      .concat(Array.isArray(data && data.warnings) ? data.warnings : [])
+      .concat(Array.isArray(data && data.errors) ? data.errors : [])
+      .map(textOrEmpty)
+      .filter(function (warning) {
+        return warning && !isPreWriteBranchGuidance(warning);
+      });
+    const unique = Array.from(new Set(values)).sort();
+    if (Array.from(new Set((filePaths || []).map(textOrEmpty).filter(Boolean))).length > 12) {
+      unique.unshift("Large file list summarized by category/count; review Git diff before merge.");
+    }
+    return unique;
+  }
+
+  function suggestedPullRequestBody(title, body, data, intended, written) {
+    const filePaths = (written && written.length ? written : intended || [])
+      .concat(handoffPaths(data || {}, "analyzedFiles"))
+      .concat(handoffPaths(data || {}, "stagedFiles"));
+    const warnings = pullRequestReviewWarnings(data || {}, filePaths);
+    const reviewNotes = warnings.length
+      ? warnings.map(function (warning) { return "- " + textOrEmpty(warning); }).join("\n")
+      : "- No warnings reported by DbState.";
+    return [
+      '## Summary',
+      "- " + (textOrEmpty(title) || "Review DbState changes."),
+      "",
+      '## Written/generated files or changed files',
+      pullRequestFileSection(filePaths),
+      "",
+      '## Change summary',
+      pullRequestChangeSummary(body),
+      "",
+      '## Safety statement',
+      "- DbState did not run SQL, apply database changes, mutate PostgreSQL, or run Git commands.",
+      "- Review generated SQL artifacts manually before any use outside DbState.",
+      "",
+      '## Review notes/warnings',
+      reviewNotes
+    ].join("\n");
+  }
+
+  function updateSuggestedPullRequest(title, body, data, intended, written) {
+    const prTitleTarget = byId("git-handoff-pr-title");
+    const prBodyTarget = byId("git-handoff-pr-body");
+    const safeTitle = textOrEmpty(title);
+    const safeBody = textOrEmpty(body);
+    const titlePlaceholder = "No suggested commit title yet.";
+    const bodyPlaceholder = "No suggested commit body yet.";
+    if (!safeTitle || !safeBody || safeTitle === titlePlaceholder || safeBody === bodyPlaceholder) {
+      prTitleTarget.textContent = "No suggested PR title yet.";
+      prBodyTarget.textContent = "No suggested PR body yet.";
+      return;
+    }
+    prTitleTarget.textContent = safeTitle;
+    prBodyTarget.textContent = suggestedPullRequestBody(safeTitle, safeBody, data || {}, intended || [], written || []);
+  }
+
+  function writeGenerateSuccessOpensGitWorkflow(label, data) {
+    if (!data || data.success !== true) {
+      return false;
+    }
+    return [
+      "Initialize DbState Project",
+      "Database to Repository Write",
+      "Reference-data YAML write",
+      "Generate Release Artifact",
+      "Reference-data review script write"
+    ].indexOf(label) >= 0;
+  }
+
+  function openGitWorkflowAfterWrite(label, data) {
+    updateGitHandoff(data || {}, label || "Git Workflow");
+    byId("git-workflow-message").textContent = "Repository files written. Review the generated files and Git handoff details below before committing manually.";
+    showStep("git-workflow");
+  }
+
+  function renderCommitMessageFileList(title, values) {
+    if (!Array.isArray(values) || !values.length) {
+      return title + "\n- [none]";
+    }
+    return title + "\n" + values.map(function (value) { return "- " + textOrEmpty(value); }).join("\n");
+  }
+
+  function updateSemanticCommitMessage(data) {
+    state.lastResponse = data;
+    state.lastOperation = "Commit message";
+    jsonViewer.textContent = redactedJson(data);
+    updateStatus("Commit message", data);
+    renderErrorSummary(data);
+    renderWarnings(data);
+    const title = textOrEmpty(data.title);
+    const body = textOrEmpty(data.body);
+    if (title) {
+      byId("git-handoff-commit-title").textContent = title;
+      byId("git-handoff-commit-title-text").textContent = title;
+    }
+    if (body) {
+      byId("git-handoff-commit-body").textContent = body;
+    }
+    byId("git-handoff-full-message").textContent = title && body ? title + "\n\n" + body : textOrEmpty(data.message) || "No generated commit message yet.";
+    updateSuggestedFullCommitCommand();
+    updateSuggestedPullRequest(
+      textOrEmpty(byId("git-handoff-commit-title-text").textContent),
+      textOrEmpty(byId("git-handoff-commit-body").textContent),
+      data || {},
+      Array.isArray(data && data.analyzedFiles) ? data.analyzedFiles : [],
+      []
+    );
+    const summary = [
+      "Commit message is generated from staged changes.",
+      renderCommitMessageFileList("Analyzed DbState files", data.analyzedFiles),
+      renderCommitMessageFileList("Ignored non-DbState staged files", data.ignoredFiles)
+    ];
+    if (Array.isArray(data.warnings) && data.warnings.length) {
+      summary.push(renderCommitMessageFileList("Warnings", data.warnings));
+    }
+    if (Array.isArray(data.errors) && data.errors.length) {
+      summary.push(renderCommitMessageFileList("Errors", data.errors));
+    }
+    byId("git-handoff-staged-change-summary").textContent = summary.join("\n\n");
+    responseSummary.textContent = data.success
+      ? "Git Workflow: generated semantic commit message from staged changes."
+      : "Git Workflow: " + (Array.isArray(data.errors) && data.errors.length ? data.errors[0] : "No staged changes found. Stage reviewed DbState paths manually, then regenerate.");
+  }
+
+  async function regenerateCommitMessageFromStagedChanges() {
+    const data = await requestJson(approvedEndpoints.commitMessage, attachWorkspacePath({
+      style: "conventional"
+    }));
+    updateSemanticCommitMessage(data);
   }
 
   function updateConnectionModePanels() {
@@ -5878,14 +6215,13 @@ const UI_JS: &str = r#"(function () {
         renderReferenceDataReviewScriptResult(data);
         applyWorkflowChrome();
         updateReferenceDataReviewScriptWriteButton();
+        if (writeGenerateSuccessOpensGitWorkflow(label, data)) {
+          openGitWorkflowAfterWrite(label, data);
+        }
         return;
       }
       if (label === "Reference-data YAML write" && data.success) {
-        responseSummary.textContent = "Repository files written. Review the generated files, then open Git Workflow to review the suggested branch, commit message, and manual Git commands.";
         requestJson(approvedEndpoints.referenceDataStatus, attachWorkspacePath({})).then(updateReferenceDataOptions).catch(function () {});
-      }
-      if (label === "Write Selected Repository Changes" && data.success) {
-        responseSummary.textContent = "Repository files written. Review the generated files, then open Git Workflow to review the suggested branch, commit message, and manual Git commands.";
       }
       const rows = rowsFromResponse(data, label);
       updateObjectTypeFilterOptions(rows, label);
@@ -5909,6 +6245,9 @@ const UI_JS: &str = r#"(function () {
       }
       if (label === "Health") {
         servicePill.textContent = data.success ? "Service healthy" : "Service issue";
+      }
+      if (writeGenerateSuccessOpensGitWorkflow(label, data)) {
+        openGitWorkflowAfterWrite(label, data);
       }
     } catch (error) {
       const message = error && error.message ? error.message : "Unknown service error.";
@@ -6338,7 +6677,9 @@ const UI_JS: &str = r#"(function () {
   document.querySelector("[data-action='regenerate-commit-message']").addEventListener("click", function (event) {
     event.preventDefault();
     updateGitHandoff(state.lastResponse || {}, state.lastOperation || "Git Workflow");
-    responseSummary.textContent = "Git Workflow: regenerated commit message guidance from latest DbState file context.";
+    regenerateCommitMessageFromStagedChanges().catch(function (error) {
+      responseSummary.textContent = "Git Workflow: " + error.message;
+    });
   });
 
   document.querySelectorAll("[data-copy-target]").forEach(function (button) {

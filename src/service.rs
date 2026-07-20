@@ -1,3 +1,4 @@
+use crate::commit_message;
 use crate::object_ddl::service_object_ddl_endpoint;
 use crate::postgres::{invalid_postgres_url_message, is_postgres_connection_url};
 use crate::project::project_structure_allows_release_subfolder_backfill;
@@ -277,6 +278,7 @@ pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> Ser
             cwd,
             &["repo", "status", "--format", "json"],
         ),
+        ("POST", "/api/v1/git/commit-message") => service_commit_message_endpoint(body, cwd),
         ("POST", "/api/v1/init/plan") => service_init_plan_endpoint(body, cwd),
         ("POST", "/api/v1/init/write") => service_init_write_endpoint(body, cwd),
         ("POST", "/api/v1/postgres/inspect") => service_postgres_endpoint(
@@ -371,6 +373,7 @@ pub fn service_route_definitions() -> Vec<(&'static str, &'static str)> {
         ("DELETE", "/api/v1/connections/profiles/{name}"),
         ("POST", "/api/v1/connections/test"),
         ("POST", "/api/v1/repo/status"),
+        ("POST", "/api/v1/git/commit-message"),
         ("POST", "/api/v1/init/plan"),
         ("POST", "/api/v1/init/write"),
         ("POST", "/api/v1/postgres/inspect"),
@@ -826,6 +829,37 @@ fn service_cli_endpoint(
     let mut args: Vec<String> = base_args.iter().map(|value| (*value).to_string()).collect();
     args.extend(["--format".to_string(), "json".to_string()]);
     service_run_cli(command, &workspace, args)
+}
+
+fn service_commit_message_endpoint(body: &str, cwd: &Path) -> ServiceHttpResponse {
+    let request = match parse_service_request(body) {
+        Ok(request) => request,
+        Err(error) => return service_error_response(400, "commit-message", &error),
+    };
+    if let Err(error) = validate_service_request_is_safe(&request) {
+        return service_error_response(400, "commit-message", &error);
+    }
+    let workspace =
+        match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
+        {
+            Ok(workspace) => workspace,
+            Err(error) => return service_error_response(400, "commit-message", &error),
+        };
+    let style = match request_string(&request, "style").as_deref() {
+        Some("plain") => commit_message::Style::Plain,
+        Some("conventional") | None => commit_message::Style::Conventional,
+        Some(_) => {
+            return service_error_response(
+                400,
+                "commit-message",
+                "style must be conventional or plain.",
+            )
+        }
+    };
+    let intent = request_string(&request, "intent").filter(|value| !value.trim().is_empty());
+    let report = commit_message::generate(&workspace, style, intent.as_deref());
+    let status_code = if report.success() { 200 } else { 400 };
+    service_json_response(status_code, &report.to_json())
 }
 
 fn service_postgres_endpoint(
