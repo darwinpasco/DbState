@@ -8156,6 +8156,55 @@ fn private_beta_ui_polish_contract_is_present() {
 }
 
 #[test]
+fn warnings_panel_tracks_latest_operation_result_contract() {
+    let html = ui_html();
+    let js = ui_js();
+
+    assert!(html.contains("data-testid=\"warnings-panel\""));
+    assert!(html.contains("data-testid=\"warnings-list\""));
+    assert!(html.contains("No warnings yet."));
+    assert!(html.contains("data-testid=\"operation-alert\""));
+    assert!(html.contains("id=\"operation-alert-warnings\""));
+
+    assert!(js.contains("updateOperationAlert(label, data);"));
+    assert!(js.contains("renderWarnings(data || {});"));
+    assert!(js.contains("addMany(data.warnings, \"Warning\");"));
+    assert!(js.contains("addMany(data.errors, \"Error\", \"error\");"));
+    assert!(js.contains("addMany(data.dependencyWarnings, \"Dependency warning\");"));
+    assert!(js.contains("addMany(data.blockedItems, \"Blocked item\", \"error\");"));
+    assert!(js.contains("addMany(data.deferredObjectTypes, \"Deferred object type\");"));
+    assert!(js.contains("const seenWarningKeys = new Set();"));
+    assert!(js.contains("const warningKey = (kind || \"warning\") + \"|\" + text;"));
+    assert!(js.contains("seenWarningKeys.has(warningKey)"));
+    assert!(js.contains("seenWarningKeys.add(warningKey);"));
+    assert!(js.contains("function reportedWarningCount()"));
+    assert!(js.contains("data.warningCount"));
+    assert!(js.contains("data.warningsCount"));
+    assert!(js.contains(
+        "Latest operation reported \" + count + \" warning(s). See the operation summary above."
+    ));
+    assert!(js.contains("target.textContent = \"No warnings yet.\""));
+
+    let check_status = js_handler_for_action(js, "check-status");
+    assert!(check_status.contains("runCheckStatus();"));
+    assert!(js.contains("updateStatus(\"Check Status\", data);"));
+    assert!(js.contains("warnings: warnings"));
+    assert!(
+        js.contains("concat(Array.isArray(workspaceData.warnings) ? workspaceData.warnings : [])")
+    );
+    assert!(js.contains("concat(Array.isArray(repoData.warnings) ? repoData.warnings : [])"));
+
+    assert!(html.contains("Check Status"));
+    assert!(!html.contains(">Check Workspace</button>"));
+    assert!(!html.contains(">Repo Status</button>"));
+    assert!(html.contains("Database State CI"));
+    assert!(js.contains("$DbStateCiPostgresPassword"));
+    assert!(!format!("{html}\n{js}").contains("POSTGRES_PASSWORD=postgres"));
+    assert!(!format!("{html}\n{js}").contains("postgres://postgres:postgres@"));
+    assert!(!js.contains("/api/v1/ci"));
+}
+
+#[test]
 fn slice12_ui_html_contains_safety_messages_and_no_external_assets() {
     let html = ui_html();
 
