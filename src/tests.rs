@@ -7950,6 +7950,127 @@ fn slice12_ui_routes_serve_static_assets() {
 }
 
 #[test]
+fn database_state_ci_guidance_page_is_documentation_only() {
+    let html = ui_html();
+    let js = ui_js();
+    let combined = format!("{html}\n{js}");
+
+    for expected in [
+        "data-testid=\"tab-database-state-ci\"",
+        "10. Database State CI",
+        "id=\"step-database-state-ci\"",
+        "data-testid=\"database-state-ci-page\"",
+        "dbstate ci validate --repository",
+        "--postgres-url",
+        "--disposable",
+        "Run text CI",
+        "Run JSON CI",
+        "Run Markdown report CI",
+        "docker run --name \" + containerName + \" `",
+        "pg_isready -U postgres -d \" + disposableDatabase",
+        "docker rm -f \" + containerName + \" 2>$null",
+        "dbstate.exe",
+        "C:\\DbState\\YourDatabaseRepo",
+        "C:\\DbState\\dbstate-ci\\database-state-ci-report.md",
+        "Source profile",
+        "Source database",
+        "Disposable validation database",
+        "Disposable container",
+        "Disposable PostgreSQL URL",
+        "The selected connection profile identifies the source database you are versioning.",
+        "Database State CI does not run against that database.",
+        "These commands create a separate disposable PostgreSQL database and run CI there.",
+        "your_database_ci_validation",
+        "dbstate-ci-your-database",
+        "$DbStateCiPostgresPassword",
+        "<DISPOSABLE_POSTGRES_PASSWORD>",
+        "DbState does not store this value.",
+        "POSTGRES_PASSWORD=\" + passwordVariable",
+        "postgres://postgres:\" + passwordVariable + \"@127.0.0.1:55432/\" + disposableDatabase",
+        "const passwordVariable = \"$DbStateCiPostgresPassword\";",
+        "databaseStateCiSafeDatabaseName",
+        "databaseStateCiSafeSlug",
+        "const sourceProfile = selectedProfile();",
+        "sourceProfile.database",
+        "database-state-ci-report.md",
+        "Release artifacts are not executed",
+        "Reference-data review scripts are not executed",
+        "The web app does not run CI",
+        "I am using a disposable PostgreSQL database.",
+        "I am not pointing at development, staging, production, or a shared database.",
+        "Compare-back drift details",
+        "ignored PostgreSQL bootstrap public schema grant noise during CI compare-back",
+        "data-copy-target=\"database-state-ci-start-command\"",
+        "data-copy-target=\"database-state-ci-text-command\"",
+        "data-copy-target=\"database-state-ci-json-command\"",
+        "data-copy-target=\"database-state-ci-report-command\"",
+        "data-copy-target=\"database-state-ci-clean-command\"",
+        "updateDatabaseStateCiCommands",
+        "document.getElementById(\"workspace-path\").addEventListener(\"input\", updateDatabaseStateCiCommands)",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "missing Database State CI guidance contract {expected}"
+        );
+    }
+
+    for forbidden in [
+        "D:\\SourceCodes\\DbState",
+        "D:\\DbState\\pagila",
+        "POSTGRES_PASSWORD=postgres",
+        "postgres://postgres:postgres@",
+        "data-action=\"ci-validate\"",
+        "Run CI</button>",
+        "Apply / Execute",
+        "Sync to Database",
+        "Apply to Database",
+        "Execute SQL",
+        "localStorage",
+        "sessionStorage",
+        "save password",
+        "remember password",
+    ] {
+        assert!(
+            !combined.contains(forbidden),
+            "Database State CI guidance must not expose forbidden UI or persistence {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn database_state_ci_guidance_adds_no_backend_execution_endpoint() {
+    let routes = service_route_definitions();
+
+    assert!(!routes
+        .iter()
+        .any(|(_, path)| path.contains("/ci") || path.contains("ci/validate")));
+    assert!(!ui_js().contains("ciValidate"));
+    assert!(!ui_js().contains("/api/v1/ci"));
+}
+
+#[test]
+fn database_state_ci_page_preserves_existing_primary_pages() {
+    let html = ui_html();
+    let combined = format!("{html}\n{}", ui_js());
+
+    for expected in [
+        "Schema Compare: Repository to Database",
+        "Schema Compare: Database to Repository",
+        "Object Diff",
+        "Release Plan",
+        "Git Workflow",
+        "Reference Data Compare: Repository to Database",
+        "Reference Data Compare: Database to Repository",
+        "Reference-Data Row Data Diff",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "existing page contract regressed: {expected}"
+        );
+    }
+}
+
+#[test]
 fn slice12_ui_html_contains_safety_messages_and_no_external_assets() {
     let html = ui_html();
 

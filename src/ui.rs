@@ -41,7 +41,8 @@ const UI_HTML: &str = r#"<!doctype html>
       <button type="button" class="workflow-step" data-step="release-plan" data-testid="tab-release-plan">7. Release Plan</button>
       <button type="button" class="workflow-step" data-step="reports" data-testid="tab-reports-raw-json">8. Reports / Raw JSON</button>
       <button type="button" class="workflow-step" data-step="git-workflow" data-testid="tab-git-workflow">9. Git Workflow</button>
-      <button type="button" class="workflow-step" data-step="about">10. About / Safety</button>
+      <button type="button" class="workflow-step" data-step="database-state-ci" data-testid="tab-database-state-ci">10. Database State CI</button>
+      <button type="button" class="workflow-step" data-step="about">11. About / Safety</button>
     </nav>
 
     <main class="workflow-main">
@@ -730,6 +731,97 @@ rows:
           <pre id="git-handoff-pr-body" data-testid="git-handoff-pr-body">No suggested PR body yet.</pre>
           <h4>Included Staged Changes</h4>
           <pre id="git-handoff-staged-change-summary" data-testid="git-handoff-staged-change-summary">No staged changes found. Stage reviewed DbState paths manually, then regenerate.</pre>
+        </section>
+      </section>
+
+      <section class="workflow-panel" id="step-database-state-ci" data-testid="database-state-ci-page">
+        <div class="panel-heading">
+          <h2>Database State CI</h2>
+          <p>Generate safe terminal commands for validating repository database state against an explicitly disposable PostgreSQL database.</p>
+        </div>
+        <section class="subsection">
+          <h3>What This Validates</h3>
+          <p>Database State CI validates whether the database state in the repository can be rebuilt in an explicitly disposable PostgreSQL database. Git remains the source of truth.</p>
+          <p class="note">CLI shape: <code>dbstate ci validate --repository &lt;path&gt; --postgres-url &lt;url&gt; --disposable</code></p>
+          <p class="note">The CI command executes repository desired-state object SQL only against the supplied disposable validation database. The <code>--disposable</code> flag is required. Release artifacts are not executed. Reference-data review scripts are not executed.</p>
+          <p class="note"><strong>The web app does not run CI.</strong> Copy these commands and run them from your local PowerShell terminal.</p>
+        </section>
+        <section class="subsection">
+          <h3>Safety Checklist</h3>
+          <ul class="safety-list" data-testid="database-state-ci-safety-checklist">
+            <li>I am using a disposable PostgreSQL database.</li>
+            <li>I am not pointing at development, staging, production, or a shared database.</li>
+            <li>I understand the command will execute repository desired-state object SQL.</li>
+            <li>I understand release artifacts and reference-data review scripts are not executed.</li>
+            <li>I will run this from my local terminal.</li>
+          </ul>
+        </section>
+        <section class="subsection">
+          <h3>Command Inputs</h3>
+          <p class="note">The selected connection profile identifies the source database you are versioning. Database State CI does not run against that database. These commands create a separate disposable PostgreSQL database and run CI there.</p>
+          <dl class="summary-list compact">
+            <dt>DbState executable</dt><dd id="database-state-ci-executable">dbstate.exe</dd>
+            <dt>Repository path</dt><dd id="database-state-ci-repository-path">C:\DbState\YourDatabaseRepo</dd>
+            <dt>Source profile</dt><dd id="database-state-ci-source-profile">Not selected</dd>
+            <dt>Source database</dt><dd id="database-state-ci-source-database">your_database</dd>
+            <dt>Disposable validation database</dt><dd id="database-state-ci-database">your_database_ci_validation</dd>
+            <dt>Disposable container</dt><dd id="database-state-ci-container">dbstate-ci-your-database</dd>
+            <dt>Disposable PostgreSQL URL</dt><dd id="database-state-ci-postgres-url">postgres://postgres:$DbStateCiPostgresPassword@127.0.0.1:55432/your_database_ci_validation</dd>
+            <dt>Report path</dt><dd id="database-state-ci-report-path">C:\DbState\dbstate-ci\database-state-ci-report.md</dd>
+          </dl>
+          <p class="note">These values are command guidance only. Commands are editable after copying. PostgreSQL URLs shown here are not persisted, sent to the service, logged, or executed by the web app.</p>
+          <p class="note">Replace <code>&lt;DISPOSABLE_POSTGRES_PASSWORD&gt;</code> with a temporary password for the disposable validation database. DbState does not store this value.</p>
+        </section>
+        <section class="subsection">
+          <h3>Start disposable PostgreSQL</h3>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="database-state-ci-start-command" data-testid="copy-database-state-ci-start">Copy start command</button>
+          </div>
+          <pre id="database-state-ci-start-command" data-testid="database-state-ci-start-command"></pre>
+        </section>
+        <section class="subsection">
+          <h3>Run text CI</h3>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="database-state-ci-text-command" data-testid="copy-database-state-ci-text">Copy text CI command</button>
+          </div>
+          <pre id="database-state-ci-text-command" data-testid="database-state-ci-text-command"></pre>
+        </section>
+        <section class="subsection">
+          <h3>Run JSON CI</h3>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="database-state-ci-json-command" data-testid="copy-database-state-ci-json">Copy JSON CI command</button>
+          </div>
+          <pre id="database-state-ci-json-command" data-testid="database-state-ci-json-command"></pre>
+        </section>
+        <section class="subsection">
+          <h3>Run Markdown report CI</h3>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="database-state-ci-report-command" data-testid="copy-database-state-ci-report">Copy report CI command</button>
+          </div>
+          <pre id="database-state-ci-report-command" data-testid="database-state-ci-report-command"></pre>
+        </section>
+        <section class="subsection">
+          <h3>Clean disposable container</h3>
+          <div class="button-row">
+            <button type="button" class="secondary-button" data-copy-target="database-state-ci-clean-command" data-testid="copy-database-state-ci-clean">Copy cleanup command</button>
+          </div>
+          <pre id="database-state-ci-clean-command" data-testid="database-state-ci-clean-command">docker rm -f dbstate-ci-your-database 2&gt;$null</pre>
+        </section>
+        <section class="subsection">
+          <h3>Expected Successful Result</h3>
+          <pre data-testid="database-state-ci-pass-example">Success: true
+Result: PASS
+Object files: total=&lt;n&gt;, applied=&lt;n&gt;, skipped=&lt;n&gt;, failed=0
+Compare-back: repositoryOnly=0, databaseOnly=0, different=0, unexpectedDrift=false</pre>
+          <p class="note">Expected warnings may include skipped bootstrap public schema, deferred/retried dependent functions, and ignored PostgreSQL bootstrap public schema grant noise during CI compare-back.</p>
+        </section>
+        <section class="subsection">
+          <h3>Failure Guidance</h3>
+          <ul class="safety-list">
+            <li>If CI fails during SQL execution, copy the failing object path and PostgreSQL error message.</li>
+            <li>If CI fails during compare-back, inspect Compare-back drift details and review repositoryOnly, databaseOnly, and different objects.</li>
+            <li>If PostgreSQL connection fails, verify Docker is running, wait for <code>pg_isready</code>, check port <code>55432</code>, and check the PostgreSQL URL.</li>
+          </ul>
         </section>
       </section>
 
@@ -1861,6 +1953,104 @@ const UI_JS: &str = r#"(function () {
     return value("workspace-path");
   }
 
+  function databaseStateCiRepositoryPath() {
+    return workspacePath()
+      || state.workspace.gitRoot
+      || textOrEmpty(state.workspace.repositoryPath)
+      || "C:\\DbState\\YourDatabaseRepo";
+  }
+
+  function databaseStateCiSafeSlug(text, fallback) {
+    const slug = textOrEmpty(text)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "");
+    return slug || fallback;
+  }
+
+  function databaseStateCiSafeDatabaseName(text, fallback) {
+    const slug = textOrEmpty(text)
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "");
+    return slug || fallback;
+  }
+
+  function updateDatabaseStateCiCommands() {
+    const repositoryPath = databaseStateCiRepositoryPath();
+    const executable = "dbstate.exe";
+    const sourceProfile = selectedProfile();
+    const sourceProfileName = sourceProfile ? textOrEmpty(sourceProfile.name) : "Not selected";
+    const sourceDatabase = sourceProfile ? databaseStateCiSafeDatabaseName(sourceProfile.database, "your_database") : "your_database";
+    const sourceDatabaseSlug = sourceProfile ? databaseStateCiSafeSlug(sourceProfile.database, "your-database") : "your-database";
+    const disposableDatabase = sourceDatabase + "_ci_validation";
+    const containerName = "dbstate-ci-" + sourceDatabaseSlug;
+    const passwordVariable = "$DbStateCiPostgresPassword";
+    const passwordPlaceholder = "<DISPOSABLE_POSTGRES_PASSWORD>";
+    const passwordAssignment = passwordVariable + " = \"" + passwordPlaceholder + "\"";
+    const postgresUrl = "postgres://postgres:" + passwordVariable + "@127.0.0.1:55432/" + disposableDatabase;
+    const reportDir = "C:\\DbState\\dbstate-ci";
+    const reportPath = reportDir + "\\database-state-ci-report.md";
+    byId("database-state-ci-executable").textContent = executable;
+    byId("database-state-ci-repository-path").textContent = repositoryPath;
+    byId("database-state-ci-source-profile").textContent = sourceProfileName || "Not selected";
+    byId("database-state-ci-source-database").textContent = sourceDatabase;
+    byId("database-state-ci-database").textContent = disposableDatabase;
+    byId("database-state-ci-container").textContent = containerName;
+    byId("database-state-ci-postgres-url").textContent = postgresUrl;
+    byId("database-state-ci-report-path").textContent = reportPath;
+    byId("database-state-ci-start-command").textContent = [
+      passwordAssignment,
+      "",
+      "docker rm -f " + containerName + " 2>$null",
+      "",
+      "docker run --name " + containerName + " `",
+      "  -e POSTGRES_PASSWORD=" + passwordVariable + " `",
+      "  -e POSTGRES_DB=" + disposableDatabase + " `",
+      "  -p 55432:5432 `",
+      "  -d postgres:16",
+      "",
+      "for ($i = 1; $i -le 30; $i++) {",
+      "  docker exec " + containerName + " pg_isready -U postgres -d " + disposableDatabase,
+      "  if ($LASTEXITCODE -eq 0) { break }",
+      "  Start-Sleep -Seconds 1",
+      "}"
+    ].join("\n");
+    byId("database-state-ci-text-command").textContent = [
+      passwordAssignment,
+      "",
+      executable + " ci validate `",
+      "  --repository " + repositoryPath + " `",
+      "  --postgres-url \"" + postgresUrl + "\" `",
+      "  --disposable"
+    ].join("\n");
+    byId("database-state-ci-json-command").textContent = [
+      passwordAssignment,
+      "",
+      executable + " ci validate `",
+      "  --repository " + repositoryPath + " `",
+      "  --postgres-url \"" + postgresUrl + "\" `",
+      "  --disposable `",
+      "  --json"
+    ].join("\n");
+    byId("database-state-ci-report-command").textContent = [
+      passwordAssignment,
+      "",
+      "New-Item -ItemType Directory -Force " + reportDir + " | Out-Null",
+      "",
+      executable + " ci validate `",
+      "  --repository " + repositoryPath + " `",
+      "  --postgres-url \"" + postgresUrl + "\" `",
+      "  --disposable `",
+      "  --report " + reportPath,
+      "",
+      "Get-Content " + reportPath + " -Raw"
+    ].join("\n");
+    byId("database-state-ci-clean-command").textContent = "docker rm -f " + containerName + " 2>$null";
+  }
+
   function postgresUrl() {
     return value("postgres-url");
   }
@@ -2186,6 +2376,7 @@ const UI_JS: &str = r#"(function () {
     }
     updateInitWriteButton();
     updateGitHandoff(data, state.lastOperation || "Workspace");
+    updateDatabaseStateCiCommands();
   }
 
   function isProtectedBranchName(branch) {
@@ -2874,6 +3065,7 @@ const UI_JS: &str = r#"(function () {
       select.value = selected;
     }
     updateSelectedProfileDetails();
+    updateDatabaseStateCiCommands();
   }
 
   function selectedProfile() {
@@ -2893,6 +3085,7 @@ const UI_JS: &str = r#"(function () {
         username: "",
         sslMode: ""
       });
+      updateDatabaseStateCiCommands();
       return;
     }
     updateSummary("profile-summary", {
@@ -2909,6 +3102,7 @@ const UI_JS: &str = r#"(function () {
     byId("profile-username").value = profile.username || "";
     byId("profile-sslmode").value = profile.sslMode || "prefer";
     byId("profile-description").value = profile.description || "";
+    updateDatabaseStateCiCommands();
   }
 
   function profileRequestBody() {
@@ -6337,6 +6531,8 @@ const UI_JS: &str = r#"(function () {
     });
   });
 
+  document.getElementById("workspace-path").addEventListener("input", updateDatabaseStateCiCommands);
+
   document.getElementById("object-type-filter").addEventListener("change", function () {
     state.selectedIndex = -1;
     renderResults(state.rows, true);
@@ -6763,6 +6959,7 @@ const UI_JS: &str = r#"(function () {
 
   updateConnectionModePanels();
   updateWorkflowModePanels();
+  updateDatabaseStateCiCommands();
   run("Health", approvedEndpoints.health, null, { summaryId: "workspace-summary", step: "workspace" });
 }());
 "#;
