@@ -1,6 +1,6 @@
 use crate::postgres::inspect::{
-    ColumnInfo, ConstraintInfo, EnumInfo, ExtensionInfo, FunctionInfo, GrantInfo, IndexInfo,
-    MaterializedViewInfo, RlsPolicyInfo, SequenceInfo, TriggerInfo, ViewInfo,
+    AggregateInfo, ColumnInfo, ConstraintInfo, DomainInfo, EnumInfo, ExtensionInfo, FunctionInfo,
+    GrantInfo, IndexInfo, MaterializedViewInfo, RlsPolicyInfo, SequenceInfo, TriggerInfo, ViewInfo,
 };
 use std::fmt::Write as _;
 
@@ -16,6 +16,15 @@ pub fn render_schema_sql(schema: &str) -> String {
 }
 
 pub fn render_table_sql(schema: &str, table: &str, columns: &[ColumnInfo]) -> String {
+    render_table_sql_with_partition(schema, table, columns, None)
+}
+
+pub fn render_table_sql_with_partition(
+    schema: &str,
+    table: &str,
+    columns: &[ColumnInfo],
+    partition_key: Option<&str>,
+) -> String {
     let mut sql = String::new();
     writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
     writeln!(sql, "-- Object type: table").ok();
@@ -54,7 +63,16 @@ pub fn render_table_sql(schema: &str, table: &str, columns: &[ColumnInfo]) -> St
         }
         writeln!(sql, "{comma}").ok();
     }
-    writeln!(sql, ");").ok();
+    if let Some(partition_key) = partition_key {
+        let partition_key = partition_key.trim();
+        if partition_key.is_empty() {
+            writeln!(sql, ");").ok();
+        } else {
+            writeln!(sql, ") PARTITION BY {partition_key};").ok();
+        }
+    } else {
+        writeln!(sql, ");").ok();
+    }
     sql
 }
 
@@ -106,6 +124,46 @@ pub fn render_enum_sql(enum_info: &EnumInfo) -> String {
         writeln!(sql, "    '{}'{comma}", label.replace('\'', "''")).ok();
     }
     writeln!(sql, ");").ok();
+    sql
+}
+
+pub fn render_domain_sql(domain: &DomainInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: domain").ok();
+    writeln!(
+        sql,
+        "-- Object name: {}.{}",
+        domain.schema_name, domain.domain_name
+    )
+    .ok();
+    writeln!(sql).ok();
+    writeln!(
+        sql,
+        "CREATE DOMAIN {}.{} AS {}",
+        quote_postgres_identifier(&domain.schema_name),
+        quote_postgres_identifier(&domain.domain_name),
+        domain.base_type
+    )
+    .ok();
+    if let Some(default_expression) = &domain.default_expression {
+        writeln!(sql, "    DEFAULT {default_expression}").ok();
+    }
+    if domain.is_not_null {
+        writeln!(sql, "    NOT NULL").ok();
+    }
+    let mut checks = domain.check_constraints.clone();
+    checks.sort_by(|left, right| left.constraint_name.cmp(&right.constraint_name));
+    for check in checks {
+        writeln!(
+            sql,
+            "    CONSTRAINT {} {}",
+            quote_postgres_identifier(&check.constraint_name),
+            check.definition
+        )
+        .ok();
+    }
+    sql.push_str(";\n");
     sql
 }
 
@@ -317,6 +375,68 @@ pub fn render_function_sql(function: &FunctionInfo) -> String {
     writeln!(sql).ok();
     let definition = function.definition.trim().trim_end_matches(';');
     writeln!(sql, "{definition};").ok();
+    sql
+}
+
+pub fn render_aggregate_sql(aggregate: &AggregateInfo) -> String {
+    let mut sql = String::new();
+    writeln!(sql, "-- DbState PostgreSQL desired-state object").ok();
+    writeln!(sql, "-- Object type: aggregate").ok();
+    writeln!(
+        sql,
+        "-- Object name: {}.{}({})",
+        aggregate.schema_name, aggregate.aggregate_name, aggregate.identity_arguments
+    )
+    .ok();
+    writeln!(
+        sql,
+        "-- Transition function: {}.{}",
+        aggregate.transition_function_schema, aggregate.transition_function_name
+    )
+    .ok();
+    writeln!(sql, "-- State type: {}", aggregate.state_type).ok();
+    writeln!(sql).ok();
+    writeln!(
+        sql,
+        "CREATE AGGREGATE {}.{}({}) (",
+        quote_postgres_identifier(&aggregate.schema_name),
+        quote_postgres_identifier(&aggregate.aggregate_name),
+        aggregate.identity_arguments
+    )
+    .ok();
+
+    let mut clauses = Vec::new();
+    clauses.push(format!(
+        "SFUNC = {}.{}",
+        quote_postgres_identifier(&aggregate.transition_function_schema),
+        quote_postgres_identifier(&aggregate.transition_function_name)
+    ));
+    clauses.push(format!("STYPE = {}", aggregate.state_type));
+    if let (Some(schema), Some(function)) = (
+        &aggregate.final_function_schema,
+        &aggregate.final_function_name,
+    ) {
+        clauses.push(format!(
+            "FINALFUNC = {}.{}",
+            quote_postgres_identifier(schema),
+            quote_postgres_identifier(function)
+        ));
+    }
+    if let Some(initial_condition) = &aggregate.initial_condition {
+        clauses.push(format!(
+            "INITCOND = '{}'",
+            initial_condition.replace('\'', "''")
+        ));
+    }
+    if let Some(sort_operator) = &aggregate.sort_operator {
+        clauses.push(format!("SORTOP = {sort_operator}"));
+    }
+
+    for (index, clause) in clauses.iter().enumerate() {
+        let comma = if index + 1 == clauses.len() { "" } else { "," };
+        writeln!(sql, "    {clause}{comma}").ok();
+    }
+    writeln!(sql, ");").ok();
     sql
 }
 

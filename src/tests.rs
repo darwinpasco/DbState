@@ -1,8 +1,9 @@
 use super::*;
 use crate::ci::{
     ci_apply_function_retry_for_test, ci_apply_order_for_test, ci_reference_data_summary_for_test,
-    ci_release_summary_for_test, ci_skips_bootstrap_public_schema_for_test,
-    format_ci_sql_execution_message, validate_disposable_database, CiSqlExecutionError,
+    ci_release_summary_for_test, ci_report_with_compare_back_details_for_test,
+    ci_skips_bootstrap_public_schema_for_test, format_ci_sql_execution_message,
+    validate_disposable_database, CiSqlExecutionError,
 };
 use crate::postgres::{
     inspect::empty_inspection_report, render_rls_policy_sql, resolve_postgres_url, RlsPolicyInfo,
@@ -21,9 +22,9 @@ use crate::release::empty_release_report;
 use crate::release::release_postgres_command;
 use crate::repository::discovery::discover_repository_objects;
 use crate::repository::objects::{
-    constraint_file_path, domain_file_path, function_file_path, function_identity_slug,
-    grant_file_path, materialized_view_file_path, rls_policy_file_path, trigger_file_path,
-    DesiredStateObject, RepositoryObjectType,
+    aggregate_file_path, constraint_file_path, domain_file_path, function_file_path,
+    function_identity_slug, grant_file_path, materialized_view_file_path, rls_policy_file_path,
+    trigger_file_path, DesiredStateObject, RepositoryObjectType,
 };
 use crate::repository::{
     compare_postgres_command, ensure_database_object_path, enum_file_path, export_postgres_command,
@@ -345,6 +346,18 @@ fn sample_inventory() -> PostgresInventory {
                             .to_string(),
                 },
             ],
+            aggregates: vec![AggregateInfo {
+                schema_name: "dbstate_slice2".to_string(),
+                aggregate_name: "account_labels".to_string(),
+                identity_arguments: "text".to_string(),
+                transition_function_schema: "dbstate_slice2".to_string(),
+                transition_function_name: "account_label_concat".to_string(),
+                state_type: "text".to_string(),
+                final_function_schema: None,
+                final_function_name: None,
+                initial_condition: None,
+                sort_operator: None,
+            }],
             triggers: vec![TriggerInfo {
                 schema_name: "dbstate_slice2".to_string(),
                 relation_name: "sample_accounts".to_string(),
@@ -570,6 +583,7 @@ fn partitioned_payment_inventory() -> PostgresInventory {
             referenced_columns: Vec::new(),
         }],
         functions: Vec::new(),
+        aggregates: Vec::new(),
         triggers: Vec::new(),
         grants: Vec::new(),
         rls_policies: Vec::new(),
@@ -717,6 +731,9 @@ fn dry_run_init_reports_planned_creates_but_creates_nothing() {
         .contains(&"database/objects/domains".to_string()));
     assert!(report
         .planned_creates
+        .contains(&"database/objects/aggregates".to_string()));
+    assert!(report
+        .planned_creates
         .contains(&"database/releases/reference-data".to_string()));
     assert!(report.created_paths.is_empty());
     assert!(!dir.join("database").exists());
@@ -735,6 +752,7 @@ fn init_creates_only_missing_folders_and_files() {
         DbStateProjectStatus::CompleteDbStateStructure
     );
     assert!(dir.join("database/objects/tables").is_dir());
+    assert!(dir.join("database/objects/aggregates").is_dir());
     assert!(dir.join("database/objects/domains").is_dir());
     assert!(dir.join("database/releases/objects").is_dir());
     assert!(dir.join("database/releases/reference-data").is_dir());
@@ -1099,6 +1117,18 @@ fn object_inventory_model_represents_schemas_tables_and_columns() {
                         .to_string(),
             },
         ],
+        aggregates: vec![AggregateInfo {
+            schema_name: "app".to_string(),
+            aggregate_name: "order_labels".to_string(),
+            identity_arguments: "text".to_string(),
+            transition_function_schema: "app".to_string(),
+            transition_function_name: "order_label_concat".to_string(),
+            state_type: "text".to_string(),
+            final_function_schema: None,
+            final_function_name: None,
+            initial_condition: None,
+            sort_operator: None,
+        }],
         triggers: vec![TriggerInfo {
             schema_name: "app".to_string(),
             relation_name: "orders".to_string(),
@@ -1248,6 +1278,10 @@ fn export_paths_stay_under_database_objects() {
         "database/objects/domains/core.payment_year.sql"
     );
     assert_eq!(
+        aggregate_file_path("core", "group_concat", "text").expect("aggregate path"),
+        "database/objects/aggregates/core.group_concat.text.sql"
+    );
+    assert_eq!(
         sequence_file_path("core", "payment_id_seq").expect("sequence path"),
         "database/objects/sequences/core.payment_id_seq.sql"
     );
@@ -1332,6 +1366,7 @@ fn export_paths_stay_under_database_objects() {
     assert!(schema_file_path("../evil").is_err());
     assert!(table_file_path("core", "bad/name").is_err());
     assert!(domain_file_path("core", "bad/name").is_err());
+    assert!(aggregate_file_path("core", "bad/name", "integer").is_err());
     assert!(function_file_path("core", "bad/name", "integer").is_err());
     assert!(trigger_file_path("core", "payments", "bad/name").is_err());
     assert!(materialized_view_file_path("core", "bad/name").is_err());
@@ -1397,6 +1432,12 @@ fn generated_slice16_object_sql_is_deterministic() {
     assert!(render_domain_sql(&inventory.domains[0])
         .contains("CONSTRAINT \"account_year_check\" CHECK ((VALUE >= 1901) AND (VALUE <= 2155))"));
     assert!(!render_domain_sql(&inventory.domains[0]).contains("DROP DOMAIN"));
+    assert!(render_aggregate_sql(&inventory.aggregates[0])
+        .contains("CREATE AGGREGATE \"dbstate_slice2\".\"account_labels\"(text)"));
+    assert!(render_aggregate_sql(&inventory.aggregates[0])
+        .contains("SFUNC = \"dbstate_slice2\".\"account_label_concat\""));
+    assert!(render_aggregate_sql(&inventory.aggregates[0]).contains("STYPE = text"));
+    assert!(!render_aggregate_sql(&inventory.aggregates[0]).contains("DROP AGGREGATE"));
     assert!(render_sequence_sql(&inventory.sequences[0])
         .contains("CREATE SEQUENCE \"dbstate_slice2\".\"account_number_seq\""));
     assert!(render_index_sql(&inventory.indexes[0])
@@ -2573,6 +2614,7 @@ fn slice36_semantic_types_cover_index_function_reference_data_and_release_artifa
     create_complete_structure(&dir);
     commit_all(&dir, "complete structure");
     let domain = "database/objects/domains/public.email_domain.sql";
+    let aggregate = "database/objects/aggregates/public.group_concat.text.sql";
     let index = "database/objects/indexes/public.customers_email_idx.sql";
     let function = "database/objects/functions/public.normalize_email.email_text.sql";
     let reference = "database/reference-data/tables/public.country.yml";
@@ -2582,6 +2624,11 @@ fn slice36_semantic_types_cover_index_function_reference_data_and_release_artifa
         "CREATE DOMAIN \"public\".\"email_domain\" AS text;\n",
     )
     .expect("write domain");
+    fs::write(
+        dir.join(aggregate),
+        "CREATE AGGREGATE \"public\".\"group_concat\"(text) (SFUNC = \"public\".\"_group_concat\", STYPE = text);\n",
+    )
+    .expect("write aggregate");
     fs::write(
         dir.join(index),
         "CREATE INDEX customers_email_idx ON public.customers (email);\n",
@@ -2595,7 +2642,7 @@ fn slice36_semantic_types_cover_index_function_reference_data_and_release_artifa
     fs::create_dir_all(dir.join("database/reference-data/tables")).expect("reference data tables");
     fs::write(dir.join(reference), "rows:\n  - country_id: 1\n").expect("write reference data");
     fs::write(dir.join(release), "-- REVIEW ONLY.\n").expect("write release artifact");
-    for relative in [domain, index, function, reference, release] {
+    for relative in [domain, aggregate, index, function, reference, release] {
         stage_path(&dir, relative);
     }
 
@@ -2604,6 +2651,7 @@ fn slice36_semantic_types_cover_index_function_reference_data_and_release_artifa
     assert_eq!(exit_code, 0);
     assert!(output.contains("perf(database):"));
     assert!(output.contains("add domain public.email_domain"));
+    assert!(output.contains("add aggregate public.group_concat.text"));
     assert!(output.contains("add index public.customers_email_idx"));
     assert!(output.contains("add function public.normalize_email.email_text"));
     assert!(output.contains("add reference data public.country"));
@@ -2822,6 +2870,9 @@ fn sync_creates_added_object_files() {
     assert!(report
         .created_files
         .contains(&"database/objects/domains/dbstate_slice2.account_year.sql".to_string()));
+    assert!(report.created_files.contains(
+        &"database/objects/aggregates/dbstate_slice2.account_labels.text.sql".to_string()
+    ));
     assert!(report.created_files.contains(
         &"database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
             .to_string()
@@ -3286,10 +3337,15 @@ fn repository_schema_and_table_files_are_discovered() {
     )
     .expect("write domain");
     fs::write(
-        dir.join("database/objects/domains/dbstate_slice2.account_year.sql"),
-        render_domain_sql(&sample_inventory().domains[0]),
+        dir.join("database/objects/aggregates/dbstate_slice2.account_labels.text.sql"),
+        render_aggregate_sql(&sample_inventory().aggregates[0]),
     )
-    .expect("write domain");
+    .expect("write aggregate");
+    fs::write(
+        dir.join("database/objects/aggregates/dbstate_slice2.account_labels.text.sql"),
+        render_aggregate_sql(&sample_inventory().aggregates[0]),
+    )
+    .expect("write aggregate");
     fs::write(
         dir.join(
             "database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql",
@@ -3358,6 +3414,9 @@ fn repository_schema_and_table_files_are_discovered() {
         .contains_key("domain:dbstate_slice2.account_year"));
     assert!(import
         .objects
+        .contains_key("aggregate:dbstate_slice2.account_labels.text"));
+    assert!(import
+        .objects
         .contains_key("constraint:dbstate_slice2.sample_accounts.sample_accounts_pkey"));
     assert!(import
         .objects
@@ -3401,6 +3460,11 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
     fs::write(dir.join("database/objects/domains/a.b.c.sql"), "-- bad\n")
         .expect("write bad domain file");
     fs::write(
+        dir.join("database/objects/aggregates/a.b.sql"),
+        "-- bad aggregate\n",
+    )
+    .expect("write bad aggregate file");
+    fs::write(
         dir.join("database/objects/constraints/primary-keys/a.b.sql"),
         "-- bad\n",
     )
@@ -3437,6 +3501,9 @@ fn repository_invalid_file_names_are_reported_as_skipped() {
     assert!(import
         .skipped
         .contains(&"database/objects/domains/a.b.c.sql".to_string()));
+    assert!(import
+        .skipped
+        .contains(&"database/objects/aggregates/a.b.sql".to_string()));
     assert!(import
         .skipped
         .contains(&"database/objects/constraints/primary-keys/a.b.sql".to_string()));
@@ -3488,6 +3555,11 @@ fn compare_classifies_in_sync_objects() {
     )
     .expect("write domain");
     fs::write(
+        dir.join("database/objects/aggregates/dbstate_slice2.account_labels.text.sql"),
+        render_aggregate_sql(&sample_inventory().aggregates[0]),
+    )
+    .expect("write aggregate");
+    fs::write(
         dir.join(
             "database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql",
         ),
@@ -3521,6 +3593,9 @@ fn compare_classifies_in_sync_objects() {
         .in_sync
         .contains(&"database/objects/domains/dbstate_slice2.account_year.sql".to_string()));
     assert!(report.in_sync.contains(
+        &"database/objects/aggregates/dbstate_slice2.account_labels.text.sql".to_string()
+    ));
+    assert!(report.in_sync.contains(
         &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
             .to_string()
     ));
@@ -3549,6 +3624,11 @@ fn compare_classifies_repo_different_objects() {
         "-- stale domain\n",
     )
     .expect("write stale domain");
+    fs::write(
+        dir.join("database/objects/aggregates/dbstate_slice2.account_labels.text.sql"),
+        "-- stale aggregate\n",
+    )
+    .expect("write stale aggregate");
     fs::write(
         dir.join(
             "database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql",
@@ -3580,6 +3660,9 @@ fn compare_classifies_repo_different_objects() {
         .repo_different
         .contains(&"database/objects/domains/dbstate_slice2.account_year.sql".to_string()));
     assert!(report.repo_different.contains(
+        &"database/objects/aggregates/dbstate_slice2.account_labels.text.sql".to_string()
+    ));
+    assert!(report.repo_different.contains(
         &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
             .to_string()
     ));
@@ -3609,6 +3692,11 @@ fn compare_classifies_repo_only_objects() {
     )
     .expect("write local only domain");
     fs::write(
+        dir.join("database/objects/aggregates/dbstate_slice2.local_labels.text.sql"),
+        "CREATE AGGREGATE \"dbstate_slice2\".\"local_labels\"(text) (SFUNC = \"dbstate_slice2\".\"account_label_concat\", STYPE = text);\n",
+    )
+    .expect("write local only aggregate");
+    fs::write(
         dir.join(
             "database/objects/constraints/check-constraints/dbstate_slice2.sample_accounts.local_only_check.sql",
         ),
@@ -3636,6 +3724,9 @@ fn compare_classifies_repo_only_objects() {
     assert!(report
         .repo_only
         .contains(&"database/objects/domains/dbstate_slice2.local_year.sql".to_string()));
+    assert!(report
+        .repo_only
+        .contains(&"database/objects/aggregates/dbstate_slice2.local_labels.text.sql".to_string()));
     assert!(report.repo_only.contains(
         &"database/objects/constraints/check-constraints/dbstate_slice2.sample_accounts.local_only_check.sql"
             .to_string()
@@ -3668,6 +3759,9 @@ fn compare_classifies_database_only_objects() {
     assert!(report
         .database_only
         .contains(&"database/objects/domains/dbstate_slice2.account_year.sql".to_string()));
+    assert!(report.database_only.contains(
+        &"database/objects/aggregates/dbstate_slice2.account_labels.text.sql".to_string()
+    ));
     assert!(report.database_only.contains(
         &"database/objects/constraints/primary-keys/dbstate_slice2.sample_accounts.sample_accounts_pkey.sql"
             .to_string()
@@ -4812,6 +4906,129 @@ fn database_only_domain_release_does_not_generate_drop_domain() {
     .expect("sql");
     assert!(sql.contains("domain exists only in target database"));
     assert!(!sql.contains("\nDROP DOMAIN"));
+}
+
+#[test]
+fn repo_only_aggregate_release_generates_review_only_create_aggregate_sql() {
+    let dir = create_temp_dir("release-aggregate-create");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/aggregates/dbstate_slice2.account_labels.text.sql"),
+        render_aggregate_sql(&sample_inventory().aggregates[0]),
+    )
+    .expect("write repo-only aggregate");
+    commit_all(&dir, "repo-only aggregate");
+    let mut target_inventory = sample_inventory();
+    target_inventory.aggregates.clear();
+
+    let report = release_postgres_with_inventory(
+        &dir,
+        &target_inventory,
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["aggregate:dbstate_slice2.account_labels.text".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice37_aggregate",
+        false,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.plan_items[0].operation_kind,
+        "createAggregateReviewSql"
+    );
+    assert_eq!(report.plan_items[0].operation_label, "Create Aggregate");
+    let sql = fs::read_to_string(dir.join("database/releases/objects/0001_slice37_aggregate.sql"))
+        .expect("sql");
+    assert!(sql.contains("CREATE AGGREGATE \"dbstate_slice2\".\"account_labels\"(text)"));
+    assert!(!sql.contains("\nDROP AGGREGATE"));
+}
+
+#[test]
+fn changed_and_database_only_aggregate_release_remains_manual_review_only() {
+    let changed_dir = create_temp_dir("release-aggregate-changed");
+    init_git_repo(&changed_dir);
+    create_complete_structure(&changed_dir);
+    fs::write(
+        changed_dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    fs::write(
+        changed_dir.join("database/objects/aggregates/dbstate_slice2.account_labels.text.sql"),
+        "CREATE AGGREGATE \"dbstate_slice2\".\"account_labels\"(text) (SFUNC = \"dbstate_slice2\".\"other_concat\", STYPE = text);\n",
+    )
+    .expect("write changed aggregate");
+    commit_all(&changed_dir, "changed aggregate");
+
+    let changed = release_postgres_with_inventory(
+        &changed_dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["aggregate:dbstate_slice2.account_labels.text".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice37_aggregate_changed",
+        false,
+    );
+
+    assert!(changed.success, "{:?}", changed.errors);
+    assert!(changed.plan_items[0]
+        .operation_explanation
+        .contains("changed aggregates are manual-review only"));
+    let changed_sql = fs::read_to_string(
+        changed_dir.join("database/releases/objects/0001_slice37_aggregate_changed.sql"),
+    )
+    .expect("sql");
+    assert!(changed_sql.contains("changed aggregates are manual-review only"));
+    assert!(!changed_sql.contains("\nDROP AGGREGATE"));
+
+    let db_only_dir = create_temp_dir("release-aggregate-db-only");
+    init_git_repo(&db_only_dir);
+    create_complete_structure(&db_only_dir);
+    fs::write(
+        db_only_dir.join("database/objects/schemas/dbstate_slice2.sql"),
+        render_schema_sql("dbstate_slice2"),
+    )
+    .expect("write schema");
+    commit_all(&db_only_dir, "complete structure");
+
+    let database_only = release_postgres_with_inventory(
+        &db_only_dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        &PlanSelection::from_options(
+            vec!["aggregate:dbstate_slice2.account_labels.text".to_string()],
+            Vec::new(),
+        )
+        .expect("plan selection"),
+        "slice37_aggregate_database_only",
+        false,
+    );
+
+    assert!(database_only.success, "{:?}", database_only.errors);
+    assert_eq!(
+        database_only.plan_items[0].compare_classification,
+        "databaseOnly"
+    );
+    let database_only_sql = fs::read_to_string(
+        db_only_dir.join("database/releases/objects/0001_slice37_aggregate_database_only.sql"),
+    )
+    .expect("sql");
+    assert!(database_only_sql
+        .to_lowercase()
+        .contains("aggregate exists only in target database"));
+    assert!(!database_only_sql.contains("\nDROP AGGREGATE"));
 }
 
 #[test]
@@ -8544,6 +8761,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "database/objects/extensions/",
         "database/objects/enums/",
         "database/objects/domains/",
+        "database/objects/aggregates/",
         "database/objects/sequences/",
         "database/objects/indexes/",
         "database/objects/views/",
@@ -8558,6 +8776,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "objectType: \"extension\"",
         "objectType: \"enum\"",
         "objectType: \"domain\"",
+        "objectType: \"aggregate\"",
         "objectType: \"sequence\"",
         "objectType: \"index\"",
         "objectType: \"view\"",
@@ -8579,6 +8798,7 @@ fn slice13b_results_grid_usability_contract_is_present() {
         "data.extensions",
         "data.enums",
         "data.domains",
+        "data.aggregates",
         "data.sequences",
         "data.indexes",
         "data.views",
@@ -9174,6 +9394,28 @@ fn slice15_object_ddl_reads_only_database_objects_under_workspace() {
         let rejected = service_response("POST", "/api/v1/postgres/object-ddl", &body, &dir);
         assert_eq!(rejected.status_code, 400, "{}", rejected.body);
     }
+}
+
+#[test]
+fn object_ddl_supports_aggregate_sql_files() {
+    let dir = create_temp_dir("object-ddl-aggregate");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/aggregates/dbstate_slice2.account_labels.text.sql"),
+        render_aggregate_sql(&sample_inventory().aggregates[0]),
+    )
+    .expect("write aggregate ddl");
+    commit_all(&dir, "add aggregate object");
+
+    let body = r#"{ "scope": "all", "objectType": "aggregate", "schema": "dbstate_slice2", "objectName": "account_labels.text", "relativePath": "database/objects/aggregates/dbstate_slice2.account_labels.text.sql" }"#;
+    let response = service_response("POST", "/api/v1/postgres/object-ddl", body, &dir);
+
+    assert_eq!(response.status_code, 200, "{}", response.body);
+    assert_common_json_contract(&response.body);
+    assert!(response.body.contains("CREATE AGGREGATE"));
+    assert!(response.body.contains("Database DDL is unavailable"));
+    assert!(!response.body.contains("DROP AGGREGATE"));
 }
 
 #[test]
@@ -10598,6 +10840,24 @@ fn project_status_reports_missing_domain_folder() {
 }
 
 #[test]
+fn project_status_reports_missing_aggregate_folder() {
+    let dir = create_temp_dir("missing-aggregate-folder");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::remove_dir_all(dir.join("database/objects/aggregates")).expect("remove aggregates dir");
+
+    let report = status_report(&dir, CommandKind::RepoStatus);
+
+    assert_eq!(
+        report.dbstate_project_status,
+        DbStateProjectStatus::PartialDbStateStructure
+    );
+    assert!(report
+        .missing_paths
+        .contains(&"database/objects/aggregates".to_string()));
+}
+
+#[test]
 fn slice37_ci_validate_requires_disposable_before_sql_execution() {
     let dir = create_temp_dir("slice37-requires-disposable");
     init_git_repo(&dir);
@@ -10833,12 +11093,20 @@ fn slice37_object_apply_order_is_deterministic() {
             "database/objects/domains/public.customer_code.sql",
         ),
         desired_object(
+            RepositoryObjectType::Aggregate,
+            "database/objects/aggregates/public.group_concat.text.sql",
+        ),
+        desired_object(
             RepositoryObjectType::Schema,
             "database/objects/schemas/public.sql",
         ),
         desired_object(
             RepositoryObjectType::Constraint,
             "database/objects/constraints/foreign-keys/public.orders_customer_id_fkey.sql",
+        ),
+        desired_object(
+            RepositoryObjectType::Function,
+            "database/objects/functions/public._group_concat.text_text.sql",
         ),
         desired_object(
             RepositoryObjectType::Constraint,
@@ -10854,6 +11122,8 @@ fn slice37_object_apply_order_is_deterministic() {
             "database/objects/schemas/public.sql",
             "database/objects/domains/public.customer_code.sql",
             "database/objects/tables/public.customer.sql",
+            "database/objects/functions/public._group_concat.text_text.sql",
+            "database/objects/aggregates/public.group_concat.text.sql",
             "database/objects/constraints/primary-keys/public.customer_pkey.sql",
             "database/objects/constraints/foreign-keys/public.orders_customer_id_fkey.sql",
             "database/objects/indexes/public.customer_email_idx.sql",
@@ -10881,6 +11151,69 @@ fn slice37_ci_orders_partitioned_parent_table_before_primary_key() {
         vec![
             "database/objects/tables/public.payment.sql",
             "database/objects/constraints/primary-keys/public.payment.payment_pkey.sql",
+        ]
+    );
+}
+
+#[test]
+fn slice37_ci_orders_materialized_views_before_indexes() {
+    let objects = vec![
+        desired_object(
+            RepositoryObjectType::Index,
+            "database/objects/indexes/public.customer.customer_email_idx.sql",
+        ),
+        desired_object(
+            RepositoryObjectType::Index,
+            "database/objects/indexes/public.rental_by_category.rental_category.sql",
+        ),
+        desired_object(
+            RepositoryObjectType::MaterializedView,
+            "database/objects/materialized-views/public.rental_by_category.sql",
+        ),
+        desired_object(
+            RepositoryObjectType::Table,
+            "database/objects/tables/public.customer.sql",
+        ),
+    ];
+
+    let ordered = ci_apply_order_for_test(objects);
+
+    assert_eq!(
+        ordered,
+        vec![
+            "database/objects/tables/public.customer.sql",
+            "database/objects/materialized-views/public.rental_by_category.sql",
+            "database/objects/indexes/public.customer.customer_email_idx.sql",
+            "database/objects/indexes/public.rental_by_category.rental_category.sql",
+        ]
+    );
+}
+
+#[test]
+fn slice37_ci_orders_functions_before_aggregates_before_views() {
+    let objects = vec![
+        desired_object(
+            RepositoryObjectType::View,
+            "database/objects/views/public.actor_info.sql",
+        ),
+        desired_object(
+            RepositoryObjectType::Aggregate,
+            "database/objects/aggregates/public.group_concat.text.sql",
+        ),
+        desired_object(
+            RepositoryObjectType::Function,
+            "database/objects/functions/public._group_concat.text_text.sql",
+        ),
+    ];
+
+    let ordered = ci_apply_order_for_test(objects);
+
+    assert_eq!(
+        ordered,
+        vec![
+            "database/objects/functions/public._group_concat.text_text.sql",
+            "database/objects/aggregates/public.group_concat.text.sql",
+            "database/objects/views/public.actor_info.sql",
         ]
     );
 }
@@ -11032,6 +11365,150 @@ fn slice37_reference_data_yaml_is_validated_without_dml_execution() {
     assert!(errors.is_empty(), "{errors:?}");
     assert!(summary.registry_valid);
     assert_eq!(summary.table_files, 1);
+}
+
+#[test]
+fn slice37_ci_json_includes_compare_back_drift_details() {
+    let report = ci_report_with_compare_back_details_for_test(
+        vec!["database/objects/tables/public.repo_only.sql"],
+        vec!["database/objects/aggregates/public.group_concat.text.sql"],
+        vec!["database/objects/tables/public.actor.sql"],
+    );
+    let json = report.to_json();
+
+    assert!(json.contains("\"repositoryOnly\":1"));
+    assert!(json.contains("\"databaseOnly\":1"));
+    assert!(json.contains("\"different\":1"));
+    assert!(json.contains("\"unexpectedDrift\":true"));
+    assert!(json.contains("\"details\""));
+    assert!(json.contains("\"status\":\"repositoryOnly\""));
+    assert!(json.contains("\"objectType\":\"table\""));
+    assert!(json.contains("\"identifier\":\"public.repo_only\""));
+    assert!(json.contains("\"repositoryPath\":\"database/objects/tables/public.repo_only.sql\""));
+    assert!(json.contains("\"status\":\"databaseOnly\""));
+    assert!(json.contains("\"objectType\":\"aggregate\""));
+    assert!(json.contains("\"identifier\":\"public.group_concat(text)\""));
+    assert!(json.contains("\"databaseIdentifier\":\"public.group_concat(text)\""));
+    assert!(json.contains("\"status\":\"different\""));
+    assert!(json.contains("\"identifier\":\"public.actor\""));
+    assert!(json.contains("\"repositoryPath\":\"database/objects/tables/public.actor.sql\""));
+    assert!(json.contains("\"databaseIdentifier\":\"public.actor\""));
+}
+
+#[test]
+fn slice37_ci_text_includes_compare_back_drift_details_only_when_needed() {
+    let report = ci_report_with_compare_back_details_for_test(
+        Vec::new(),
+        vec!["database/objects/aggregates/public.group_concat.text.sql"],
+        vec!["database/objects/tables/public.actor.sql"],
+    );
+    let text = report.to_text();
+
+    assert!(text.contains("Compare-back drift details:"));
+    assert!(text.contains("repositoryOnly:"));
+    assert!(text.contains("    None"));
+    assert!(text.contains("- aggregate public.group_concat(text)"));
+    assert!(text.contains("database: public.group_concat(text)"));
+    assert!(text.contains("- table public.actor"));
+    assert!(text.contains("repository: database/objects/tables/public.actor.sql"));
+
+    let clean = ci_report_with_compare_back_details_for_test(Vec::new(), Vec::new(), Vec::new());
+    assert!(!clean.to_text().contains("Compare-back drift details:"));
+}
+
+#[test]
+fn slice37_ci_compare_back_ignores_bootstrap_public_schema_grant_noise() {
+    let report = ci_report_with_compare_back_details_for_test(
+        Vec::new(),
+        vec!["database/objects/grants/schemas/public.pg_database_owner.sql"],
+        vec![
+            "database/objects/grants/schemas/public.postgres.sql",
+            "database/objects/grants/schemas/public.public.sql",
+        ],
+    );
+    let json = report.to_json();
+    let text = report.to_text();
+
+    assert_eq!(report.comparison.repository_only, 0);
+    assert_eq!(report.comparison.database_only, 0);
+    assert_eq!(report.comparison.different, 0);
+    assert!(!report.comparison.unexpected_drift);
+    assert!(report.warnings.iter().any(|warning| warning.contains(
+        "Ignored PostgreSQL bootstrap public schema grant noise during CI compare-back"
+    )));
+    assert!(json.contains("\"databaseOnly\":0"));
+    assert!(json.contains("\"different\":0"));
+    assert!(!text.contains("Compare-back drift details:"));
+    assert!(!json.contains("schema.public.pg_database_owner"));
+    assert!(!json.contains("schema.public.postgres"));
+    assert!(!json.contains("schema.public.public"));
+}
+
+#[test]
+fn slice37_ci_compare_back_still_reports_real_grant_drift() {
+    let report = ci_report_with_compare_back_details_for_test(
+        Vec::new(),
+        vec![
+            "database/objects/grants/schemas/app.pg_database_owner.sql",
+            "database/objects/grants/tables/public.actor.public.sql",
+            "database/objects/grants/sequences/public.actor_id_seq.public.sql",
+            "database/objects/grants/functions/public.lookup_actor.no_args.public.sql",
+            "database/objects/grants/materialized-views/public.rental_by_category.public.sql",
+        ],
+        vec!["database/objects/grants/schemas/app.postgres.sql"],
+    );
+    let json = report.to_json();
+
+    assert_eq!(report.comparison.database_only, 5);
+    assert_eq!(report.comparison.different, 1);
+    assert!(report.comparison.unexpected_drift);
+    assert!(json.contains("\"databaseOnly\":5"));
+    assert!(json.contains("\"different\":1"));
+    assert!(json.contains("\"identifier\":\"schema.app.pg_database_owner\""));
+    assert!(json.contains("\"identifier\":\"table.public.actor.public\""));
+    assert!(json.contains("\"identifier\":\"sequence.public.actor_id_seq.public\""));
+    assert!(json.contains("\"identifier\":\"function.public.lookup_actor.no_args.public\""));
+    assert!(json.contains("\"identifier\":\"materializedView.public.rental_by_category.public\""));
+    assert!(json.contains("\"identifier\":\"schema.app.postgres\""));
+}
+
+#[test]
+fn slice37_ci_markdown_report_includes_grouped_compare_back_drift_details() {
+    let report = ci_report_with_compare_back_details_for_test(
+        vec!["database/objects/tables/public.repo_only.sql"],
+        Vec::new(),
+        vec!["database/objects/tables/public.actor.sql"],
+    );
+    let markdown = report.to_markdown();
+
+    assert!(markdown.contains("## Compare-back drift details"));
+    assert!(markdown.contains("### Repository only"));
+    assert!(markdown.contains("`table` `public.repo_only`"));
+    assert!(markdown.contains("### Database only"));
+    assert!(markdown.contains("None."));
+    assert!(markdown.contains("### Different"));
+    assert!(markdown.contains("`table` `public.actor`"));
+}
+
+#[test]
+fn slice37_ci_compare_back_drift_details_do_not_include_sql_or_secrets() {
+    let report = ci_report_with_compare_back_details_for_test(
+        vec!["database/objects/tables/public.customer.sql"],
+        Vec::new(),
+        Vec::new(),
+    );
+    let combined = format!(
+        "{}\n{}\n{}",
+        report.to_text(),
+        report.to_json(),
+        report.to_markdown()
+    );
+
+    assert!(!combined.contains("CREATE TABLE"));
+    assert!(!combined.contains("SELECT "));
+    assert!(!combined.contains("postgres://"));
+    assert!(!combined.contains("password"));
+    assert!(!combined.contains("secret"));
 }
 
 #[test]

@@ -96,13 +96,13 @@ pub use crate::redaction::{redact_message, redact_postgres_url};
 
 pub use crate::postgres::{
     inspect_postgres, inspect_postgres_command, is_user_schema, normalize_desired_state_text,
-    quote_postgres_identifier, render_constraint_sql, render_domain_sql, render_enum_sql,
-    render_extension_sql, render_function_sql, render_grant_sql, render_index_sql,
+    quote_postgres_identifier, render_aggregate_sql, render_constraint_sql, render_domain_sql,
+    render_enum_sql, render_extension_sql, render_function_sql, render_grant_sql, render_index_sql,
     render_materialized_view_sql, render_schema_sql, render_sequence_sql, render_table_sql,
-    render_table_sql_with_partition, render_trigger_sql, render_view_sql, ColumnInfo,
-    ConstraintInfo, DomainCheckInfo, DomainInfo, EnumInfo, ExtensionInfo, FunctionInfo, GrantInfo,
-    IndexInfo, InspectionCounts, InspectionReport, MaterializedViewInfo, PostgresInventory,
-    SchemaInfo, SequenceInfo, TableInfo, TriggerInfo, ViewInfo,
+    render_table_sql_with_partition, render_trigger_sql, render_view_sql, AggregateInfo,
+    ColumnInfo, ConstraintInfo, DomainCheckInfo, DomainInfo, EnumInfo, ExtensionInfo, FunctionInfo,
+    GrantInfo, IndexInfo, InspectionCounts, InspectionReport, MaterializedViewInfo,
+    PostgresInventory, SchemaInfo, SequenceInfo, TableInfo, TriggerInfo, ViewInfo,
 };
 pub use crate::reference_data::{
     compare_reference_data_table, data_compare_postgres_with_connection,
@@ -717,6 +717,51 @@ fn write_function_array_field(json: &mut String, name: &str, values: &[FunctionI
     json.push(']');
 }
 
+fn write_aggregate_array_field(json: &mut String, name: &str, values: &[AggregateInfo]) {
+    json.push(',');
+    write!(json, "\"{}\":[", escape_json(name)).ok();
+    for (index, value) in values.iter().enumerate() {
+        if index > 0 {
+            json.push(',');
+        }
+        json.push('{');
+        write_json_string_field(json, "schemaName", &value.schema_name, true);
+        write_json_string_field(json, "aggregateName", &value.aggregate_name, false);
+        write_json_string_field(json, "identityArguments", &value.identity_arguments, false);
+        write_json_string_field(
+            json,
+            "transitionFunctionSchema",
+            &value.transition_function_schema,
+            false,
+        );
+        write_json_string_field(
+            json,
+            "transitionFunctionName",
+            &value.transition_function_name,
+            false,
+        );
+        write_json_string_field(json, "stateType", &value.state_type, false);
+        write_json_optional_string_field(
+            json,
+            "finalFunctionSchema",
+            value.final_function_schema.as_deref(),
+        );
+        write_json_optional_string_field(
+            json,
+            "finalFunctionName",
+            value.final_function_name.as_deref(),
+        );
+        write_json_optional_string_field(
+            json,
+            "initialCondition",
+            value.initial_condition.as_deref(),
+        );
+        write_json_optional_string_field(json, "sortOperator", value.sort_operator.as_deref());
+        json.push('}');
+    }
+    json.push(']');
+}
+
 fn write_trigger_array_field(json: &mut String, name: &str, values: &[TriggerInfo]) {
     json.push(',');
     write!(json, "\"{}\":[", escape_json(name)).ok();
@@ -815,7 +860,7 @@ fn write_counts_field(json: &mut String, name: &str, counts: &InspectionCounts) 
     json.push(',');
     write!(
         json,
-        "\"{}\":{{\"schemas\":{},\"tables\":{},\"columns\":{},\"extensions\":{},\"enums\":{},\"domains\":{},\"sequences\":{},\"indexes\":{},\"views\":{},\"materializedViews\":{},\"constraints\":{},\"functions\":{},\"triggers\":{},\"grants\":{},\"rlsPolicies\":{}}}",
+        "\"{}\":{{\"schemas\":{},\"tables\":{},\"columns\":{},\"extensions\":{},\"enums\":{},\"domains\":{},\"sequences\":{},\"indexes\":{},\"views\":{},\"materializedViews\":{},\"constraints\":{},\"functions\":{},\"aggregates\":{},\"triggers\":{},\"grants\":{},\"rlsPolicies\":{}}}",
         escape_json(name),
         counts.schemas,
         counts.tables,
@@ -829,6 +874,7 @@ fn write_counts_field(json: &mut String, name: &str, counts: &InspectionCounts) 
         counts.materialized_views,
         counts.constraints,
         counts.functions,
+        counts.aggregates,
         counts.triggers,
         counts.grants,
         counts.rls_policies

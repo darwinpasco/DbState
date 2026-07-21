@@ -341,6 +341,8 @@ pub fn plan_postgres_with_inventory(
                 ObjectRef::Table { .. }
                 | ObjectRef::Extension(_)
                 | ObjectRef::Enum { .. }
+                | ObjectRef::Domain { .. }
+                | ObjectRef::Aggregate { .. }
                 | ObjectRef::Sequence { .. }
                 | ObjectRef::Index { .. }
                 | ObjectRef::View { .. }
@@ -526,6 +528,38 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                 ],
             };
         }
+        if matches!(input.object_ref, ObjectRef::Domain { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "createDomainReviewSql".to_string(),
+                operation_label: "Create Domain".to_string(),
+                safety_badge: "Review SQL".to_string(),
+                safety_level: "reviewOnly".to_string(),
+                operation_explanation:
+                    "DbState can generate review-only CREATE DOMAIN SQL for this new repository domain. DbState does not execute SQL."
+                        .to_string(),
+                operation_reasons: vec![
+                    "Domain exists in repository desired state and is missing from the target database."
+                        .to_string(),
+                    "DbState does not generate DROP DOMAIN.".to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::Aggregate { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "createAggregateReviewSql".to_string(),
+                operation_label: "Create Aggregate".to_string(),
+                safety_badge: "Review SQL".to_string(),
+                safety_level: "reviewOnly".to_string(),
+                operation_explanation:
+                    "DbState can generate review-only CREATE AGGREGATE SQL for this new repository aggregate. DbState does not execute SQL."
+                        .to_string(),
+                operation_reasons: vec![
+                    "Aggregate exists in repository desired state and is missing from the target database."
+                        .to_string(),
+                    "DbState does not generate DROP AGGREGATE.".to_string(),
+                ],
+            };
+        }
         if matches!(input.object_ref, ObjectRef::Trigger { .. }) {
             return PlanOperationMetadata {
                 operation_kind: "createTriggerReviewSql".to_string(),
@@ -633,6 +667,34 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                         .to_string(),
                 operation_reasons: vec![
                     "DROP FUNCTION generation is not available in Private Beta.".to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::Domain { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "databaseOnlyReview".to_string(),
+                operation_label: "Database Only".to_string(),
+                safety_badge: "Database Only".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Domain exists only in the target database. DbState will not generate destructive SQL to remove database-only domains."
+                        .to_string(),
+                operation_reasons: vec![
+                    "DROP DOMAIN generation is not available in Private Beta.".to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::Aggregate { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "databaseOnlyReview".to_string(),
+                operation_label: "Database Only".to_string(),
+                safety_badge: "Database Only".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Aggregate exists only in the target database. DbState will not generate destructive SQL to remove database-only aggregates."
+                        .to_string(),
+                operation_reasons: vec![
+                    "DROP AGGREGATE generation is not available in Private Beta.".to_string(),
                 ],
             };
         }
@@ -749,6 +811,36 @@ fn classify_plan_operation(input: PlanOperationInput<'_>) -> PlanOperationMetada
                         .to_string(),
                 operation_reasons: vec![
                     "DbState does not generate DROP FUNCTION or replacement CREATE OR REPLACE FUNCTION SQL for changed functions."
+                        .to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::Domain { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "manualReviewRequired".to_string(),
+                operation_label: "Manual Review".to_string(),
+                safety_badge: "Manual Review".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Domain differs, but changed domains are manual-review only in this version."
+                        .to_string(),
+                operation_reasons: vec![
+                    "DbState does not generate DROP DOMAIN, ALTER DOMAIN, or replacement domain SQL for changed domains."
+                        .to_string(),
+                ],
+            };
+        }
+        if matches!(input.object_ref, ObjectRef::Aggregate { .. }) {
+            return PlanOperationMetadata {
+                operation_kind: "manualReviewRequired".to_string(),
+                operation_label: "Manual Review".to_string(),
+                safety_badge: "Manual Review".to_string(),
+                safety_level: "manualReview".to_string(),
+                operation_explanation:
+                    "Aggregate differs, but changed aggregates are manual-review only in this version."
+                        .to_string(),
+                operation_reasons: vec![
+                    "DbState does not generate DROP AGGREGATE, ALTER AGGREGATE, or replacement aggregate SQL for changed aggregates."
                         .to_string(),
                 ],
             };
@@ -1063,7 +1155,7 @@ pub(crate) fn parse_repository_table_columns(content: &str) -> Option<Vec<PlanCo
         if !in_create_table {
             continue;
         }
-        if line == ");" {
+        if line == ");" || line.starts_with(") PARTITION BY ") {
             break;
         }
         if line.is_empty() || line.starts_with("--") {

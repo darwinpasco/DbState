@@ -100,6 +100,14 @@ pub(crate) const EXPECTED_PATHS: &[ExpectedPath] = &[
         kind: PathKind::Directory,
     },
     ExpectedPath {
+        relative: "database/objects/domains",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
+        relative: "database/objects/aggregates",
+        kind: PathKind::Directory,
+    },
+    ExpectedPath {
         relative: "database/objects/sequences",
         kind: PathKind::Directory,
     },

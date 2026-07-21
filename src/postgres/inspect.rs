@@ -13,6 +13,7 @@ pub struct TableInfo {
     pub schema_name: String,
     pub table_name: String,
     pub table_type: String,
+    pub partition_key: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -39,6 +40,22 @@ pub struct EnumInfo {
     pub schema_name: String,
     pub enum_name: String,
     pub labels: Vec<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DomainCheckInfo {
+    pub constraint_name: String,
+    pub definition: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DomainInfo {
+    pub schema_name: String,
+    pub domain_name: String,
+    pub base_type: String,
+    pub is_not_null: bool,
+    pub default_expression: Option<String>,
+    pub check_constraints: Vec<DomainCheckInfo>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +123,20 @@ pub struct FunctionInfo {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregateInfo {
+    pub schema_name: String,
+    pub aggregate_name: String,
+    pub identity_arguments: String,
+    pub transition_function_schema: String,
+    pub transition_function_name: String,
+    pub state_type: String,
+    pub final_function_schema: Option<String>,
+    pub final_function_name: Option<String>,
+    pub initial_condition: Option<String>,
+    pub sort_operator: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TriggerInfo {
     pub schema_name: String,
     pub relation_name: String,
@@ -152,12 +183,14 @@ pub struct InspectionCounts {
     pub columns: usize,
     pub extensions: usize,
     pub enums: usize,
+    pub domains: usize,
     pub sequences: usize,
     pub indexes: usize,
     pub views: usize,
     pub materialized_views: usize,
     pub constraints: usize,
     pub functions: usize,
+    pub aggregates: usize,
     pub triggers: usize,
     pub grants: usize,
     pub rls_policies: usize,
@@ -174,12 +207,14 @@ pub struct InspectionReport {
     pub columns: Vec<ColumnInfo>,
     pub extensions: Vec<ExtensionInfo>,
     pub enums: Vec<EnumInfo>,
+    pub domains: Vec<DomainInfo>,
     pub sequences: Vec<SequenceInfo>,
     pub indexes: Vec<IndexInfo>,
     pub views: Vec<ViewInfo>,
     pub materialized_views: Vec<MaterializedViewInfo>,
     pub constraints: Vec<ConstraintInfo>,
     pub functions: Vec<FunctionInfo>,
+    pub aggregates: Vec<AggregateInfo>,
     pub triggers: Vec<TriggerInfo>,
     pub grants: Vec<GrantInfo>,
     pub rls_policies: Vec<RlsPolicyInfo>,
@@ -222,6 +257,7 @@ pub(crate) fn inspect_postgres_scoped_command(
             report.columns = inventory.columns;
             report.extensions = inventory.extensions;
             report.enums = inventory.enums;
+            report.domains = inventory.domains;
             report.sequences = inventory.sequences;
             report.indexes = inventory.indexes;
             report.views = inventory.views;
@@ -242,12 +278,14 @@ pub(crate) fn inspect_postgres_scoped_command(
                 columns: report.columns.len(),
                 extensions: report.extensions.len(),
                 enums: report.enums.len(),
+                domains: report.domains.len(),
                 sequences: report.sequences.len(),
                 indexes: report.indexes.len(),
                 views: report.views.len(),
                 materialized_views: report.materialized_views.len(),
                 constraints: report.constraints.len(),
                 functions: report.functions.len(),
+                aggregates: report.aggregates.len(),
                 triggers: report.triggers.len(),
                 grants: report.grants.len(),
                 rls_policies: report.rls_policies.len(),
@@ -280,6 +318,7 @@ fn apply_inspection_scope(
         report.tables.retain(|item| item.schema_name == schema);
         report.columns.retain(|item| item.schema_name == schema);
         report.enums.retain(|item| item.schema_name == schema);
+        report.domains.retain(|item| item.schema_name == schema);
         report.sequences.retain(|item| item.schema_name == schema);
         report.indexes.retain(|item| item.schema_name == schema);
         report.views.retain(|item| item.schema_name == schema);
@@ -288,6 +327,7 @@ fn apply_inspection_scope(
             .retain(|item| item.schema_name == schema);
         report.constraints.retain(|item| item.schema_name == schema);
         report.functions.retain(|item| item.schema_name == schema);
+        report.aggregates.retain(|item| item.schema_name == schema);
         report.triggers.retain(|item| item.schema_name == schema);
         report.grants.retain(|item| item.schema_name == schema);
         report
@@ -325,6 +365,7 @@ fn apply_inspection_scope(
             .columns
             .retain(|item| item.schema_name == schema && item.table_name == table_name);
         report.enums.clear();
+        report.domains.clear();
         report.sequences.clear();
         report.views.clear();
         report.materialized_views.clear();
@@ -335,6 +376,7 @@ fn apply_inspection_scope(
             .constraints
             .retain(|item| item.schema_name == schema && item.table_name == table_name);
         report.functions.clear();
+        report.aggregates.clear();
         report
             .triggers
             .retain(|item| item.schema_name == schema && item.relation_name == table_name);
@@ -396,6 +438,10 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
                         WHEN 'r' THEN 'BASE TABLE'
                         WHEN 'p' THEN 'PARTITIONED TABLE'
                         ELSE c.relkind::text
+                    END,
+                    CASE
+                        WHEN c.relkind = 'p' THEN pg_catalog.pg_get_partkeydef(c.oid)
+                        ELSE NULL
                     END
              FROM pg_catalog.pg_class c
              JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
@@ -462,6 +508,30 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
             &[],
         )
         .map_err(|_| "PostgreSQL schema inspection failed while reading enums.".to_string())?;
+
+    let domain_rows = client
+        .query(
+            "SELECT n.nspname::text,
+                    t.typname::text,
+                    pg_catalog.format_type(t.typbasetype, t.typtypmod)::text,
+                    t.typnotnull::bool,
+                    pg_catalog.pg_get_expr(t.typdefaultbin, 0)::text,
+                    con.conname::text,
+                    pg_catalog.pg_get_constraintdef(con.oid, true)::text
+             FROM pg_catalog.pg_type t
+             JOIN pg_catalog.pg_namespace n ON n.oid = t.typnamespace
+             LEFT JOIN pg_catalog.pg_constraint con
+               ON con.contypid = t.oid
+              AND con.contype = 'c'
+             WHERE t.typtype = 'd'
+               AND n.nspname <> 'pg_catalog'
+               AND n.nspname <> 'information_schema'
+               AND n.nspname NOT LIKE 'pg_toast%'
+               AND n.nspname NOT LIKE 'pg_%'
+             ORDER BY n.nspname, t.typname, con.conname NULLS FIRST",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading domains.".to_string())?;
 
     let sequence_rows = client
         .query(
@@ -616,6 +686,40 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
             &[],
         )
         .map_err(|_| "PostgreSQL schema inspection failed while reading functions.".to_string())?;
+
+    let aggregate_rows = client
+        .query(
+            "SELECT ns.nspname::text,
+                    proc.proname::text,
+                    pg_catalog.pg_get_function_identity_arguments(proc.oid)::text,
+                    trans_ns.nspname::text,
+                    trans_proc.proname::text,
+                    pg_catalog.format_type(agg.aggtranstype, NULL)::text,
+                    final_ns.nspname::text,
+                    final_proc.proname::text,
+                    agg.agginitval::text,
+                    CASE
+                        WHEN agg.aggsortop = 0 THEN NULL
+                        ELSE agg.aggsortop::regoperator::text
+                    END::text
+             FROM pg_catalog.pg_proc proc
+             JOIN pg_catalog.pg_namespace ns ON ns.oid = proc.pronamespace
+             JOIN pg_catalog.pg_aggregate agg ON agg.aggfnoid = proc.oid
+             JOIN pg_catalog.pg_proc trans_proc ON trans_proc.oid = agg.aggtransfn
+             JOIN pg_catalog.pg_namespace trans_ns ON trans_ns.oid = trans_proc.pronamespace
+             LEFT JOIN pg_catalog.pg_proc final_proc ON final_proc.oid = agg.aggfinalfn
+             LEFT JOIN pg_catalog.pg_namespace final_ns ON final_ns.oid = final_proc.pronamespace
+             WHERE proc.prokind = 'a'
+               AND ns.nspname <> 'pg_catalog'
+               AND ns.nspname <> 'information_schema'
+               AND ns.nspname NOT LIKE 'pg_toast%'
+               AND ns.nspname NOT LIKE 'pg_%'
+             ORDER BY ns.nspname,
+                      proc.proname,
+                      pg_catalog.pg_get_function_identity_arguments(proc.oid)",
+            &[],
+        )
+        .map_err(|_| "PostgreSQL schema inspection failed while reading aggregates.".to_string())?;
 
     let trigger_rows = client
         .query(
@@ -799,6 +903,7 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
             schema_name: row.get(0),
             table_name: row.get(1),
             table_type: row.get(2),
+            partition_key: row.get(3),
         })
         .collect();
 
@@ -843,6 +948,39 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
             labels,
         })
         .collect();
+
+    let mut domain_map: BTreeMap<(String, String), DomainInfo> = BTreeMap::new();
+    for row in domain_rows {
+        let schema_name = try_get_catalog_string(&row, 0, "domain schema")?;
+        let domain_name = try_get_catalog_string(&row, 1, "domain name")?;
+        let base_type = try_get_catalog_string(&row, 2, "domain base type")?;
+        let is_not_null = try_get_catalog_bool(&row, 3, "domain nullability")?;
+        let default_expression =
+            try_get_catalog_optional_string(&row, 4, "domain default expression")?;
+        let domain = domain_map
+            .entry((schema_name.clone(), domain_name.clone()))
+            .or_insert_with(|| DomainInfo {
+                schema_name,
+                domain_name,
+                base_type,
+                is_not_null,
+                default_expression,
+                check_constraints: Vec::new(),
+            });
+        if let Some(constraint_name) =
+            try_get_catalog_optional_string(&row, 5, "domain check constraint name")?
+        {
+            if let Some(definition) =
+                try_get_catalog_optional_string(&row, 6, "domain check constraint definition")?
+            {
+                domain.check_constraints.push(DomainCheckInfo {
+                    constraint_name,
+                    definition,
+                });
+            }
+        }
+    }
+    let domains = domain_map.into_values().collect();
 
     let mut sequences = Vec::new();
     for row in sequence_rows {
@@ -925,6 +1063,42 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
             security_definer: try_get_catalog_bool(&row, 6, "function security definer")?,
             is_strict: try_get_catalog_bool(&row, 7, "function strictness")?,
             definition: try_get_catalog_string(&row, 8, "function definition")?,
+        });
+    }
+
+    let mut aggregates = Vec::new();
+    for row in aggregate_rows {
+        aggregates.push(AggregateInfo {
+            schema_name: try_get_catalog_string(&row, 0, "aggregate schema")?,
+            aggregate_name: try_get_catalog_string(&row, 1, "aggregate name")?,
+            identity_arguments: try_get_catalog_string(&row, 2, "aggregate identity arguments")?,
+            transition_function_schema: try_get_catalog_string(
+                &row,
+                3,
+                "aggregate transition function schema",
+            )?,
+            transition_function_name: try_get_catalog_string(
+                &row,
+                4,
+                "aggregate transition function name",
+            )?,
+            state_type: try_get_catalog_string(&row, 5, "aggregate state type")?,
+            final_function_schema: try_get_catalog_optional_string(
+                &row,
+                6,
+                "aggregate final function schema",
+            )?,
+            final_function_name: try_get_catalog_optional_string(
+                &row,
+                7,
+                "aggregate final function name",
+            )?,
+            initial_condition: try_get_catalog_optional_string(
+                &row,
+                8,
+                "aggregate initial condition",
+            )?,
+            sort_operator: try_get_catalog_optional_string(&row, 9, "aggregate sort operator")?,
         });
     }
 
@@ -1062,12 +1236,14 @@ pub fn inspect_postgres(connection_url: &str) -> Result<PostgresInventory, Strin
         columns,
         extensions,
         enums,
+        domains,
         sequences,
         indexes,
         views,
         materialized_views,
         constraints,
         functions,
+        aggregates,
         triggers,
         grants,
         rls_policies,
@@ -1141,12 +1317,14 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             "columns".to_string(),
             "extensions".to_string(),
             "enums".to_string(),
+            "domains".to_string(),
             "sequences".to_string(),
             "indexes".to_string(),
             "views".to_string(),
             "materializedViews".to_string(),
             "constraints".to_string(),
             "functions".to_string(),
+            "aggregates".to_string(),
             "triggers".to_string(),
             "grants".to_string(),
             "rlsPolicies".to_string(),
@@ -1156,12 +1334,14 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
         columns: Vec::new(),
         extensions: Vec::new(),
         enums: Vec::new(),
+        domains: Vec::new(),
         sequences: Vec::new(),
         indexes: Vec::new(),
         views: Vec::new(),
         materialized_views: Vec::new(),
         constraints: Vec::new(),
         functions: Vec::new(),
+        aggregates: Vec::new(),
         triggers: Vec::new(),
         grants: Vec::new(),
         rls_policies: Vec::new(),
@@ -1171,12 +1351,14 @@ pub(crate) fn empty_inspection_report(command: CommandKind) -> InspectionReport 
             columns: 0,
             extensions: 0,
             enums: 0,
+            domains: 0,
             sequences: 0,
             indexes: 0,
             views: 0,
             materialized_views: 0,
             constraints: 0,
             functions: 0,
+            aggregates: 0,
             triggers: 0,
             grants: 0,
             rls_policies: 0,
@@ -1213,6 +1395,7 @@ impl InspectionReport {
         writeln!(text, "Column count: {}", self.counts.columns).ok();
         writeln!(text, "Extension count: {}", self.counts.extensions).ok();
         writeln!(text, "Enum count: {}", self.counts.enums).ok();
+        writeln!(text, "Domain count: {}", self.counts.domains).ok();
         writeln!(text, "Sequence count: {}", self.counts.sequences).ok();
         writeln!(text, "Index count: {}", self.counts.indexes).ok();
         writeln!(text, "View count: {}", self.counts.views).ok();
@@ -1224,6 +1407,7 @@ impl InspectionReport {
         .ok();
         writeln!(text, "Constraint count: {}", self.counts.constraints).ok();
         writeln!(text, "Function count: {}", self.counts.functions).ok();
+        writeln!(text, "Aggregate count: {}", self.counts.aggregates).ok();
         writeln!(text, "Trigger count: {}", self.counts.triggers).ok();
         writeln!(text, "Grant count: {}", self.counts.grants).ok();
         writeln!(text, "RLS policy count: {}", self.counts.rls_policies).ok();
@@ -1250,6 +1434,15 @@ impl InspectionReport {
                 text,
                 "  - {}.{}",
                 enum_info.schema_name, enum_info.enum_name
+            )
+            .ok();
+        }
+        writeln!(text, "Domains:").ok();
+        for domain in &self.domains {
+            writeln!(
+                text,
+                "  - {}.{} AS {}",
+                domain.schema_name, domain.domain_name, domain.base_type
             )
             .ok();
         }
@@ -1302,6 +1495,15 @@ impl InspectionReport {
                 text,
                 "  - {}.{}({})",
                 function.schema_name, function.function_name, function.identity_arguments
+            )
+            .ok();
+        }
+        writeln!(text, "Aggregates:").ok();
+        for aggregate in &self.aggregates {
+            writeln!(
+                text,
+                "  - {}.{}({})",
+                aggregate.schema_name, aggregate.aggregate_name, aggregate.identity_arguments
             )
             .ok();
         }
@@ -1360,6 +1562,7 @@ impl InspectionReport {
         write_column_array_field(&mut json, "columns", &self.columns);
         write_extension_array_field(&mut json, "extensions", &self.extensions);
         write_enum_array_field(&mut json, "enums", &self.enums);
+        write_domain_array_field(&mut json, "domains", &self.domains);
         write_sequence_array_field(&mut json, "sequences", &self.sequences);
         write_index_array_field(&mut json, "indexes", &self.indexes);
         write_view_array_field(&mut json, "views", &self.views);
@@ -1370,6 +1573,7 @@ impl InspectionReport {
         );
         write_constraint_array_field(&mut json, "constraints", &self.constraints);
         write_function_array_field(&mut json, "functions", &self.functions);
+        write_aggregate_array_field(&mut json, "aggregates", &self.aggregates);
         write_trigger_array_field(&mut json, "triggers", &self.triggers);
         write_grant_array_field(&mut json, "grants", &self.grants);
         write_rls_policy_array_field(&mut json, "rlsPolicies", &self.rls_policies);

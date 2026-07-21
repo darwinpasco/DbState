@@ -6,6 +6,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 
+pub(crate) fn is_supported_table_desired_state_type(table_type: &str) -> bool {
+    matches!(table_type, "BASE TABLE" | "PARTITIONED TABLE")
+}
+
 pub(crate) fn discover_repository_objects(root: &Path) -> Result<RepositoryImport, String> {
     let mut import = RepositoryImport {
         objects: BTreeMap::new(),
@@ -18,6 +22,8 @@ pub(crate) fn discover_repository_objects(root: &Path) -> Result<RepositoryImpor
     discover_table_files(root, &mut import)?;
     discover_extension_files(root, &mut import)?;
     discover_enum_files(root, &mut import)?;
+    discover_domain_files(root, &mut import)?;
+    discover_aggregate_files(root, &mut import)?;
     discover_sequence_files(root, &mut import)?;
     discover_index_files(root, &mut import)?;
     discover_view_files(root, &mut import)?;
@@ -126,6 +132,59 @@ fn discover_enum_files(root: &Path, import: &mut RepositoryImport) -> Result<(),
         RepositoryObjectType::Enum,
         enum_key,
     )
+}
+
+fn discover_domain_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    discover_two_part_object_files(
+        root,
+        import,
+        "database/objects/domains",
+        RepositoryObjectType::Domain,
+        domain_key,
+    )
+}
+
+fn discover_aggregate_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
+    let dir = root.join("database/objects/aggregates");
+    for entry in fs::read_dir(&dir)
+        .map_err(|error| format!("Could not read database/objects/aggregates: {error}"))?
+    {
+        let entry =
+            entry.map_err(|error| format!("Could not read aggregate file entry: {error}"))?;
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let file_name = entry.file_name().to_string_lossy().to_string();
+        let relative_path = format!("database/objects/aggregates/{file_name}");
+        let Some((schema, aggregate, signature)) = three_part_name_from_file(&file_name) else {
+            import.skipped.push(relative_path);
+            continue;
+        };
+        if safe_file_component(&schema).is_err()
+            || safe_file_component(&aggregate).is_err()
+            || safe_file_component(&signature).is_err()
+        {
+            import.skipped.push(relative_path);
+            continue;
+        }
+        let content = fs::read_to_string(&path)
+            .map_err(|error| format!("Could not read {relative_path}: {error}"))?;
+        let object_name = format!("{aggregate}.{signature}");
+        import.objects.insert(
+            aggregate_key(&schema, &object_name),
+            DesiredStateObject {
+                object_type: RepositoryObjectType::Aggregate,
+                schema_name: schema,
+                table_name: None,
+                object_name,
+                parent_name: None,
+                relative_path,
+                content,
+            },
+        );
+    }
+    Ok(())
 }
 
 fn discover_sequence_files(root: &Path, import: &mut RepositoryImport) -> Result<(), String> {
@@ -594,6 +653,8 @@ pub(crate) fn render_database_objects_for_selection(
     let mut table_names = Vec::new();
     let mut include_extensions = false;
     let mut enum_names = Vec::new();
+    let mut domain_names = Vec::new();
+    let mut aggregate_names = Vec::new();
     let mut sequence_names = Vec::new();
     let mut index_names = Vec::new();
     let mut view_names = Vec::new();
@@ -611,7 +672,7 @@ pub(crate) fn render_database_objects_for_selection(
                 inventory
                     .tables
                     .iter()
-                    .filter(|table| table.table_type == "BASE TABLE")
+                    .filter(|table| is_supported_table_desired_state_type(&table.table_type))
                     .map(|table| (table.schema_name.clone(), table.table_name.clone())),
             );
             enum_names.extend(
@@ -620,6 +681,19 @@ pub(crate) fn render_database_objects_for_selection(
                     .iter()
                     .map(|item| (item.schema_name.clone(), item.enum_name.clone())),
             );
+            domain_names.extend(
+                inventory
+                    .domains
+                    .iter()
+                    .map(|item| (item.schema_name.clone(), item.domain_name.clone())),
+            );
+            aggregate_names.extend(inventory.aggregates.iter().map(|item| {
+                (
+                    item.schema_name.clone(),
+                    item.aggregate_name.clone(),
+                    item.identity_arguments.clone(),
+                )
+            }));
             sequence_names.extend(
                 inventory
                     .sequences
@@ -696,7 +770,8 @@ pub(crate) fn render_database_objects_for_selection(
                     .tables
                     .iter()
                     .filter(|table| {
-                        table.schema_name == *schema && table.table_type == "BASE TABLE"
+                        table.schema_name == *schema
+                            && is_supported_table_desired_state_type(&table.table_type)
                     })
                     .map(|table| (table.schema_name.clone(), table.table_name.clone())),
             );
@@ -706,6 +781,26 @@ pub(crate) fn render_database_objects_for_selection(
                     .iter()
                     .filter(|item| item.schema_name == *schema)
                     .map(|item| (item.schema_name.clone(), item.enum_name.clone())),
+            );
+            domain_names.extend(
+                inventory
+                    .domains
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| (item.schema_name.clone(), item.domain_name.clone())),
+            );
+            aggregate_names.extend(
+                inventory
+                    .aggregates
+                    .iter()
+                    .filter(|item| item.schema_name == *schema)
+                    .map(|item| {
+                        (
+                            item.schema_name.clone(),
+                            item.aggregate_name.clone(),
+                            item.identity_arguments.clone(),
+                        )
+                    }),
             );
             sequence_names.extend(
                 inventory
@@ -818,9 +913,22 @@ pub(crate) fn render_database_objects_for_selection(
             if inventory.tables.iter().any(|candidate| {
                 candidate.schema_name == *schema
                     && candidate.table_name == *table
-                    && candidate.table_type == "BASE TABLE"
+                    && is_supported_table_desired_state_type(&candidate.table_type)
             }) {
                 table_names.push((schema.clone(), table.clone()));
+            }
+            for column in inventory
+                .columns
+                .iter()
+                .filter(|column| column.schema_name == *schema && column.table_name == *table)
+            {
+                domain_names.extend(
+                    inventory
+                        .domains
+                        .iter()
+                        .filter(|domain| column_uses_domain(column, domain))
+                        .map(|domain| (domain.schema_name.clone(), domain.domain_name.clone())),
+                );
             }
             index_names.extend(
                 inventory
@@ -902,6 +1010,10 @@ pub(crate) fn render_database_objects_for_selection(
     table_names.dedup();
     enum_names.sort();
     enum_names.dedup();
+    domain_names.sort();
+    domain_names.dedup();
+    aggregate_names.sort();
+    aggregate_names.dedup();
     sequence_names.sort();
     sequence_names.dedup();
     index_names.sort();
@@ -943,6 +1055,11 @@ pub(crate) fn render_database_objects_for_selection(
             .filter(|column| column.schema_name == schema && column.table_name == table)
             .cloned()
             .collect();
+        let partition_key = inventory
+            .tables
+            .iter()
+            .find(|candidate| candidate.schema_name == schema && candidate.table_name == table)
+            .and_then(|table| table.partition_key.as_deref());
         let object = DesiredStateObject {
             object_type: RepositoryObjectType::Table,
             schema_name: schema.clone(),
@@ -950,7 +1067,7 @@ pub(crate) fn render_database_objects_for_selection(
             object_name: table.clone(),
             parent_name: None,
             relative_path,
-            content: render_table_sql(&schema, &table, &columns),
+            content: render_table_sql_with_partition(&schema, &table, &columns, partition_key),
         };
         objects.insert(object_key(&object), object);
     }
@@ -986,6 +1103,48 @@ pub(crate) fn render_database_objects_for_selection(
             parent_name: None,
             relative_path,
             content: render_enum_sql(enum_info),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    for (schema, domain_name) in domain_names {
+        let Some(domain) = inventory
+            .domains
+            .iter()
+            .find(|item| item.schema_name == schema && item.domain_name == domain_name)
+        else {
+            continue;
+        };
+        let relative_path = domain_file_path(&schema, &domain_name)?;
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Domain,
+            schema_name: schema.clone(),
+            table_name: None,
+            object_name: domain_name.clone(),
+            parent_name: None,
+            relative_path,
+            content: render_domain_sql(domain),
+        };
+        objects.insert(object_key(&object), object);
+    }
+    for (schema, aggregate_name, identity_arguments) in aggregate_names {
+        let Some(aggregate) = inventory.aggregates.iter().find(|item| {
+            item.schema_name == schema
+                && item.aggregate_name == aggregate_name
+                && item.identity_arguments == identity_arguments
+        }) else {
+            continue;
+        };
+        let relative_path = aggregate_file_path(&schema, &aggregate_name, &identity_arguments)?;
+        let signature = function_identity_slug(&identity_arguments)?;
+        let object_name = format!("{aggregate_name}.{signature}");
+        let object = DesiredStateObject {
+            object_type: RepositoryObjectType::Aggregate,
+            schema_name: schema.clone(),
+            table_name: None,
+            object_name,
+            parent_name: None,
+            relative_path,
+            content: render_aggregate_sql(aggregate),
         };
         objects.insert(object_key(&object), object);
     }
@@ -1195,6 +1354,18 @@ pub(crate) fn render_database_objects_for_selection(
         objects.insert(object_key(&object), object);
     }
     Ok(objects)
+}
+
+fn column_uses_domain(column: &ColumnInfo, domain: &DomainInfo) -> bool {
+    let data_type = column.data_type.trim_matches('"');
+    data_type == domain.domain_name
+        || data_type == format!("{}.{}", domain.schema_name, domain.domain_name)
+        || data_type
+            == format!(
+                "{}.{}",
+                quote_postgres_identifier(&domain.schema_name),
+                quote_postgres_identifier(&domain.domain_name)
+            )
 }
 
 pub(crate) fn select_repository_objects(

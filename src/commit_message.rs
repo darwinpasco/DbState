@@ -444,6 +444,7 @@ fn dbstate_path(path: &str) -> Option<(String, String, Option<String>)> {
             "views" => "view",
             "materialized-views" => "materialized view",
             "functions" => "function",
+            "aggregates" => "aggregate",
             "triggers" => "trigger",
             "constraints" => "constraint",
             "grants" => "grant",

@@ -256,6 +256,7 @@ const UI_HTML: &str = r#"<!doctype html>
         <div class="object-filter-row" aria-label="Object type filters">
           <label><input type="checkbox" checked disabled> schemas</label>
           <label><input type="checkbox" checked disabled> tables</label>
+          <label><input type="checkbox" checked disabled> aggregates</label>
           <label><input type="checkbox" disabled> indexes future</label>
           <label><input type="checkbox" disabled> views future</label>
           <label><input type="checkbox" checked disabled> materialized views</label>
@@ -3340,7 +3341,7 @@ const UI_JS: &str = r#"(function () {
     select.options[0].value = "all";
     appendOption(select, "schema", "Schema");
     appendOption(select, "table", "Table");
-    ["extension", "enum", "sequence", "index", "view", "constraint", "function", "trigger", "grant", "rlsPolicy"].forEach(function (type) {
+    ["extension", "enum", "domain", "aggregate", "sequence", "index", "view", "materializedView", "constraint", "function", "trigger", "grant", "rlsPolicy"].forEach(function (type) {
       if (rows.some(function (row) { return row.objectType === type; })) {
         appendOption(select, type, type.charAt(0).toUpperCase() + type.slice(1));
       }
@@ -3506,6 +3507,16 @@ const UI_JS: &str = r#"(function () {
           objectType: "domain",
           schema: fileBase.slice(0, dot),
           name: fileBase.slice(dot + 1)
+        };
+      }
+    }
+    if (normalized.indexOf("database/objects/aggregates/") >= 0) {
+      const parts = fileBase.split(".");
+      if (parts.length >= 3) {
+        return {
+          objectType: "aggregate",
+          schema: parts[0],
+          name: parts.slice(1).join(".")
         };
       }
     }
@@ -3675,6 +3686,13 @@ const UI_JS: &str = r#"(function () {
       const identity = splitIdentity(text);
       return { objectType: "materializedView", schema: identity.schema, name: identity.name };
     }
+    if (text.indexOf("aggregate:") === 0) {
+      const identity = text.slice("aggregate:".length);
+      const parts = identity.split(".");
+      if (parts.length >= 3) {
+        return { objectType: "aggregate", schema: parts[0], name: parts.slice(1).join(".") };
+      }
+    }
     if (text.indexOf("constraint:") === 0) {
       const identity = text.slice("constraint:".length);
       const parts = identity.split(".");
@@ -3730,7 +3748,7 @@ const UI_JS: &str = r#"(function () {
     if (text === "reference table") {
       return "referenceDataTable";
     }
-    if (["schema", "table", "column", "extension", "enum", "sequence", "index", "view", "materializedView", "constraint", "function", "trigger", "grant", "rlsPolicy", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
+    if (["schema", "table", "column", "extension", "enum", "domain", "aggregate", "sequence", "index", "view", "materializedView", "constraint", "function", "trigger", "grant", "rlsPolicy", "referenceDataTable", "referenceDataRow"].indexOf(text) >= 0) {
       return text;
     }
     return text || "unknown";
@@ -3896,6 +3914,23 @@ const UI_JS: &str = r#"(function () {
             objectType: "domain",
             schema: item.schemaName,
             name: item.domainName,
+            status: "inspected",
+            operation: "",
+            warnings: [],
+            source: "PostgreSQL inspect",
+            target: "Read-only catalog view",
+            raw: item
+          });
+        });
+      }
+      if (Array.isArray(data.aggregates)) {
+        data.aggregates.forEach(function (item) {
+          const signature = functionIdentitySlug(item.identityArguments || "");
+          rows.push({
+            objectRef: "aggregate:" + item.schemaName + "." + item.aggregateName + "." + signature,
+            objectType: "aggregate",
+            schema: item.schemaName,
+            name: item.aggregateName + "." + signature,
             status: "inspected",
             operation: "",
             warnings: [],

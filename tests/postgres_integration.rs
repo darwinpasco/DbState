@@ -169,6 +169,21 @@ fn local_postgres_slice16_fixture_inspection_does_not_panic() {
             && enum_info.enum_name == "account_status"
             && enum_info.labels == vec!["active".to_string(), "closed".to_string()]
     }));
+    assert!(inventory.domains.iter().any(|domain| {
+        domain.schema_name == "dbstate_slice16"
+            && domain.domain_name == "account_year"
+            && domain.base_type == "integer"
+            && domain
+                .check_constraints
+                .iter()
+                .any(|check| check.definition.contains("VALUE >= 1901"))
+    }));
+    assert!(inventory.tables.iter().any(|table| {
+        table.schema_name == "dbstate_slice16"
+            && table.table_name == "payment"
+            && table.table_type == "PARTITIONED TABLE"
+            && table.partition_key.as_deref() == Some("RANGE (payment_date)")
+    }));
     assert!(inventory.sequences.iter().any(|sequence| {
         sequence.schema_name == "dbstate_slice16"
             && sequence.sequence_name == "account_number_seq"
@@ -179,6 +194,14 @@ fn local_postgres_slice16_fixture_inspection_does_not_panic() {
             && index.table_name == "sample_accounts"
             && index.index_name == "sample_accounts_code_idx"
     }));
+    assert!(inventory.aggregates.iter().any(|aggregate| {
+        aggregate.schema_name == "dbstate_slice16"
+            && aggregate.aggregate_name == "account_codes"
+            && aggregate.identity_arguments == "text"
+            && aggregate.transition_function_schema == "dbstate_slice16"
+            && aggregate.transition_function_name == "_account_codes"
+            && aggregate.state_type == "text"
+    }));
     assert!(inventory.views.iter().any(|view| {
         view.schema_name == "dbstate_slice16" && view.view_name == "active_accounts"
     }));
@@ -188,6 +211,9 @@ fn local_postgres_slice16_fixture_inspection_does_not_panic() {
 
     assert!(report.success, "{:?}", report.errors);
     assert!(json.contains("\"extensions\""));
+    assert!(json.contains("\"domains\""));
+    assert!(json.contains("\"partitionKey\":\"RANGE (payment_date)\""));
+    assert!(json.contains("\"aggregates\""));
     assert!(json.contains("\"sequences\""));
     assert!(json.contains("\"indexes\""));
     assert!(json.contains("\"views\""));
