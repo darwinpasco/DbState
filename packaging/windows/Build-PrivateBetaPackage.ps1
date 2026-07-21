@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Version = "v0.1.0-private-beta.1",
+    [string]$Version = "v0.1.0-private-beta.2",
     [Parameter(Mandatory = $true)][string]$InstallerPath,
     [string]$OutputRoot = "dist/private-beta"
 )
@@ -132,6 +132,8 @@ Do not use production, UAT, staging, shared databases, or customer data for priv
 - `docs/52-private-beta-known-limitations.md`
 - `docs/53-private-beta-installer-distribution.md`
 - `docs/54-private-beta-smoke-test-matrix.md`
+- `docs/59-private-beta-2-release-readiness.md`
+- `docs/60-private-beta-2-tester-onboarding.md`
 
 ## Safety Reminders
 
@@ -172,7 +174,7 @@ Installer was not found:
 
 Build the installer first, or pass -InstallerPath to the generated setup executable.
 Example:
-  .\packaging\windows\Build-PrivateBetaPackage.ps1 -Version v0.1.0-private-beta.1 -InstallerPath .\packaging\windows\out\DbState-PostgreSQL-v0.1.0-alpha.3-setup.exe
+  .\packaging\windows\Build-PrivateBetaPackage.ps1 -Version v0.1.0-private-beta.2 -InstallerPath .\packaging\windows\out\DbState-PostgreSQL-v0.1.0-private-beta.2-setup.exe
 "@
 }
 
@@ -201,7 +203,9 @@ $docNames = @(
     "49-private-beta-feedback-template.md",
     "52-private-beta-known-limitations.md",
     "53-private-beta-installer-distribution.md",
-    "54-private-beta-smoke-test-matrix.md"
+    "54-private-beta-smoke-test-matrix.md",
+    "59-private-beta-2-release-readiness.md",
+    "60-private-beta-2-tester-onboarding.md"
 )
 
 foreach ($docName in $docNames) {

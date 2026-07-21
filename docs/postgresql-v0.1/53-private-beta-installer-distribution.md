@@ -73,7 +73,7 @@ Do not commit generated installer binaries.
 Generate a SHA256 hash:
 
 ```powershell
-Get-FileHash packaging\windows\out\DbState-PostgreSQL-v0.1.0-alpha.3-setup.exe -Algorithm SHA256
+Get-FileHash packaging\windows\out\DbState-PostgreSQL-v0.1.0-private-beta.2-setup.exe -Algorithm SHA256
 ```
 
 Send the hash with the installer so testers can verify the file they received.
@@ -108,7 +108,7 @@ The distribution assembly script creates a versioned folder with the installer, 
 ```powershell
 .\packaging\windows\Build-PrivateBetaPackage.ps1 `
   -Version v0.1.0-private-beta.2 `
-  -InstallerPath .\packaging\windows\out\DbState-PostgreSQL-v0.1.0-alpha.3-setup.exe
+  -InstallerPath .\packaging\windows\out\DbState-PostgreSQL-v0.1.0-private-beta.2-setup.exe
 ```
 
 Do not send:

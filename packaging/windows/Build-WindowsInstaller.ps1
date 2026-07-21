@@ -1,7 +1,7 @@
 [CmdletBinding()]
 param(
     [string]$Configuration = "release",
-    [string]$InstallerVersion = "v0.1.0-alpha.3",
+    [string]$InstallerVersion = "v0.1.0-private-beta.2",
     [string]$InnoSetupCompiler
 )
 
