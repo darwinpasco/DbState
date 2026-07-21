@@ -198,7 +198,7 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_PASSWORD: postgres
+          POSTGRES_PASSWORD: ${{ secrets.DBSTATE_CI_POSTGRES_PASSWORD }}
           POSTGRES_DB: dbstate_ci_validation
         ports:
           - 5432:5432
@@ -213,7 +213,7 @@ jobs:
         run: echo "Install or download the dbstate binary here"
       - name: Validate database state
         env:
-          DBSTATE_CI_POSTGRES_URL: postgres://postgres:postgres@localhost:5432/dbstate_ci_validation
+          DBSTATE_CI_POSTGRES_URL: postgres://postgres:${{ secrets.DBSTATE_CI_POSTGRES_PASSWORD }}@localhost:5432/dbstate_ci_validation
         run: |
           dbstate ci validate \
             --repository . \
