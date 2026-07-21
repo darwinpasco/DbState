@@ -1,768 +1,504 @@
-# DbState PostgreSQL v0.1.0 Private Beta 2 Golden-Path Walkthrough
+# DbState PostgreSQL v0.1 Private Beta 2 Golden-Path Walkthrough
 
-This walkthrough is the repeatable tester path for DbState PostgreSQL v0.1.0 Private Beta 2.
+This walkthrough is the main tester path for DbState PostgreSQL v0.1 Private Beta 2.
 
-Use your own non-production PostgreSQL database and a fresh local Git repository for the DbState workspace. If you do not already have a suitable non-production database, Pagila is recommended as a safe sample database for testing:
+Use a sample or development PostgreSQL database that you are allowed to inspect and version. Do not use production, staging, UAT, shared, regulated, customer-data, or business-critical databases.
 
-```text
-https://github.com/devrimgunduz/pagila
-```
+DbState remains local-first and review-first:
 
-Pagila is useful for DbState testing because it contains tables, relationships, indexes, views, functions, and sample data. DbState PostgreSQL v0.1.0 Private Beta 2 intentionally supports only the documented beta object subset, so unsupported objects should appear as deferred or unavailable review context rather than as generated database changes.
+- Git is the source of truth for repository database state.
+- The browser UI is for review and preparation.
+- DbState does not apply database changes from the browser UI.
+- DbState does not mutate Git.
+- DbState does not run Database State CI from the browser.
+- DbState does not execute release artifacts.
+- DbState does not execute reference-data review scripts.
+- DbState does not execute reference-data DML during Database State CI.
+- DbState does not generate destructive SQL such as `DROP TABLE`, `DROP DOMAIN`, or `DROP AGGREGATE`.
 
-DbState remains local-first and safety-first:
+## Supported Private Beta 2 Coverage
 
-- DbState does not execute SQL.
-- DbState does not apply generated SQL to a database.
-- DbState does not mutate PostgreSQL.
-- DbState does not stage, commit, push, pull, fetch, or tag Git changes.
-- Release artifacts are review-only.
+Private Beta 2 includes review workflows for:
 
-Do not use production, UAT, staging, shared, regulated, or customer-data databases for this walkthrough.
+- schemas
+- extensions
+- enums
+- domains
+- sequences
+- regular tables
+- partitioned parent tables
+- constraints
+- functions
+- aggregates
+- triggers
+- materialized views
+- views
+- grants
+- RLS policies
+- reference-data workflows
 
-## 1. Prerequisites
+Unsupported PostgreSQL features should be reported as coverage gaps with the object type, object name, and workflow where the gap appeared.
 
-Install or have available:
+## Step 1: Prepare Local Inputs
 
-- Windows PowerShell.
-- Git.
-- Docker Desktop.
-- A browser.
-- Rust toolchain if using the native developer path.
-
-Repository paths used in this walkthrough:
-
-```text
-C:\SourceCodes\DbState
-C:\DbState\PrivateBetaDemo
-```
-
-PostgreSQL target:
-
-```text
-Database: your own non-production PostgreSQL database
-Recommended sample if needed: pagila
-Connection URL shape: postgres://<user>:<password>@127.0.0.1:<port>/<database>
-```
-
-Use a local disposable password or a non-production credential only. Do not put real credentials in feedback, screenshots, logs, or repository files.
-
-## 2. Build DbState
-
-Native developer path:
-
-```powershell
-cd C:\SourceCodes\DbState
-cargo build
-```
-
-Expected result:
-
-- `C:\SourceCodes\DbState\target\debug\dbstate.exe` exists.
-
-Docker path:
-
-```powershell
-cd C:\SourceCodes\DbState
-docker build -t dbstate-postgres:dev .
-```
-
-Expected result:
-
-- Docker image `dbstate-postgres:dev` builds successfully.
-
-## 3. Choose A Non-Production PostgreSQL Database
-
-Use a PostgreSQL database that is safe to inspect and compare during a beta test.
-
-Allowed examples:
-
-- A local disposable PostgreSQL database.
-- A personal development database.
-- A database created only for this beta walkthrough.
-- Pagila loaded into a local or disposable PostgreSQL instance.
-
-Do not use:
-
-- production
-- UAT
-- staging
-- shared team databases
-- regulated-data databases
-- customer-data databases
-
-DbState inspect, compare, preview, and release dry-run paths are read-only against PostgreSQL. The Database to Repository Compare write path writes repository files only. This beta still must not be pointed at sensitive database environments because screenshots, object names, comments, or review artifacts may expose information.
-
-## 4. Optional Pagila Sample Setup
-
-Skip this section if you already have a suitable non-production PostgreSQL database.
-
-Pagila repository:
+Expected local folders:
 
 ```text
-https://github.com/devrimgunduz/pagila
+C:\DbState
+C:\DbState\YourDatabaseRepo
+C:\DbState\dbstate-ci
 ```
 
-### Local psql
-
-Use this path if `psql` is installed on your machine:
-
-```powershell
-cd C:\SourceCodes
-git clone https://github.com/devrimgunduz/pagila.git
-cd C:\SourceCodes\pagila
-
-psql -h 127.0.0.1 -p <port> -U <user> -d postgres -c "DROP DATABASE IF EXISTS pagila WITH (FORCE);"
-psql -h 127.0.0.1 -p <port> -U <user> -d postgres -c "CREATE DATABASE pagila;"
-psql -h 127.0.0.1 -p <port> -U <user> -d pagila -v ON_ERROR_STOP=1 -f .\pagila-schema.sql
-psql -h 127.0.0.1 -p <port> -U <user> -d pagila -v ON_ERROR_STOP=1 -f .\pagila-data.sql
-```
-
-### Docker psql client
-
-Use this path if Docker is available but local `psql` is not installed. The PostgreSQL server can still be local, remote development, or another disposable instance reachable from Docker.
-
-```powershell
-cd C:\SourceCodes
-git clone https://github.com/devrimgunduz/pagila.git
-cd C:\SourceCodes\pagila
-$env:PGPASSWORD = Read-Host "PostgreSQL password"
-
-docker run --rm `
-  --add-host=host.docker.internal:host-gateway `
-  -v "C:\SourceCodes\pagila:/pagila" `
-  -e PGPASSWORD=$env:PGPASSWORD `
-  postgres:16 `
-  psql -h host.docker.internal -p <port> -U <user> -d postgres -c "DROP DATABASE IF EXISTS pagila WITH (FORCE);"
-
-docker run --rm `
-  --add-host=host.docker.internal:host-gateway `
-  -v "C:\SourceCodes\pagila:/pagila" `
-  -e PGPASSWORD=$env:PGPASSWORD `
-  postgres:16 `
-  psql -h host.docker.internal -p <port> -U <user> -d postgres -c "CREATE DATABASE pagila;"
-
-docker run --rm `
-  --add-host=host.docker.internal:host-gateway `
-  -v "C:\SourceCodes\pagila:/pagila" `
-  -e PGPASSWORD=$env:PGPASSWORD `
-  postgres:16 `
-  psql -h host.docker.internal -p <port> -U <user> -d pagila -v ON_ERROR_STOP=1 -f /pagila/pagila-schema.sql
-
-docker run --rm `
-  --add-host=host.docker.internal:host-gateway `
-  -v "C:\SourceCodes\pagila:/pagila" `
-  -e PGPASSWORD=$env:PGPASSWORD `
-  postgres:16 `
-  psql -h host.docker.internal -p <port> -U <user> -d pagila -v ON_ERROR_STOP=1 -f /pagila/pagila-data.sql
-
-Remove-Item Env:\PGPASSWORD
-```
-
-Expected result:
-
-- A non-production `pagila` database exists.
-- Pagila tables, relationships, indexes, views, functions, and sample data are loaded.
-
-Durable first-class constraint, regular-function, regular table/view trigger, materialized-view, explicit object-grant, and RLS policy coverage is available in the current beta. Procedures, aggregates, window functions, event triggers, comments, default privileges, and table-level RLS enable/force state changes remain deferred or unavailable review context.
-
-## 5. Create Fresh Private Beta Demo Git Repository
-
-```powershell
-New-Item -ItemType Directory -Force C:\DbState\PrivateBetaDemo | Out-Null
-cd C:\DbState\PrivateBetaDemo
-git init
-git branch -M dev
-git status --short --branch --untracked-files=all
-```
-
-Expected result:
-
-- The repository is on branch `dev`.
-- There is no `database/` directory yet.
-
-## 6. Start DbState Service
-
-Native service path:
-
-```powershell
-cd C:\SourceCodes\DbState
-$env:DBSTATE_POSTGRES_URL = "postgres://<user>:<password>@127.0.0.1:<port>/<database>"
-cargo run -- serve --host 127.0.0.1 --port 4587
-```
-
-Expected startup result:
-
-- Service URL is `http://127.0.0.1:4587/`.
-- Default binding is local-only.
-- Startup text says DbState does not execute generated SQL or apply database changes.
-
-If port `4587` is busy, stop the old service or use another port:
-
-```powershell
-cargo run -- serve --host 127.0.0.1 --port 4588
-```
-
-## 7. Open Browser UI
-
-Open:
+If you received a binary drop, place it at:
 
 ```text
-http://127.0.0.1:4587/
+C:\DbState\dbstate.exe
 ```
 
-If the UI looks stale, press `Ctrl+F5`.
+If you are using a source checkout, run commands from your source checkout root.
 
 Expected result:
 
-- DbState PostgreSQL v0.1 UI loads.
-- Safety banner states local-only, no direct database apply, and no SQL execution.
+- you have a DbState executable
+- you have a Git repository folder for the database state
+- you have access to a sample or development PostgreSQL database
 
-## 8. Select Workspace With Browse
+Report if it fails:
 
-Workspace page:
+- missing executable
+- missing Git
+- missing PostgreSQL access
+- unclear setup instructions
 
-1. Click `Browse`.
-2. Navigate to `C:\DbState\PrivateBetaDemo`.
-3. Click `Select this folder`.
-4. Click `Check Workspace`.
+## Step 2: Start DbState Locally
 
-Expected result:
-
-- Workspace is a Git repository.
-- DbState project status indicates missing DbState structure.
-- Missing paths are listed.
-
-## 9. Initialize DbState Project From UI
-
-Workspace page:
-
-1. Click `Init Plan`.
-2. Review planned creates.
-3. Type:
-
-```text
-INITIALIZE DBSTATE PROJECT
-```
-
-4. Click `Initialize DbState Project`.
-5. Click `Check Workspace` if the status does not refresh automatically.
-
-Expected result:
-
-- `database/` structure is created.
-- Missing paths becomes `0`.
-- DbState project status becomes complete.
-- No PostgreSQL connection is needed for initialization.
-- No SQL is executed.
-- No Git add, commit, push, pull, or fetch happens.
-
-## 10. Commit Initialized Structure Manually
-
-DbState does not stage or commit changes. The tester does this manually:
+Binary drop:
 
 ```powershell
-cd C:\DbState\PrivateBetaDemo
-git status --short --branch --untracked-files=all
-git add database
-git commit -m "chore: initialize DbState project structure"
+C:\DbState\dbstate.exe serve --host 127.0.0.1 --port 4587
 ```
 
-Expected result:
-
-- Git records the initial DbState project structure.
-- Working tree is clean.
-
-## 11. Configure Connection
-
-Recommended for this walkthrough: use the service environment variable already set in the service process:
+Source checkout:
 
 ```powershell
-$env:DBSTATE_POSTGRES_URL = "postgres://<user>:<password>@127.0.0.1:<port>/<database>"
-```
-
-UI Source & Target page:
-
-1. Set Connection Mode to `Use service environment variable`.
-2. Do not paste the URL into the UI unless testing session URL mode.
-
-Optional profile mode:
-
-- Save only host, port, database, username, SSL mode, and description.
-- Do not save passwords or full PostgreSQL URLs.
-- Use a session-only password when testing the profile connection.
-
-## 12. Run Inspect
-
-Source & Target page:
-
-1. Set Workflow Mode to `PostgreSQL Inspect Only`.
-2. Confirm Source is PostgreSQL database.
-3. Confirm Target is read-only catalog view.
-
-Compare Options page:
-
-1. Scope: `All`.
-2. Click `Inspect`.
-
-Expected Results page:
-
-- Object type filters include:
-  - Extension
-  - Enum
-  - Sequence
-  - Index
-  - View
-  - Constraint
-  - Function
-- Rows include supported objects from your selected non-production database. Pagila should produce table, index, view, constraint, regular-function, and trigger review rows where present, with unsupported object types handled as beta limitations.
-- Columns stay in Object Diff details for selected tables, not as top-level Results filter rows.
-
-## 13. Run Database To Repository Compare Preview
-
-Source & Target page:
-
-1. Set Workflow Mode to `Database to Repository Compare`.
-2. Confirm Source is PostgreSQL database.
-3. Confirm Target is repository desired state.
-
-Compare Options page:
-
-1. Scope: `All`.
-2. Click `Preview Repository Sync`.
-
-Expected result:
-
-- Preview shows added, changed, unchanged, or skipped files.
-- No repository files are written during preview.
-- No PostgreSQL mutation occurs.
-
-## 14. Write Selected Repository Changes
-
-Compare Options page:
-
-1. Review the preview first.
-2. Confirm working tree is clean.
-3. Type:
-
-```text
-WRITE REPOSITORY FILES
-```
-
-4. Click `Write Selected Repository Changes`.
-
-Expected result:
-
-- Supported desired-state files are written under `database/objects/`.
-- Nothing is written outside the selected workspace.
-- PostgreSQL is not mutated.
-- No SQL is executed.
-- Git does not stage or commit files.
-
-## 15. Commit Captured Desired-State Files Manually
-
-```powershell
-cd C:\DbState\PrivateBetaDemo
-git status --short --branch --untracked-files=all
-git add database\objects
-git commit -m "feat: capture private beta database state"
-```
-
-Expected result:
-
-- Captured desired-state files are committed manually.
-- Working tree is clean.
-
-## 16. Run Repository To Database Compare
-
-UI:
-
-1. Source & Target page: set Workflow Mode to `Repository to Database Compare`.
-2. Confirm Source is repository desired state.
-3. Confirm Target is PostgreSQL database.
-4. Compare Options page: Scope `All`.
-5. Click `Run Compare`.
-
-Expected result:
-
-- Results grid shows object rows by type.
-- Most freshly captured objects should be `inSync`.
-- Any skipped or deferred objects are visible as review items.
-
-## 17. Review Results Grid
-
-In Results:
-
-1. Use object type filter.
-2. Try Schema, Table, Extension, Enum, Sequence, Index, View, Constraint, and Function.
-3. Review status badges and legend.
-4. Select a table row.
-
-Expected result:
-
-- Source and Target context appears above the grid.
-- Source and Target are not table columns.
-- Service errors do not appear as fake object rows.
-
-## 18. Review Object Diff
-
-Object Diff page:
-
-1. Confirm selected object summary.
-2. Confirm Source and Target type indicators.
-3. Confirm `Full Context DDL` is selected by default.
-4. Switch to `Object Only DDL`.
-5. Switch to `Related Objects`.
-6. Switch to `Raw Details`.
-
-Expected result:
-
-- Full Context DDL shows the selected table plus related index DDL where available.
-- Object Only DDL shows only the durable object.
-- Related Objects groups related details.
-- Raw Details shows redacted JSON for support evidence and troubleshooting.
-- Raw Details is not the primary review workflow.
-- DDL comparison shows Similar, Different, or DDL unavailable.
-- Source-only lines use a display-only `+` marker.
-- Target-only lines use a display-only `-` marker.
-- Diff markers are visual indicators only. They are not part of source DDL, target DDL, repository files, release SQL, or generated review artifacts.
-
-## 19. Run Release Dry-Run From UI
-
-UI:
-
-1. Source & Target page: set Workflow Mode to `Repository to Database Compare`.
-2. Compare Options page: Scope `All`.
-3. Click `Run Compare`.
-4. Open `Release Plan`.
-5. Enter release name:
-
-```text
-beta_review
-```
-
-6. Click `Dry-run Release Artifact`.
-
-Expected result:
-
-- Release Plan shows planned artifact paths, risk information, warnings, and errors where relevant.
-- No files are written under `database/releases/`.
-- DbState does not execute SQL.
-- DbState does not mutate PostgreSQL.
-- DbState does not stage or commit Git changes.
-
-## 20. Generate Release Artifacts From UI
-
-Release Plan page:
-
-1. Review the dry-run result first.
-2. Type:
-
-```text
-GENERATE RELEASE ARTIFACTS
-```
-
-3. Click `Generate Release Artifact`.
-
-Expected result:
-
-- Release artifacts are written under `database/releases/`.
-- DbState does not execute release SQL.
-- DbState does not mutate PostgreSQL.
-- DbState does not stage or commit artifacts.
-
-## 21. CLI Release Fallback
-
-Use the CLI if the UI release path cannot be used in the current environment.
-
-Dry-run:
-
-```powershell
-cd C:\DbState\PrivateBetaDemo
-
-$env:DBSTATE_POSTGRES_URL = "postgres://<user>:<password>@127.0.0.1:<port>/<database>"
-
-C:\SourceCodes\DbState\target\debug\dbstate.exe release postgres --all --name beta_review --dry-run --format json
-```
-
-Write review artifacts:
-
-```powershell
-cd C:\DbState\PrivateBetaDemo
-
-C:\SourceCodes\DbState\target\debug\dbstate.exe release postgres --all --name beta_review
-```
-
-Expected result:
-
-- CLI dry-run writes no files.
-- CLI write creates review artifacts under `database/releases/`.
-- DbState does not execute release SQL.
-- DbState does not mutate PostgreSQL.
-- DbState does not stage or commit artifacts.
-
-## 22. Review Generated Artifacts
-
-```powershell
-Get-ChildItem database\releases
-Get-Content database\releases\*beta_review.summary.md
-Get-Content database\releases\*beta_review.risk.json
-Get-Content database\releases\*beta_review.manifest.json
-```
-
-Review the SQL artifact:
-
-```powershell
-Get-Content database\releases\*beta_review.sql
-```
-
-Safety search:
-
-```powershell
-Select-String -Path database\releases\*.sql `
-  -Pattern "DROP TABLE|DROP SCHEMA|DROP COLUMN|ALTER TABLE DROP|TRUNCATE|DELETE FROM|UPDATE |MERGE|GRANT|REVOKE|ALTER OWNER|EXECUTE" `
-  -CaseSensitive:$false
-```
-
-Expected result:
-
-- SQL artifact has DbState release header.
-- SQL artifact has review sections.
-- Summary contains reviewer checklist.
-- Risk JSON has safety flags set to `false`.
-- Manifest lists generated artifacts.
-- No unsafe executable SQL is generated.
-
-## 23. Commit Release Artifacts Manually
-
-DbState does not stage or commit release artifacts. If the artifacts are acceptable, commit manually:
-
-```powershell
-cd C:\DbState\PrivateBetaDemo
-git status --short --branch --untracked-files=all
-git add database\releases
-git commit -m "chore: add beta review release artifacts"
-```
-
-## 24. Reports And Raw JSON
-
-UI Reports / Raw JSON page:
-
-1. Click `Copy JSON`.
-2. Paste into a scratch file.
-3. Confirm output is redacted.
-
-Expected result:
-
-- No raw PostgreSQL URL.
-- No password.
-- No token.
-- No secret fields.
-
-## 25. Docker Walkthrough
-
-Use Docker if the tester does not want to install Rust locally.
-
-Build image:
-
-```powershell
-cd C:\SourceCodes\DbState
-docker build -t dbstate-postgres:dev .
-```
-
-Run service in Docker:
-
-```powershell
-docker run --rm `
-  --add-host=host.docker.internal:host-gateway `
-  --entrypoint sh `
-  -p 127.0.0.1:4587:4587 `
-  -v "C:\DbState\PrivateBetaDemo:/workspace" `
-  -w /workspace `
-  -e DBSTATE_POSTGRES_URL="postgres://<user>:<password>@host.docker.internal:<port>/<database>" `
-  dbstate-postgres:dev `
-  -c "git config --global --add safe.directory /workspace && /usr/local/bin/dbstate serve --host 0.0.0.0 --port 4587"
+cargo build --release
+.\target\release\dbstate.exe serve --host 127.0.0.1 --port 4587
 ```
 
 Open:
 
 ```text
-http://127.0.0.1:4587/
+http://127.0.0.1:4587
 ```
 
-Use this workspace path in the UI:
+Expected result:
+
+- DbState starts on `127.0.0.1:4587`
+- the browser UI opens
+- the UI shows the Workspace area
+
+Report if it fails:
+
+- service does not start
+- browser cannot connect
+- unexpected port conflict
+- startup output exposes secrets
+
+## Step 3: Select Or Open A Workspace
+
+In Workspace:
+
+1. Open Select Workspace Folder.
+2. Browse to:
 
 ```text
-/workspace
+C:\DbState\YourDatabaseRepo
 ```
 
-Docker can browse only paths mounted into the container. It cannot browse arbitrary host paths.
+3. Select the folder.
 
-## 26. Cleanup
+Expected result:
 
-Stop service with `Ctrl+C`.
+- Workspace shows the selected repository path
+- folder browsing shows useful roots such as `C:\`
+- the selected folder row is visually clear
+- there is no Service working directory quick-select
 
-If you created a disposable PostgreSQL database for this walkthrough, drop or remove it according to your local test environment policy.
+Report if it fails:
 
-Remove the fresh workspace only if you no longer need it:
+- selected folder is unclear
+- folder picker cannot navigate
+- workspace path is not shown
+- service working directory appears as a quick-select option
+
+## Step 4: Run Check Status
+
+Click:
+
+```text
+Check Status
+```
+
+Expected result:
+
+- status refreshes in the Workspace area
+- current Git branch and worktree state are visible
+- operation result appears in the main alert/message bar
+- Warnings panel shows warning details when warnings exist
+- clean workspaces show no warnings
+
+Report if it fails:
+
+- Check Status is missing
+- old separate Check Workspace and Repo Status primary buttons appear
+- operation result appears only in the footer
+- Warnings panel says `No warnings yet.` when the latest operation has warnings
+
+## Step 5: Create Or Select A PostgreSQL Profile
+
+Use Source & Target or connection profile controls to create or select a PostgreSQL profile.
+
+Profiles should store only non-secret metadata such as host, port, database, username, SSL mode, and profile name. Passwords and full PostgreSQL URLs are session-only.
+
+Expected result:
+
+- profile can be selected for workflows
+- profile password is not persisted
+- raw PostgreSQL URL is not shown in reports or Raw JSON
+
+Report if it fails:
+
+- password is saved
+- full PostgreSQL URL appears in copied output or Raw JSON
+- source profile is confused with Database State CI target
+
+## Step 6: Run Schema Compare - Database To Repository
+
+Choose:
+
+```text
+Schema Compare: Database to Repository
+```
+
+In Compare Options:
+
+1. Confirm schema/table filters are available.
+2. Confirm Include refs and Exclude refs remain available where applicable.
+3. Confirm the old implementation coverage checkbox row is not shown.
+4. Run the compare.
+
+Expected result:
+
+- compare runs against the selected PostgreSQL profile
+- Results show supported schema object differences
+- no database changes are applied
+- no Git changes are staged or committed
+
+Report if it fails:
+
+- compare options are confusing
+- implementation coverage checkboxes still appear
+- unsupported object types are silently ignored
+- any UI suggests applying SQL to the database
+
+## Step 7: Write Repository Desired-State Files
+
+If the compare identifies objects to write, follow the UI confirmation for writing repository files.
+
+Expected result:
+
+- desired-state files are written under `database/objects/`
+- release artifact folders remain under `database/releases/`
+- DbState does not mutate PostgreSQL
+- DbState does not stage or commit Git changes
+- Git Workflow guidance is available after write
+
+Manually inspect Git status:
 
 ```powershell
-Remove-Item -LiteralPath C:\DbState\PrivateBetaDemo -Recurse -Force
+Set-Location C:\DbState\YourDatabaseRepo
+git status --short --branch --untracked-files=all
 ```
 
-Do not remove a workspace that contains feedback artifacts or changes you still need.
-
-## 27. Troubleshooting
-
-### Port 4587 Already In Use
-
-Stop the existing service or use another port:
+Example manual commit after review:
 
 ```powershell
-cargo run -- serve --host 127.0.0.1 --port 4588
+git add database/objects/
+git add database/reference-data/
+git commit -m "sync: update database state"
 ```
+
+Expected result:
+
+- Git shows only files you expected DbState to write
+- manual Git commands are run by you, not by DbState
+
+Report if it fails:
+
+- files are written outside `database/objects/`, `database/reference-data/`, or `database/releases/`
+- DbState stages or commits files
+- write confirmation is unclear
+
+## Step 8: Run Schema Compare - Repository To Database Review
+
+Choose:
+
+```text
+Schema Compare: Repository to Database
+```
+
+Run compare in review mode.
+
+Expected result:
+
+- Results show repository/database status
+- Object Diff is available for selected schema objects
+- Source and target context is clear
+- no Apply, Execute, or Sync to Database controls appear
+
+Report if it fails:
+
+- Object Diff opens the wrong object
+- Source/Target direction is confusing
+- any direct database apply control appears
+
+## Step 9: Review Object Diff
+
+Open Object Diff for a changed object.
+
+Expected result:
+
+- object SQL is readable
+- Full Context DDL and Object Only DDL are available for schema workflows
+- Related Objects and Raw Details remain review-only
+- no SQL is run
+
+Report if it fails:
+
+- DDL panels are blank when object SQL exists
+- object identity is unclear
+- diff markers appear as if they were real SQL content
+
+## Step 10: Use Release Plan And Artifact Preview
+
+Open Release Plan from Schema Compare: Repository to Database.
+
+Run a dry-run first. Then generate review artifacts only if the UI shows the expected confirmation.
+
+Expected result:
+
+- Release Plan appears for schema Repository-to-Database workflow
+- candidate selection is available
+- generated schema artifacts go under `database/releases/objects/`
+- release artifact preview is read-only
+- generated SQL remains review-only
+- no release artifact is executed
+- no destructive SQL is generated
+
+Report if it fails:
+
+- Release Plan is missing from schema Repository-to-Database workflow
+- generated artifacts are not under `database/releases/objects/`
+- preview does not open
+- generated SQL includes unexpected destructive statements
+
+## Step 11: Run Reference Data Workflows If Applicable
+
+Use reference-data workflows only for lookup/configuration data that is safe to version.
+
+Database to Repository:
+
+- load database tables
+- confirm registry status is visible
+- select tables and key/masked/ignored columns
+- preview reference YAML
+- write reference-data files only after confirmation
+
+Repository to Database:
+
+- run reference-data compare
+- confirm Results are table-first
+- open Data Diff for a selected table
+- open row-level Reference-Data Row Data Diff
+- generate review-only data script if appropriate
+
+Expected result:
+
+- reference-data files are written under `database/reference-data/`
+- review-only scripts are written under `database/releases/reference-data/`
+- database-only rows do not generate DELETE statements
+- masked values are not exposed
+- no reference-data DML is executed
+- no Apply, Execute, or Sync to Database controls appear
+
+Report if it fails:
+
+- Results show row spam instead of table summaries
+- Object Diff appears for reference-data workflows
+- masked values are exposed
+- DELETE, MERGE, or TRUNCATE appears in generated reference-data scripts
+
+## Step 12: Open Git Workflow
 
 Open:
 
 ```text
-http://127.0.0.1:4588/
+Git Workflow
 ```
 
-### dbstate.exe Locked By Running Service
+Expected result:
 
-Stop the service terminal with `Ctrl+C`, then rebuild.
+- current branch is visible
+- protected branch status is visible
+- dirty worktree status and dirty path count are visible
+- intended or written DbState paths are visible when available
+- suggested commit title and body are visible
+- suggested pull request title and body are visible
+- Git commands are advisory only
+- large change sets use grouped `git add` guidance
 
-### Docker Desktop Not Running
+Report if it fails:
 
-Start Docker Desktop and rerun:
+- Git Workflow suggests that DbState will run Git commands
+- suggested commit or PR text is blank after writes
+- command guidance includes unrelated paths
 
-```powershell
-docker ps
-```
+## Step 13: Open Database State CI Page
 
-### PostgreSQL Target Not Ready
-
-Confirm your selected non-production PostgreSQL database accepts connections. Example:
-
-```powershell
-pg_isready -h 127.0.0.1 -p <port> -U <user> -d <database>
-```
-
-### Cannot Connect To Database
-
-Native service should use:
+Open:
 
 ```text
-postgres://<user>:<password>@127.0.0.1:<port>/<database>
+Database State CI
 ```
 
-Docker service should use:
+Expected result:
 
-```text
-postgres://<user>:<password>@host.docker.internal:<port>/<database>
-```
+- page explains Database State CI is command guidance only
+- page uses the selected workspace path when available
+- page separates source profile from disposable CI database
+- disposable password uses a placeholder or PowerShell variable
+- no Run CI button appears
+- no Docker command is run by the web app
+- no database connection is opened by the web app for CI
 
-### UI Shows Failed To Fetch
+Report if it fails:
 
-- Confirm the service terminal is still running.
-- Confirm the URL and port.
-- Refresh the browser.
+- page shows a concrete disposable password
+- page points CI at the source profile database
+- page hardcodes tester-irrelevant local paths
+- Run CI appears as a browser button
 
-### DBSTATE_POSTGRES_URL Not Set
+## Step 14: Optional CLI Database State CI
 
-Set it in the same terminal before starting the service:
+Run this only if you have Docker Desktop and want to test disposable database validation.
+
+Set a temporary disposable password:
 
 ```powershell
-$env:DBSTATE_POSTGRES_URL = "postgres://<user>:<password>@127.0.0.1:<port>/<database>"
-cargo run -- serve --host 127.0.0.1 --port 4587
+$DbStateCiPostgresPassword = "<DISPOSABLE_POSTGRES_PASSWORD>"
 ```
 
-### Workspace Is Not A Git Repo
-
-Run:
+Start a disposable PostgreSQL container:
 
 ```powershell
-cd C:\DbState\PrivateBetaDemo
-git init
-git branch -M dev
+docker rm -f dbstate-ci-your-database 2>$null
+
+docker run --name dbstate-ci-your-database `
+  -e POSTGRES_PASSWORD=$DbStateCiPostgresPassword `
+  -e POSTGRES_DB=your_database_ci_validation `
+  -p 55432:5432 `
+  -d postgres:16
+
+for ($i = 1; $i -le 30; $i++) {
+  docker exec dbstate-ci-your-database pg_isready -U postgres -d your_database_ci_validation
+  if ($LASTEXITCODE -eq 0) { break }
+  Start-Sleep -Seconds 1
+}
 ```
 
-### Workspace Is Git Repo But Not DbState Project
-
-Use the Workspace page:
-
-1. Type `INITIALIZE DBSTATE PROJECT`.
-2. Click `Initialize DbState Project`.
-3. Commit the generated structure manually.
-
-### Working Tree Dirty Blocks Write
-
-Review changes:
+Run text CI:
 
 ```powershell
-git status --short --branch --untracked-files=all
+C:\DbState\dbstate.exe ci validate `
+  --repository C:\DbState\YourDatabaseRepo `
+  --postgres-url "postgres://postgres:$DbStateCiPostgresPassword@127.0.0.1:55432/your_database_ci_validation" `
+  --disposable
 ```
 
-Commit or stash manually before running write actions.
+Run JSON CI:
 
-### Release Write Blocked
-
-Check:
-
-- Working tree is clean.
-- DbState project structure is complete.
-- Selected plan has no blocked items.
-- Release name is valid.
-
-### Browser Cache Stale
-
-Press `Ctrl+F5`.
-
-### Docker Path Mapping Confusion
-
-Host path:
-
-```text
-C:\DbState\PrivateBetaDemo
+```powershell
+C:\DbState\dbstate.exe ci validate `
+  --repository C:\DbState\YourDatabaseRepo `
+  --postgres-url "postgres://postgres:$DbStateCiPostgresPassword@127.0.0.1:55432/your_database_ci_validation" `
+  --disposable `
+  --json
 ```
 
-Container path:
+Run Markdown report CI:
 
-```text
-/workspace
+```powershell
+New-Item -ItemType Directory -Force C:\DbState\dbstate-ci | Out-Null
+
+C:\DbState\dbstate.exe ci validate `
+  --repository C:\DbState\YourDatabaseRepo `
+  --postgres-url "postgres://postgres:$DbStateCiPostgresPassword@127.0.0.1:55432/your_database_ci_validation" `
+  --disposable `
+  --report C:\DbState\dbstate-ci\database-state-ci-report.md
+
+Get-Content C:\DbState\dbstate-ci\database-state-ci-report.md -Raw
 ```
 
-Use `/workspace` in the UI when running the service in Docker.
+Clean up:
 
-## 28. Private Beta Readiness Checklist
-
-- Can run without installing Rust using Docker.
-- Can run natively with cargo for developers.
-- Can initialize a fresh Git repository from the UI.
-- Can connect with service environment variable, session URL, or non-secret profile.
-- Can inspect PostgreSQL.
-- Can capture database state to repository files.
-- Can compare repository desired state to PostgreSQL.
-- Can review Results grid.
-- Can review Object Diff Full Context DDL.
-- Can review Object Only DDL.
-- Can review Related Objects.
-- Can review Raw Details.
-- Can generate release artifacts.
-- Can review SQL, summary markdown, risk JSON, and manifest JSON.
-- No direct apply exists.
-- No SQL execution exists.
-- No PostgreSQL mutation exists.
-- No Git auto stage, commit, or push exists.
-- Testers have feedback template.
-- Known limitations are documented.
-
-## 29. Feedback
-
-Use:
-
-```text
-docs/postgresql-v0.1/49-private-beta-feedback-template.md
+```powershell
+docker rm -f dbstate-ci-your-database 2>$null
 ```
 
-Before sending feedback, redact passwords, full PostgreSQL URLs, production data, customer data, regulated data, tokens, certificates, and secrets.
+Expected result:
+
+- CI refuses to run without `--disposable`
+- CI rejects non-empty user databases
+- CI validates repository object SQL only against the disposable database
+- release artifacts are not executed
+- reference-data review scripts are not executed
+- reference-data DML is not executed
+- text, JSON, and Markdown output redact credentials
+
+Report if it fails:
+
+- CI points at a non-disposable database
+- output exposes the disposable password
+- release artifacts or reference-data scripts appear to run
+- compare-back drift lacks object details
+
+## Step 15: Review Warnings Panel
+
+Create a harmless local warning condition, such as an unrelated untracked file in the workspace, then click Check Status.
+
+Expected result:
+
+- main alert/message bar shows warning count
+- Warnings panel shows the warning detail
+- duplicate warning text is not repeated
+- warning clears after the condition is removed and Check Status is run again
+
+Report if it fails:
+
+- warning count appears but Warnings panel says `No warnings yet.`
+- duplicate warnings make the panel noisy
+- errors are hidden
+
+## Final Smoke Result
+
+Record:
+
+- tester name
+- date
+- DbState version/tag
+- distribution route
+- PostgreSQL version
+- workflows tested
+- pass/fail result
+- blocker/high/medium/low issues
+- redacted screenshots or logs
