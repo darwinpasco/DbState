@@ -1,114 +1,101 @@
-# DbState PostgreSQL v0.1.0 Private Beta 2 Smoke Test Matrix
+# DbState PostgreSQL v0.1 Private Beta 2 Smoke Test Matrix
 
-Use this matrix for pre-release smoke and first-tester validation. Fill the Pass/Fail and Notes columns during execution.
+Use this matrix for Private Beta 2 pre-release smoke and tester validation.
 
-Use the tester's own non-production PostgreSQL database. Do not use production, UAT, staging, shared, regulated, or customer-data databases. If a tester needs a sample database, Pagila is recommended:
+Use a sample or development PostgreSQL database only. Do not use production, staging, UAT, shared, regulated, customer-data, or business-critical databases.
 
-```text
-https://github.com/devrimgunduz/pagila
-```
+Fill in Pass/Fail and Notes / Evidence during execution.
 
-Use a fresh local workspace such as:
+| Area | Test | Steps | Expected Result | Pass/Fail | Notes / Evidence |
+| --- | --- | --- | --- | --- | --- |
+| Workspace | Open workspace | Open `http://127.0.0.1:4587`, select `C:\DbState\YourDatabaseRepo`. | Workspace path is visible and accepted. |  |  |
+| Workspace | Check Status | Click Check Status. | Workspace and repository status refresh through one clear action. |  |  |
+| Workspace | Warnings panel dirty workspace warning | Create an unrelated untracked file, click Check Status, then open Warnings. | Main alert shows warning count and Warnings panel shows warning detail once. |  |  |
+| Workspace | Folder picker cleanup | Open Select Workspace Folder. | Roots, Up, Refresh, and Select this folder are present; Service working directory quick-select is absent; selected row is visually clear. |  |  |
+| Connection profile | Create/select PostgreSQL profile | Create or select a non-production PostgreSQL profile. | Profile can be used without storing a password or full PostgreSQL URL. |  |  |
+| Connection profile | Source profile is not CI target | Open Database State CI page after selecting a profile. | Page explains the profile identifies the source database and CI uses a separate disposable database. |  |  |
+| Schema compare | Database to Repository | Run Schema Compare: Database to Repository. | Supported object differences appear and no database changes are applied. |  |  |
+| Schema compare | Repository to Database review | Run Schema Compare: Repository to Database. | Review results appear without direct database apply controls. |  |  |
+| Schema compare | Filters still work | Use schema/table filters and include/exclude refs where applicable. | Results reflect selected filters. |  |  |
+| Schema compare | Compare Options cleanup | Open Compare Options. | Implementation coverage checkbox row is absent; schema/table/reference-data controls remain. |  |  |
+| Object coverage | Domains | Compare or export a database with a domain. | Domain appears as a supported schema object. |  |  |
+| Object coverage | Aggregates | Compare or export a database with an aggregate. | Aggregate appears as a supported schema object. |  |  |
+| Object coverage | Partitioned parent tables | Compare or export a partitioned parent table. | Parent table is represented under table desired-state files. |  |  |
+| Object coverage | Functions | Compare or export functions. | Functions appear with deterministic object identity. |  |  |
+| Object coverage | Materialized views | Compare or export materialized views. | Materialized views appear as supported objects. |  |  |
+| Object coverage | Indexes on materialized views | Run Database State CI or review object inventory with a materialized-view index. | Materialized view is available before its index in CI build behavior. |  |  |
+| Object coverage | Grants | Compare or export grants. | Grants are represented as reviewable desired-state objects. |  |  |
+| Object coverage | RLS policies | Compare or export RLS policies. | RLS policies appear without destructive RLS state changes. |  |  |
+| Object Diff | Object SQL review | Select a changed schema object and open Object Diff. | Full Context DDL, Object Only DDL, Related Objects, and Raw Details are review-only and readable. |  |  |
+| Object Diff | No apply controls | Inspect Object Diff. | No Apply, Execute, or Sync to Database controls appear. |  |  |
+| Release Plan | Run plan | Open Release Plan for Schema Compare: Repository to Database. | Plan shows candidates, risk context, safety statement, and reviewer checklist. |  |  |
+| Release Plan | Candidate selection | Select a subset of release candidates. | Generated plan/artifacts reflect only selected candidates and dependency warnings remain visible. |  |  |
+| Release Plan | Review-only artifact generation | Generate release artifacts after typed confirmation. | Artifacts are written under `database/releases/objects/` and are review-only. |  |  |
+| Release Plan | Release artifact preview | Click Preview for generated `.sql`, `.summary.md`, `.risk.json`, or `.manifest.json`. | Preview opens read-only and shows the selected artifact. |  |  |
+| Release Plan | No artifact execution | Review UI, output, and generated files. | Release artifacts are not executed by DbState. |  |  |
+| Release Plan | No destructive SQL generation | Inspect generated release SQL. | Unexpected `DROP TABLE`, `DROP DOMAIN`, `DROP AGGREGATE`, DELETE, TRUNCATE, or MERGE statements are absent. |  |  |
+| Reference Data | Registry | Open Reference Data workflow with configured registry. | Registry status is visible and invalid registry errors are clear. |  |  |
+| Reference Data | DB-to-Repo export/onboarding | Load database tables, select key/masked/ignored columns, preview YAML, then write after confirmation. | Files are written only under `database/reference-data/`. |  |  |
+| Reference Data | Repo-to-DB Data Diff | Run Reference Data Compare: Repository to Database. | Results are table-first; Data Diff opens per selected table. |  |  |
+| Reference Data | Review-only script generation | Generate reference-data review script after typed confirmation. | Artifacts are written under `database/releases/reference-data/`; database-only rows do not generate DELETE. |  |  |
+| Reference Data | No DML execution | Review reference-data workflows and CI output. | DbState does not execute reference-data inserts, updates, deletes, merges, or review scripts. |  |  |
+| Git Workflow | Branch/status visibility | Open Git Workflow. | Current branch, protected status, dirty status, and dirty path count are visible. |  |  |
+| Git Workflow | Dirty warning | Create unrelated dirty file and refresh status. | Warning is visible and scoped write guard behavior is understandable. |  |  |
+| Git Workflow | Semantic commit/PR guidance | Generate or review suggested commit and PR text. | Suggestions are based on staged or written DbState context and remain editable/copyable. |  |  |
+| Git Workflow | Git commands are suggestions only | Inspect Git Workflow commands. | DbState does not run Git commands; no automatic staging, commit, push, pull, fetch, tag, switch, or branch creation occurs. |  |  |
+| Database State CI | Web page command guidance only | Open Database State CI page. | Page explains CI and shows commands only; the web app does not run CI. |  |  |
+| Database State CI | Password placeholder-only | Inspect CI command blocks. | Commands use `$DbStateCiPostgresPassword` and `<DISPOSABLE_POSTGRES_PASSWORD>`, not a concrete password. |  |  |
+| Database State CI | No Run CI button | Inspect Database State CI page. | No Run CI button appears. |  |  |
+| Database State CI | Optional CLI validate | Run `dbstate ci validate --repository C:\DbState\YourDatabaseRepo --postgres-url "postgres://postgres:$DbStateCiPostgresPassword@127.0.0.1:55432/your_database_ci_validation" --disposable` against a disposable database. | CI validates repository desired-state object SQL against the disposable database only. |  |  |
+| Database State CI | JSON/report output | Run optional CI with `--json` and `--report C:\DbState\dbstate-ci\database-state-ci-report.md`. | JSON/report output is structured and redacts credentials. |  |  |
+| Database State CI | Release artifacts not executed | Include release artifacts in repository and run CI. | Release artifacts are counted/safety-checked but not executed. |  |  |
+| Database State CI | Reference-data DML not executed | Include reference-data files and review scripts, then run CI. | Reference-data YAML is validated; DML and review scripts are not executed. |  |  |
+| Safety | No direct browser apply | Review all browser pages. | No Apply, Execute, or Sync to Database controls appear. |  |  |
+| Safety | No CI endpoint | Review service routes or UI source where applicable. | No `/api/v1/ci` endpoint is added for browser CI execution. |  |  |
+| Safety | No concrete disposable passwords | Review tester-facing docs and CI guidance page. | No `POSTGRES_PASSWORD=postgres` or concrete disposable PostgreSQL URL password appears. |  |  |
+| Safety | No Darwin-local paths | Review tester-facing docs. | No Darwin-local repository paths are used as tester defaults. |  |  |
+| Safety | No production/staging/shared DB usage | Review docs and UI copy. | Testers are told to use sample/development databases only and disposable DBs for CI. |  |  |
+| Packaging/docs | Onboarding doc present | Open `docs/postgresql-v0.1/60-private-beta-2-tester-onboarding.md`. | Tester onboarding guide is present. |  |  |
+| Packaging/docs | Announcement/feedback doc present | Open `docs/postgresql-v0.1/61-private-beta-2-tester-announcement-and-feedback.md`. | Announcement, email, feedback, bug report, and severity guide are present. |  |  |
+| Packaging/docs | Release readiness doc present | Open `docs/postgresql-v0.1/59-private-beta-2-release-readiness.md`. | Private Beta 2 release readiness checklist is present. |  |  |
+| Packaging/docs | Golden Path doc present | Open `docs/postgresql-v0.1/48-slice-18-golden-path-private-beta-walkthrough.md`. | Current Private Beta 2 walkthrough is present. |  |  |
+| Packaging/docs | Smoke Test Matrix present | Open this smoke matrix. | Current Private Beta 2 matrix is present. |  |  |
 
-```text
-C:\DbState\PrivateBetaDemo
-```
+## Stop Testing And Report Immediately
 
-## Native Installed Binary
+Stop testing and report a blocker if:
 
-| Test | Steps | Expected Result | Pass/Fail | Notes |
-| --- | --- | --- | --- | --- |
-| Help | Run `C:\Program Files\DbState\dbstate.exe --help`. | Help prints current commands. |  |  |
-| Start service | Start `Start DbState Local Service`. | Service binds to `127.0.0.1:4587`. |  |  |
-| Health endpoint | Run `Invoke-RestMethod http://127.0.0.1:4587/health`. | JSON health response succeeds. |  |  |
-| UI load | Open `http://127.0.0.1:4587/`. | UI loads with safety banner. |  |  |
-| Workflow mode order | Open Source & Target. | Workflow Mode order is PostgreSQL Inspect Only, Repository to Database Compare, Database to Repository Compare, Reference-Data Compare. Default is PostgreSQL Inspect Only. |  |  |
-| Reference-Data Compare workflow | Select Reference-Data Compare. | Registry status, configured table selection, setup guidance, and read-only compare controls appear. No out-of-scope modal appears. |  |  |
-| Disabled beta controls | Open Compare Options. | Include refs and Exclude refs remain disabled. Reference-data scope, configured table selection, and Run Reference Data Compare are enabled only for the reference-data workflow. |  |  |
-| Non-Git workspace guardrail | Select a non-Git folder and run workspace/repo/init actions. | Not a Git Repository modal appears instead of confusing raw output. |  |  |
-| Non-production database inspect | Follow walkthrough through Inspect against the selected non-production database. | Supported object types appear. Pagila should show table, index, view, constraint, regular-function, and trigger rows where present. Unsupported object types remain deferred review context. |  |  |
-| Results status filter | Run an operation and use the Status dropdown. | All is the default and status filtering works. repoDifferent rows are prioritized near the top when present. |  |  |
-| Database to Repository Compare preview | Run Preview Repository Sync in Database to Repository Compare. | Preview rows appear and no files are written. |  |  |
-| Database to Repository Compare write | Type `WRITE REPOSITORY FILES` and click Write Selected Repository Changes on a clean repo. | Files are written only under `database/objects/`. PostgreSQL is not mutated. |  |  |
-| Database to Repository Release Plan not applicable | Switch to Database to Repository Compare and open Release Plan. | Release Plan shows not-applicable guidance and points users back to Results for repository writes. |  |  |
-| Repository to Database compare | Run compare after capture. | Results grid shows object rows and expected statuses. |  |  |
-| Object Diff line comparison | Select a table row. | Full Context DDL and Object Only DDL show line-by-line visual DDL comparison. Matched lines are white, different lines are red, source-only lines are green with display-only `+`, target-only lines are red with display-only `-`, and target-only lines are not struck through. |  |  |
-| Object Diff marker safety | Review DDL panels and generated repository/release files. | Display-only `+` and `-` markers do not appear in source DDL, target DDL, repository object files, release SQL, or generated review artifacts. |  |  |
-| Related Objects unavailable text | Select an object with unavailable related context. | Unavailable sections say `Not available in Private Beta`. |  |  |
-| Raw Details evidence | Open Raw Details or Selected JSON Item. | Panel is usable for support evidence and includes direction/context fields such as objectRef, objectType, producingWorkflowMode, sourceType, and targetType. |  |  |
-| Repository to Database Release Plan | Run Repository to Database Compare, then open Release Plan. | Release Context, Risk Summary, Object Summary, Release Candidates, Dry-run / Generated Artifacts, Reviewer Checklist, and Safety Statement are readable. |  |  |
-| Release dry-run | Run release dry-run from UI or CLI. | Planned artifacts, warnings, risk reasons, and errors appear when relevant. No files are written. |  |  |
-| Release write | Type `GENERATE RELEASE ARTIFACTS` and generate artifacts from Repository to Database Compare. | SQL, summary, risk JSON, and manifest are written under `database/releases/objects/` only. |  |  |
-| Dirty tree release block | Try Generate Release Artifact with a dirty working tree. | UI surfaces the dirty working tree condition and tells the tester to commit or stash before generating artifacts. |  |  |
+- DbState suggests applying SQL directly to a source database from the browser.
+- DbState mutates Git without explicit manual user action.
+- generated SQL appears destructive unexpectedly.
+- a CI command points at a non-disposable database.
+- a PostgreSQL password appears as a concrete default.
+- a Run CI button appears in the browser.
+- an Apply, Execute, or Sync to Database button appears.
 
-## Docker
+## Severity Guide
 
-| Test | Steps | Expected Result | Pass/Fail | Notes |
-| --- | --- | --- | --- | --- |
-| Docker build | Run `docker build -t dbstate-postgres:dev .`. | Image builds successfully. |  |  |
-| Docker service mode | Run service with `-p 127.0.0.1:4587:4587` and mounted workspace. | Service starts. |  |  |
-| Docker UI load | Open `http://127.0.0.1:4587/`. | UI loads. |  |  |
-| Docker workspace path | Select `/workspace` in UI. | Workspace status resolves inside the container. |  |  |
-| Docker executable path | Run `/usr/local/bin/dbstate --help` inside the container. | Help prints current commands. |  |  |
-| Docker Git mounted workspace | Add Git safe.directory for mounted Windows workspace when needed. | Repository status works for `/workspace`. |  |  |
-| Docker PostgreSQL host access | Use `host.docker.internal` for PostgreSQL on the Windows host, adding `--add-host=host.docker.internal:host-gateway` when needed. | Container can inspect the non-production PostgreSQL database. |  |  |
+Blocker:
+prevents testing or risks unsafe behavior.
 
-## CLI
+High:
+major workflow broken, incorrect output, or serious confusion.
 
-| Test | Steps | Expected Result | Pass/Fail | Notes |
-| --- | --- | --- | --- | --- |
-| Repo status | Run `dbstate repo status --format json`. | Repository context JSON returns. |  |  |
-| Init dry-run | Run `dbstate init --dry-run --format json`. | Planned paths return and no files are written. |  |  |
-| Inspect | Run `dbstate inspect postgres --all --format json`. | Read-only object inventory returns. |  |  |
-| Compare | Run `dbstate compare postgres --all --format json`. | Differences return without file writes. |  |  |
-| Plan | Run `dbstate plan postgres --all --format json`. | Plan items and warnings return. |  |  |
-| Release dry-run | Run `dbstate release postgres --all --name beta_review --dry-run --format json`. | Planned artifacts return and no files are written. |  |  |
-| Release write | Run `dbstate release postgres --all --name beta_review`. | Review artifacts are written under `database/releases/objects/`. |  |  |
-| Reference-data review script write | Generate a Reference Data Repository-to-Database review-only script. | Review artifacts are written under `database/releases/reference-data/`; DbState does not execute SQL or generate DELETE statements. |  |  |
-| Data compare empty registry | Run configured reference-data compare against empty registry. | Valid empty result or clear configured-table guidance. |  |  |
-| Data compare configured table selection | Load reference-data registry status and select configured tables. | Only tables listed in `database/reference-data/dbstate.reference-data.yml` are selectable. Masked columns are shown as masked and no data write or DML action is offered. |  |  |
+Medium:
+workflow issue with workaround, incomplete support, or confusing UI.
 
-## Validation
-
-| Test | Steps | Expected Result | Pass/Fail | Notes |
-| --- | --- | --- | --- | --- |
-| cargo fmt | Run `cargo fmt --check`. | Passes. |  |  |
-| cargo clippy | Run `cargo clippy --all-targets --all-features -- -D warnings`. | Passes. |  |  |
-| cargo build | Run `cargo build`. | Passes. |  |  |
-| cargo build release | Run `cargo build --release`. | Passes. |  |  |
-| cargo test or policy block | Run `cargo test`. | Passes, or is recorded as a Windows Smart App Control / Application Control policy block if generated Rust test binaries are blocked with `An Application Control policy has blocked this file. (os error 4551)`. |  |  |
-| Docker build validation | Run `docker build -t dbstate-postgres:dev .`. | Passes. |  |  |
-
-## Installer
-
-| Test | Steps | Expected Result | Pass/Fail | Notes |
-| --- | --- | --- | --- | --- |
-| Install | Run setup `.exe`. | DbState installs to `C:\Program Files\DbState`. |  |  |
-| Start Menu service shortcut | Click `Start DbState Local Service`. | Console service starts locally. |  |  |
-| UI shortcut | Click `Open DbState UI`. | Browser opens local UI. |  |  |
-| Installed folder excludes source | Inspect installed folder. | No `src`, `.git`, Cargo files, tests, workspaces, or profiles. |  |  |
-| Uninstall | Uninstall from Windows Apps or Control Panel. | Installed app files are removed. |  |  |
-
-## Safety
-
-| Test | Steps | Expected Result | Pass/Fail | Notes |
-| --- | --- | --- | --- | --- |
-| No direct apply | Review UI, CLI help, and docs. | No direct database apply workflow exists. |  |  |
-| No SQL execution | Review UI, CLI help, and release artifacts. | DbState does not execute SQL. |  |  |
-| No PostgreSQL mutation | Run inspect, compare, preview, and release dry-run. | PostgreSQL remains unchanged. |  |  |
-| No Git automation | Run write workflows. | DbState does not stage, commit, push, pull, fetch, or tag. |  |  |
-| No password persistence | Create and inspect non-secret profile storage. | No password is stored. |  |  |
-| No raw URL in Raw JSON | Use session URL and inspect Reports / Raw JSON. | Raw URL is redacted. |  |  |
-| No internal slice labels | Review tester-facing UI and generated artifacts. | Internal implementation slice labels are not shown. |  |  |
+Low:
+copy, polish, minor usability issue, or docs issue.
 
 ## Smoke Result Summary
 
 - Tester:
 - Date:
 - DbState tag:
-- Installer filename:
+- Distribution route:
 - OS:
 - Browser:
+- PostgreSQL version:
 - Overall result:
 - Blocking issues:
 - Follow-up needed:

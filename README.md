@@ -147,7 +147,7 @@ See `docs/postgresql-v0.1/28-slice-1-implementation-notes.md`, `docs/postgresql-
 
 ## Private Beta Golden Path
 
-Technical testers can follow the repeatable ParkingDemo walkthrough in `docs/postgresql-v0.1/48-slice-18-golden-path-private-beta-walkthrough.md`.
+Technical testers can follow the repeatable Private Beta 2 golden-path walkthrough in `docs/postgresql-v0.1/48-slice-18-golden-path-private-beta-walkthrough.md`.
 
 Use `docs/postgresql-v0.1/49-private-beta-feedback-template.md` for private beta feedback. Do not include passwords, full PostgreSQL URLs, production data, or secrets in feedback.
 
