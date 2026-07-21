@@ -8071,6 +8071,91 @@ fn database_state_ci_page_preserves_existing_primary_pages() {
 }
 
 #[test]
+fn private_beta_ui_polish_contract_is_present() {
+    let html = ui_html();
+    let css = ui_css();
+    let js = ui_js();
+    let combined = format!("{html}\n{css}\n{js}");
+
+    assert!(html.contains("data-testid=\"workspace-check-status\""));
+    assert!(html.contains("data-action=\"check-status\""));
+    assert!(html.contains("Check Status"));
+    assert!(!html.contains("data-testid=\"workspace-check\""));
+    assert!(!html.contains("data-testid=\"workspace-repo-status\""));
+    assert!(!html.contains(">Check Workspace</button>"));
+    assert!(!html.contains(">Repo Status</button>"));
+    assert!(js.contains("document.querySelector(\"[data-action='check-status']\")"));
+    assert!(js.contains("runCheckStatus();"));
+    assert!(js.contains("requestJson(shellActionEndpointByAction[\"workspace-status\"]"));
+    assert!(js.contains("requestJson(shellActionEndpointByAction[\"repo-status\"]"));
+
+    for expected in [
+        "data-action=\"directory-roots\"",
+        "data-action=\"directory-up\"",
+        "data-action=\"directory-refresh\"",
+        "data-action=\"directory-select\"",
+        "textOrEmpty(root.name).toLowerCase() === \"service working directory\"",
+        ".directory-entry.directory-entry-selected",
+        "#directory-picker-path.directory-entry-selected",
+        "classList.add(\"directory-entry-selected\")",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "missing directory picker polish contract {expected}"
+        );
+    }
+
+    for expected in [
+        "data-testid=\"operation-alert\"",
+        "id=\"operation-alert-title\"",
+        "id=\"operation-alert-status\"",
+        "id=\"operation-alert-warnings\"",
+        "id=\"operation-alert-errors\"",
+        "id=\"operation-alert-message\"",
+        ".operation-alert-success",
+        ".operation-alert-warning",
+        ".operation-alert-error",
+        "function updateOperationAlert",
+        "updateOperationAlert(label, data);",
+        "Running \" + label + \"...",
+        "id=\"last-operation\"",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "missing operation alert/status contract {expected}"
+        );
+    }
+
+    assert!(!html.contains("aria-label=\"Object type filters\""));
+    assert!(!html.contains("indexes future"));
+    assert!(!html.contains("views future"));
+    assert!(!html.contains("functions future"));
+    assert!(!html.contains("triggers future"));
+    assert!(html.contains("for=\"compare-schema\""));
+    assert!(html.contains("for=\"compare-table\""));
+    assert!(html.contains("for=\"plan-include\""));
+    assert!(html.contains("for=\"plan-exclude\""));
+    assert!(html.contains("for=\"data-scope\""));
+    assert!(html.contains("for=\"data-table\""));
+    assert!(html.contains("Refresh Database Inventory"));
+    assert!(html.contains("Run Compare"));
+    assert!(html.contains("Run Plan"));
+
+    assert!(html.contains("Database State CI"));
+    assert!(combined.contains("$DbStateCiPostgresPassword"));
+    assert!(combined.contains("<DISPOSABLE_POSTGRES_PASSWORD>"));
+    assert!(!combined.contains("POSTGRES_PASSWORD=postgres"));
+    assert!(!combined.contains("postgres://postgres:postgres@"));
+    assert!(!combined.contains("/api/v1/ci"));
+    assert!(!combined.contains("Run CI</button>"));
+    assert!(!combined.contains("Apply to Database"));
+    assert!(!combined.contains("Execute SQL"));
+    assert!(!combined.contains("Sync to Database"));
+    assert!(!combined.contains("localStorage"));
+    assert!(!combined.contains("sessionStorage"));
+}
+
+#[test]
 fn slice12_ui_html_contains_safety_messages_and_no_external_assets() {
     let html = ui_html();
 
@@ -8426,8 +8511,8 @@ fn ui_contains_stable_playwright_demo_selectors() {
         "data-testid=\"tab-workspace\"",
         "data-testid=\"workspace-browse\"",
         "data-testid=\"workspace-health\"",
-        "data-testid=\"workspace-check\"",
-        "data-testid=\"workspace-repo-status\"",
+        "data-testid=\"workspace-check-status\"",
+        "data-testid=\"operation-alert\"",
         "data-testid=\"workspace-init-plan\"",
         "data-testid=\"workspace-initialize-project\"",
         "data-testid=\"tab-source-target\"",
@@ -8581,8 +8666,7 @@ fn shell_click_handlers_have_runtime_dom_targets_and_prevent_default() {
 
     for action in [
         "health",
-        "workspace-status",
-        "repo-status",
+        "check-status",
         "init-plan",
         "profiles-refresh",
         "profile-save",
@@ -8617,8 +8701,7 @@ fn shell_workspace_controls_have_independent_endpoint_handlers() {
 
     for (test_id, action, label) in [
         ("workspace-health", "health", "Health"),
-        ("workspace-check", "workspace-status", "Check Workspace"),
-        ("workspace-repo-status", "repo-status", "Repo Status"),
+        ("workspace-check-status", "check-status", "Check Status"),
         ("workspace-init-plan", "init-plan", "Init Plan"),
     ] {
         assert!(
@@ -8642,6 +8725,7 @@ fn shell_workspace_controls_have_independent_endpoint_handlers() {
 
     for expected in [
         "\"health\": approvedEndpoints.health",
+        "\"check-status\": approvedEndpoints.workspaceValidate",
         "\"workspace-status\": approvedEndpoints.workspaceValidate",
         "\"repo-status\": approvedEndpoints.repoStatus",
         "\"init-plan\": approvedEndpoints.initPlan",
@@ -8659,20 +8743,13 @@ fn shell_workspace_controls_have_independent_endpoint_handlers() {
     assert!(!health.contains("approvedEndpoints.workspaceValidate"));
     assert!(!health.contains("approvedEndpoints.initPlan"));
 
-    let workspace = js_handler_for_action(js, "workspace-status");
-    assert!(workspace.contains("requestJson(shellActionEndpointByAction[\"workspace-status\"]"));
-    assert!(workspace.contains("updateStatus(\"Workspace validate\", data)"));
-    assert!(!workspace.contains("approvedEndpoints.repoStatus"));
-    assert!(!workspace.contains("run(\"Repository status\""));
-    assert!(!workspace.contains("approvedEndpoints.initPlan"));
-
-    let repo = js_handler_for_action(js, "repo-status");
-    assert!(repo.contains("guardGitWorkspaceBefore(\"repo-status\")"));
-    assert!(
-        repo.contains("run(\"Repository status\", shellActionEndpointByAction[\"repo-status\"]")
-    );
-    assert!(!repo.contains("approvedEndpoints.workspaceValidate"));
-    assert!(!repo.contains("approvedEndpoints.initPlan"));
+    let check_status = js_handler_for_action(js, "check-status");
+    assert!(check_status.contains("runCheckStatus();"));
+    assert!(js.contains("requestJson(shellActionEndpointByAction[\"workspace-status\"]"));
+    assert!(js.contains("requestJson(shellActionEndpointByAction[\"repo-status\"]"));
+    assert!(js.contains("updateStatus(\"Check Status\", data)"));
+    assert!(!html.contains("Check Workspace"));
+    assert!(!html.contains("Repo Status"));
 
     let init_plan = js_handler_for_action(js, "init-plan");
     assert!(init_plan.contains("guardGitWorkspaceBefore(\"init-plan\")"));

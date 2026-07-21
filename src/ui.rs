@@ -46,6 +46,14 @@ const UI_HTML: &str = r#"<!doctype html>
     </nav>
 
     <main class="workflow-main">
+      <section class="operation-alert operation-alert-info" id="operation-alert" data-testid="operation-alert" role="status" aria-live="polite">
+        <strong id="operation-alert-title">No operation run</strong>
+        <span id="operation-alert-status">Status: not run</span>
+        <span id="operation-alert-warnings">Warnings: 0</span>
+        <span id="operation-alert-errors">Errors: 0</span>
+        <span id="operation-alert-message">Select an operation to run.</span>
+      </section>
+
       <section class="workflow-panel active" id="step-workspace">
         <div class="panel-heading">
           <h2>Workspace</h2>
@@ -60,8 +68,7 @@ const UI_HTML: &str = r#"<!doctype html>
         <div class="button-row">
           <button type="button" data-action="workspace-browse" data-testid="workspace-browse">Browse</button>
           <button type="button" data-action="health" data-testid="workspace-health">Health</button>
-          <button type="button" data-action="workspace-status" data-testid="workspace-check">Check Workspace</button>
-          <button type="button" data-action="repo-status" data-testid="workspace-repo-status">Repo Status</button>
+          <button type="button" data-action="check-status" data-testid="workspace-check-status">Check Status</button>
           <button type="button" data-action="init-plan" data-testid="workspace-init-plan">Init Plan</button>
         </div>
         <div class="subsection">
@@ -254,18 +261,6 @@ const UI_HTML: &str = r#"<!doctype html>
         </div>
         <p class="note">Run Inspect first to populate schema and table lists.</p>
         <p class="note">Reference-data compare is read-only. DbState does not insert, update, delete, merge, or apply data changes. Only tables listed in <code>database/reference-data/dbstate.reference-data.yml</code> are reference-data tables. Masked columns remain masked in results.</p>
-        <div class="object-filter-row" aria-label="Object type filters">
-          <label><input type="checkbox" checked disabled> schemas</label>
-          <label><input type="checkbox" checked disabled> tables</label>
-          <label><input type="checkbox" checked disabled> aggregates</label>
-          <label><input type="checkbox" disabled> indexes future</label>
-          <label><input type="checkbox" disabled> views future</label>
-          <label><input type="checkbox" checked disabled> materialized views</label>
-          <label><input type="checkbox" checked disabled> functions</label>
-          <label><input type="checkbox" checked disabled> triggers</label>
-          <label><input type="checkbox" checked disabled> grants</label>
-          <label><input type="checkbox" checked disabled> RLS policies</label>
-        </div>
         <div class="button-row">
           <button type="button" data-action="inspect" data-standard-operation-action>Refresh Database Inventory</button>
           <button type="button" data-action="compare" data-standard-operation-action>Run Compare</button>
@@ -962,6 +957,39 @@ body {
   border-bottom: 1px solid #eed28b;
 }
 
+.operation-alert {
+  display: grid;
+  grid-template-columns: minmax(160px, max-content) repeat(3, max-content) minmax(220px, 1fr);
+  gap: 8px 12px;
+  align-items: center;
+  margin-bottom: 16px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #eef2f5;
+  color: var(--text);
+}
+
+.operation-alert-success {
+  border-color: #9bd6b5;
+  background: #e7f7ee;
+}
+
+.operation-alert-warning {
+  border-color: #f3d27a;
+  background: #fff6d8;
+}
+
+.operation-alert-error {
+  border-color: #ecaaa3;
+  background: #ffe9e6;
+}
+
+.operation-alert-info {
+  border-color: var(--border);
+  background: #eef2f5;
+}
+
 .context-strip {
   padding: 9px 24px;
   color: var(--muted);
@@ -1155,6 +1183,19 @@ button:hover {
 
 .directory-entry:hover {
   background: #edf7fb;
+}
+
+.directory-entry.directory-entry-selected {
+  border-color: var(--accent);
+  background: #dff3fb;
+  box-shadow: inset 4px 0 0 var(--accent);
+  font-weight: 700;
+}
+
+#directory-picker-path.directory-entry-selected {
+  border-color: var(--accent);
+  background: #eef9fc;
+  box-shadow: 0 0 0 2px rgba(19, 116, 156, 0.18);
 }
 
 .object-filter-row {
@@ -1798,6 +1839,7 @@ const UI_JS: &str = r#"(function () {
 
   const shellActionEndpointByAction = Object.freeze({
     "health": approvedEndpoints.health,
+    "check-status": approvedEndpoints.workspaceValidate,
     "workspace-status": approvedEndpoints.workspaceValidate,
     "repo-status": approvedEndpoints.repoStatus,
     "init-plan": approvedEndpoints.initPlan,
@@ -2192,11 +2234,33 @@ const UI_JS: &str = r#"(function () {
     return parts.join(" | ");
   }
 
+  function setOperationAlert(label, status, warningCount, errorCount, message, stateClass) {
+    const alert = byId("operation-alert");
+    if (!alert) {
+      return;
+    }
+    alert.className = "operation-alert operation-alert-" + stateClass;
+    byId("operation-alert-title").textContent = label || "Operation";
+    byId("operation-alert-status").textContent = "Status: " + status;
+    byId("operation-alert-warnings").textContent = "Warnings: " + warningCount;
+    byId("operation-alert-errors").textContent = "Errors: " + errorCount;
+    byId("operation-alert-message").textContent = message || "";
+  }
+
+  function updateOperationAlert(label, data) {
+    const warningCount = Array.isArray(data && data.warnings) ? data.warnings.length : 0;
+    const errorCount = Array.isArray(data && data.errors) ? data.errors.length : 0;
+    const success = !!(data && data.success);
+    const stateClass = success ? (warningCount ? "warning" : "success") : "error";
+    setOperationAlert(label, success ? "success" : "failed", warningCount, errorCount, summarize(data), stateClass);
+  }
+
   function updateStatus(label, data) {
     byId("last-operation").textContent = label;
     byId("last-status").textContent = data && data.success ? "success" : "failed";
     byId("last-warnings").textContent = Array.isArray(data && data.warnings) ? data.warnings.length : 0;
     byId("last-errors").textContent = Array.isArray(data && data.errors) ? data.errors.length : 0;
+    updateOperationAlert(label, data);
   }
 
   function updateSummary(id, entries) {
@@ -2219,6 +2283,12 @@ const UI_JS: &str = r#"(function () {
     return text;
   }
 
+  function sameDirectoryPath(left, right) {
+    const leftPath = friendlyPath(left).replace(/\/+$/g, "").toLowerCase();
+    const rightPath = friendlyPath(right).replace(/\/+$/g, "").toLowerCase();
+    return !!leftPath && !!rightPath && leftPath === rightPath;
+  }
+
   function setDirectoryPickerError(message) {
     const target = byId("directory-picker-error");
     target.textContent = message || "";
@@ -2232,16 +2302,27 @@ const UI_JS: &str = r#"(function () {
       target.textContent = "No browse roots are available.";
       return;
     }
+    let rendered = 0;
     roots.forEach(function (root) {
+      if (textOrEmpty(root.name).toLowerCase() === "service working directory") {
+        return;
+      }
       const button = document.createElement("button");
       button.type = "button";
-      button.className = "secondary-button";
+      button.className = "directory-entry";
+      if (sameDirectoryPath(root.path, state.directoryCurrentPath) || sameDirectoryPath(root.path, workspacePath())) {
+        button.classList.add("directory-entry-selected");
+      }
       button.textContent = root.name || root.path;
       button.addEventListener("click", function () {
         listDirectories(root.path);
       });
       target.appendChild(button);
+      rendered += 1;
     });
+    if (!rendered) {
+      target.textContent = "No browse roots are available.";
+    }
   }
 
   function renderDirectoryList(data) {
@@ -2250,6 +2331,7 @@ const UI_JS: &str = r#"(function () {
     state.directoryCurrentPath = data.path || "";
     state.directoryParentPath = data.parentPath || "";
     byId("directory-picker-path").value = state.directoryCurrentPath;
+    byId("directory-picker-path").classList.toggle("directory-entry-selected", !!state.directoryCurrentPath);
     if (!Array.isArray(data.directories) || !data.directories.length) {
       target.textContent = "No child directories are available.";
       return;
@@ -2258,6 +2340,9 @@ const UI_JS: &str = r#"(function () {
       const row = document.createElement("button");
       row.type = "button";
       row.className = "directory-entry";
+      if (sameDirectoryPath(directory.path, workspacePath())) {
+        row.classList.add("directory-entry-selected");
+      }
       row.textContent = directory.name || directory.path;
       row.addEventListener("click", function () {
         listDirectories(directory.path);
@@ -5775,6 +5860,7 @@ const UI_JS: &str = r#"(function () {
     byId("last-status").textContent = "not run";
     byId("last-warnings").textContent = "0";
     byId("last-errors").textContent = "0";
+    setOperationAlert("No operation run", "not run", 0, 0, reason || "Select an operation to run.", "info");
     updateResultsContext("none", {});
     renderErrorSummary({ success: true, warnings: [], errors: [] });
     renderWarnings({ warnings: [], errors: [] });
@@ -6429,9 +6515,86 @@ const UI_JS: &str = r#"(function () {
     }
   }
 
+  function workspaceSummaryEntries(data) {
+    return {
+      success: data.success,
+      status: data.httpStatus,
+      repository: data.repositoryPath || "",
+      gitRoot: data.gitRoot || "",
+      branch: data.branch || "",
+      protectedBranch: typeof data.isProtectedBranch === "boolean" ? data.isProtectedBranch : "",
+      tree: data.workingTreeStatus || "",
+      dirtyPaths: typeof data.dirtyPathCount === "number" ? data.dirtyPathCount : "",
+      project: data.dbstateProjectStatus || "",
+      missingPaths: Array.isArray(data.missingPaths) ? data.missingPaths.length : 0,
+      warnings: Array.isArray(data.warnings) ? data.warnings.length : 0,
+      errors: Array.isArray(data.errors) ? data.errors.length : 0
+    };
+  }
+
+  function combineStatusResults(workspaceData, repoData) {
+    if (!repoData) {
+      return workspaceData;
+    }
+    const warnings = []
+      .concat(Array.isArray(workspaceData.warnings) ? workspaceData.warnings : [])
+      .concat(Array.isArray(repoData.warnings) ? repoData.warnings : []);
+    const errors = []
+      .concat(Array.isArray(workspaceData.errors) ? workspaceData.errors : [])
+      .concat(Array.isArray(repoData.errors) ? repoData.errors : []);
+    return Object.assign({}, workspaceData, {
+      command: "check status",
+      success: workspaceData.success !== false && repoData.success !== false,
+      branch: repoData.branch || workspaceData.branch || "",
+      gitRoot: repoData.gitRoot || workspaceData.gitRoot || "",
+      isProtectedBranch: typeof repoData.isProtectedBranch === "boolean" ? repoData.isProtectedBranch : workspaceData.isProtectedBranch,
+      workingTreeStatus: repoData.workingTreeStatus || workspaceData.workingTreeStatus || "",
+      dirtyPathCount: typeof repoData.dirtyPathCount === "number" ? repoData.dirtyPathCount : workspaceData.dirtyPathCount,
+      warnings: warnings,
+      errors: errors,
+      workspaceValidation: workspaceData,
+      repositoryStatus: repoData
+    });
+  }
+
+  async function runCheckStatus() {
+    responseSummary.textContent = "Running Check Status...";
+    setOperationAlert("Check Status", "running", 0, 0, "Running Check Status...", "info");
+    showStep("workspace");
+    try {
+      const workspaceData = await requestJson(shellActionEndpointByAction["workspace-status"], attachWorkspacePath({}));
+      let repoData = null;
+      if (workspaceData && workspaceData.isGitRepository !== false && workspaceData.dbstateProjectStatus !== "notGitRepository") {
+        repoData = await requestJson(shellActionEndpointByAction["repo-status"], attachWorkspacePath({}));
+      }
+      const data = combineStatusResults(workspaceData, repoData);
+      state.lastResponse = data;
+      state.lastOperation = "Check Status";
+      responseSummary.textContent = "Check Status: " + summarize(data);
+      jsonViewer.textContent = redactedJson(data);
+      updateStatus("Check Status", data);
+      updateWorkspaceContext(data);
+      updateSummary("workspace-summary", workspaceSummaryEntries(data));
+      if (data && data.dbstateProjectStatus === "notGitRepository") {
+        showNotGitRepositoryModal();
+      }
+    } catch (error) {
+      const message = error && error.message ? error.message : "Unknown service error.";
+      const data = { success: false, errors: [message], warnings: [] };
+      state.lastResponse = data;
+      state.lastOperation = "Check Status";
+      responseSummary.textContent = "Check Status: " + message;
+      jsonViewer.textContent = redactedJson(data);
+      updateStatus("Check Status", data);
+      renderErrorSummary(data);
+      renderWarnings(data);
+    }
+  }
+
   async function run(label, endpoint, body, options) {
     const config = options || {};
     responseSummary.textContent = "Running " + label + "...";
+    setOperationAlert(label, "running", 0, 0, "Running " + label + "...", "info");
     showStep(config.step || "reports");
     try {
       const data = await requestJson(endpoint, body, config.method);
@@ -6483,20 +6646,7 @@ const UI_JS: &str = r#"(function () {
       updateStatusFilterOptions(rows);
       renderResults(rows);
       if (config.summaryId) {
-        updateSummary(config.summaryId, {
-          success: data.success,
-          status: data.httpStatus,
-          repository: data.repositoryPath || "",
-          gitRoot: data.gitRoot || "",
-          branch: data.branch || "",
-          protectedBranch: typeof data.isProtectedBranch === "boolean" ? data.isProtectedBranch : "",
-          tree: data.workingTreeStatus || "",
-          dirtyPaths: typeof data.dirtyPathCount === "number" ? data.dirtyPathCount : "",
-          project: data.dbstateProjectStatus || "",
-          missingPaths: Array.isArray(data.missingPaths) ? data.missingPaths.length : 0,
-          warnings: Array.isArray(data.warnings) ? data.warnings.length : 0,
-          errors: Array.isArray(data.errors) ? data.errors.length : 0
-        });
+        updateSummary(config.summaryId, workspaceSummaryEntries(data));
       }
       if (label === "Health") {
         servicePill.textContent = data.success ? "Service healthy" : "Service issue";
@@ -6643,25 +6793,9 @@ const UI_JS: &str = r#"(function () {
     run("Health", shellActionEndpointByAction["health"], null, { summaryId: "workspace-summary", step: "workspace" });
   });
 
-  document.querySelector("[data-action='workspace-status']").addEventListener("click", async function (event) {
+  document.querySelector("[data-action='check-status']").addEventListener("click", async function (event) {
     event.preventDefault();
-    const data = await requestJson(shellActionEndpointByAction["workspace-status"], attachWorkspacePath({}));
-    state.lastResponse = data;
-    jsonViewer.textContent = redactedJson(data);
-    updateStatus("Workspace validate", data);
-    updateWorkspaceContext(data);
-    updateSummary("workspace-summary", data);
-    if (data && data.dbstateProjectStatus === "notGitRepository") {
-      showNotGitRepositoryModal();
-    }
-  });
-
-  document.querySelector("[data-action='repo-status']").addEventListener("click", async function (event) {
-    event.preventDefault();
-    if (!(await guardGitWorkspaceBefore("repo-status"))) {
-      return;
-    }
-    run("Repository status", shellActionEndpointByAction["repo-status"], attachWorkspacePath({}), { summaryId: "workspace-summary", step: "workspace" });
+    runCheckStatus();
   });
 
   document.querySelector("[data-action='init-plan']").addEventListener("click", async function (event) {
