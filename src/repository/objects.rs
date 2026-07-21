@@ -6,6 +6,8 @@ pub(crate) enum RepositoryObjectType {
     Table,
     Extension,
     Enum,
+    Domain,
+    Aggregate,
     Sequence,
     Index,
     View,
@@ -47,6 +49,15 @@ pub(crate) enum ObjectRef {
     Enum {
         schema: String,
         enum_name: String,
+    },
+    Domain {
+        schema: String,
+        domain: String,
+    },
+    Aggregate {
+        schema: String,
+        aggregate: String,
+        signature: String,
     },
     Sequence {
         schema: String,
@@ -137,6 +148,26 @@ impl ObjectRef {
             "enum" => {
                 let (schema, enum_name) = parse_two_part_object_ref(value, identity, "enum")?;
                 Ok(Self::Enum { schema, enum_name })
+            }
+            "domain" => {
+                let (schema, domain) = parse_two_part_object_ref(value, identity, "domain")?;
+                Ok(Self::Domain { schema, domain })
+            }
+            "aggregate" => {
+                let parts: Vec<&str> = identity.split('.').collect();
+                if parts.len() != 3 || parts.iter().any(|part| part.trim().is_empty()) {
+                    return Err(format!(
+                        "Invalid aggregate object reference '{value}'. Use aggregate:<schema>.<aggregate>.<signature>."
+                    ));
+                }
+                safe_file_component(parts[0])?;
+                safe_file_component(parts[1])?;
+                safe_file_component(parts[2])?;
+                Ok(Self::Aggregate {
+                    schema: parts[0].to_string(),
+                    aggregate: parts[1].to_string(),
+                    signature: parts[2].to_string(),
+                })
             }
             "sequence" => {
                 let (schema, sequence) = parse_two_part_object_ref(value, identity, "sequence")?;
@@ -297,6 +328,12 @@ impl ObjectRef {
             Self::Table { schema, table } => format!("table:{schema}.{table}"),
             Self::Extension(extension) => format!("extension:{extension}"),
             Self::Enum { schema, enum_name } => format!("enum:{schema}.{enum_name}"),
+            Self::Domain { schema, domain } => format!("domain:{schema}.{domain}"),
+            Self::Aggregate {
+                schema,
+                aggregate,
+                signature,
+            } => format!("aggregate:{schema}.{aggregate}.{signature}"),
             Self::Sequence { schema, sequence } => format!("sequence:{schema}.{sequence}"),
             Self::Index {
                 schema,
@@ -352,6 +389,8 @@ impl ObjectRef {
             Self::Table { .. } => "table",
             Self::Extension(_) => "extension",
             Self::Enum { .. } => "enum",
+            Self::Domain { .. } => "domain",
+            Self::Aggregate { .. } => "aggregate",
             Self::Sequence { .. } => "sequence",
             Self::Index { .. } => "index",
             Self::View { .. } => "view",
@@ -369,6 +408,8 @@ impl ObjectRef {
             Self::Schema(_) | Self::Extension(_) => None,
             Self::Table { schema, .. } => Some(Self::Schema(schema.clone())),
             Self::Enum { schema, .. }
+            | Self::Domain { schema, .. }
+            | Self::Aggregate { schema, .. }
             | Self::Sequence { schema, .. }
             | Self::View { schema, .. }
             | Self::MaterializedView { schema, .. }
@@ -436,6 +477,26 @@ pub(crate) fn object_ref_from_relative_path(relative_path: &str) -> Result<Objec
             ));
         };
         return Ok(ObjectRef::Enum { schema, enum_name });
+    }
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/domains/") {
+        let Some((schema, domain)) = table_name_from_file(file_name) else {
+            return Err(format!(
+                "Invalid domain desired-state file path: {relative_path}"
+            ));
+        };
+        return Ok(ObjectRef::Domain { schema, domain });
+    }
+    if let Some(file_name) = relative_path.strip_prefix("database/objects/aggregates/") {
+        let Some((schema, aggregate, signature)) = three_part_name_from_file(file_name) else {
+            return Err(format!(
+                "Invalid aggregate desired-state file path: {relative_path}"
+            ));
+        };
+        return Ok(ObjectRef::Aggregate {
+            schema,
+            aggregate,
+            signature,
+        });
     }
     if let Some(file_name) = relative_path.strip_prefix("database/objects/sequences/") {
         let Some((schema, sequence)) = table_name_from_file(file_name) else {
@@ -578,6 +639,27 @@ pub(crate) fn enum_file_path(schema: &str, enum_name: &str) -> Result<String, St
         "database/objects/enums/{}.{}.sql",
         safe_file_component(schema)?,
         safe_file_component(enum_name)?
+    ))
+}
+
+pub(crate) fn domain_file_path(schema: &str, domain: &str) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/domains/{}.{}.sql",
+        safe_file_component(schema)?,
+        safe_file_component(domain)?
+    ))
+}
+
+pub(crate) fn aggregate_file_path(
+    schema: &str,
+    aggregate: &str,
+    identity_arguments: &str,
+) -> Result<String, String> {
+    Ok(format!(
+        "database/objects/aggregates/{}.{}.{}.sql",
+        safe_file_component(schema)?,
+        safe_file_component(aggregate)?,
+        function_identity_slug(identity_arguments)?
     ))
 }
 
@@ -804,6 +886,8 @@ pub(crate) fn object_key(object: &DesiredStateObject) -> String {
         ),
         RepositoryObjectType::Extension => extension_key(&object.object_name),
         RepositoryObjectType::Enum => enum_key(&object.schema_name, &object.object_name),
+        RepositoryObjectType::Domain => domain_key(&object.schema_name, &object.object_name),
+        RepositoryObjectType::Aggregate => aggregate_key(&object.schema_name, &object.object_name),
         RepositoryObjectType::Sequence => sequence_key(&object.schema_name, &object.object_name),
         RepositoryObjectType::Index => index_key(
             &object.schema_name,
@@ -848,6 +932,14 @@ pub(crate) fn extension_key(extension: &str) -> String {
 
 pub(crate) fn enum_key(schema: &str, enum_name: &str) -> String {
     format!("enum:{schema}.{enum_name}")
+}
+
+pub(crate) fn domain_key(schema: &str, domain: &str) -> String {
+    format!("domain:{schema}.{domain}")
+}
+
+pub(crate) fn aggregate_key(schema: &str, aggregate: &str) -> String {
+    format!("aggregate:{schema}.{aggregate}")
 }
 
 pub(crate) fn sequence_key(schema: &str, sequence: &str) -> String {

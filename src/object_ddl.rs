@@ -1,16 +1,17 @@
 use crate::git::git_root;
 use crate::postgres::{
     inspect_postgres, invalid_postgres_url_message, is_postgres_connection_url,
-    render_constraint_sql, render_enum_sql, render_extension_sql, render_function_sql,
-    render_grant_sql, render_index_sql, render_materialized_view_sql, render_rls_policy_sql,
-    render_schema_sql, render_sequence_sql, render_table_sql, render_trigger_sql, render_view_sql,
+    render_aggregate_sql, render_constraint_sql, render_domain_sql, render_enum_sql,
+    render_extension_sql, render_function_sql, render_grant_sql, render_index_sql,
+    render_materialized_view_sql, render_rls_policy_sql, render_schema_sql, render_sequence_sql,
+    render_table_sql_with_partition, render_trigger_sql, render_view_sql, AggregateInfo,
     ColumnInfo, ConstraintInfo, FunctionInfo, GrantInfo, IndexInfo, RlsPolicyInfo, TriggerInfo,
 };
 use crate::repository::{
-    enum_file_path, extension_file_path, function_identity_slug, index_file_path,
-    materialized_view_file_path, object_ref_from_relative_path, rls_policy_file_path,
-    safe_file_component, schema_file_path, sequence_file_path, table_file_path, trigger_file_path,
-    view_file_path, ObjectRef,
+    aggregate_file_path, domain_file_path, enum_file_path, extension_file_path,
+    function_identity_slug, index_file_path, materialized_view_file_path,
+    object_ref_from_relative_path, rls_policy_file_path, safe_file_component, schema_file_path,
+    sequence_file_path, table_file_path, trigger_file_path, view_file_path, ObjectRef,
 };
 use crate::service::{
     parse_service_request, request_string, resolve_service_postgres_connection,
@@ -49,6 +50,8 @@ pub(crate) fn service_object_ddl_endpoint(body: &str, cwd: &Path) -> ServiceHttp
             | "table"
             | "extension"
             | "enum"
+            | "domain"
+            | "aggregate"
             | "sequence"
             | "index"
             | "view"
@@ -199,6 +202,15 @@ fn default_object_relative_path(
         "table" => table_file_path(schema, object_name),
         "extension" => extension_file_path(object_name),
         "enum" => enum_file_path(schema, object_name),
+        "domain" => domain_file_path(schema, object_name),
+        "aggregate" => {
+            let parts: Vec<&str> = object_name.split('.').collect();
+            if parts.len() == 2 {
+                aggregate_file_path(schema, parts[0], parts[1])
+            } else {
+                Err("Aggregate DDL detail requires a release/result relativePath.".to_string())
+            }
+        }
         "sequence" => sequence_file_path(schema, object_name),
         "index" => {
             let parts: Vec<&str> = object_name.split('.').collect();
@@ -676,16 +688,21 @@ fn database_full_context_ddl(
         .tables
         .iter()
         .find(|candidate| candidate.schema_name == schema && candidate.table_name == object_name);
-    if table.is_none() {
+    let Some(table) = table else {
         return Ok((None, Vec::new(), Vec::new()));
-    }
+    };
     let columns: Vec<ColumnInfo> = inventory
         .columns
         .iter()
         .filter(|column| column.schema_name == schema && column.table_name == object_name)
         .cloned()
         .collect();
-    let mut ddl_parts = vec![render_table_sql(schema, object_name, &columns)];
+    let mut ddl_parts = vec![render_table_sql_with_partition(
+        schema,
+        object_name,
+        &columns,
+        table.partition_key.as_deref(),
+    )];
     let mut related = Vec::new();
     let mut indexes: Vec<IndexInfo> = inventory
         .indexes
@@ -794,6 +811,8 @@ fn validate_repository_object_relative_path(relative_path: &str) -> Result<(), S
         || relative_path.starts_with("database/objects/tables/")
         || relative_path.starts_with("database/objects/extensions/")
         || relative_path.starts_with("database/objects/enums/")
+        || relative_path.starts_with("database/objects/domains/")
+        || relative_path.starts_with("database/objects/aggregates/")
         || relative_path.starts_with("database/objects/sequences/")
         || relative_path.starts_with("database/objects/indexes/")
         || relative_path.starts_with("database/objects/views/")
@@ -851,16 +870,21 @@ fn database_object_ddl(
             let table = inventory.tables.iter().find(|candidate| {
                 candidate.schema_name == schema && candidate.table_name == object_name
             });
-            if table.is_none() {
+            let Some(table) = table else {
                 return Ok(None);
-            }
+            };
             let columns: Vec<ColumnInfo> = inventory
                 .columns
                 .iter()
                 .filter(|column| column.schema_name == schema && column.table_name == object_name)
                 .cloned()
                 .collect();
-            Ok(Some(render_table_sql(schema, object_name, &columns)))
+            Ok(Some(render_table_sql_with_partition(
+                schema,
+                object_name,
+                &columns,
+                table.partition_key.as_deref(),
+            )))
         }
         "extension" => Ok(inventory
             .extensions
@@ -872,6 +896,13 @@ fn database_object_ddl(
             .iter()
             .find(|candidate| candidate.schema_name == schema && candidate.enum_name == object_name)
             .map(render_enum_sql)),
+        "domain" => Ok(inventory
+            .domains
+            .iter()
+            .find(|candidate| {
+                candidate.schema_name == schema && candidate.domain_name == object_name
+            })
+            .map(render_domain_sql)),
         "sequence" => Ok(inventory
             .sequences
             .iter()
@@ -910,6 +941,13 @@ fn database_object_ddl(
                     .map(render_function_sql),
             )
         }
+        "aggregate" => Ok(find_aggregate_for_object(
+            &inventory.aggregates,
+            schema,
+            object_name,
+            relative_path,
+        )
+        .map(render_aggregate_sql)),
         "trigger" => {
             Ok(
                 find_trigger_for_object(&inventory.triggers, schema, object_name, relative_path)
@@ -1069,6 +1107,43 @@ fn function_identity_from_name_or_path(
 ) -> Option<(String, String)> {
     if let Some(path) = relative_path {
         let file_name = path.strip_prefix("database/objects/functions/")?;
+        let stem = file_name.strip_suffix(".sql")?;
+        let parts: Vec<&str> = stem.split('.').collect();
+        if parts.len() == 3 && !parts.iter().any(|part| part.is_empty()) {
+            return Some((parts[1].to_string(), parts[2].to_string()));
+        }
+    }
+    let parts: Vec<&str> = object_name.split('.').collect();
+    if parts.len() == 2 && !parts.iter().any(|part| part.is_empty()) {
+        return Some((parts[0].to_string(), parts[1].to_string()));
+    }
+    None
+}
+
+fn find_aggregate_for_object<'a>(
+    aggregates: &'a [AggregateInfo],
+    schema: &str,
+    object_name: &str,
+    relative_path: Option<&str>,
+) -> Option<&'a AggregateInfo> {
+    let (aggregate_name, signature_slug) =
+        aggregate_identity_from_name_or_path(object_name, relative_path)?;
+    aggregates.iter().find(|candidate| {
+        candidate.schema_name == schema
+            && candidate.aggregate_name == aggregate_name
+            && function_identity_slug(&candidate.identity_arguments)
+                .ok()
+                .as_deref()
+                == Some(signature_slug.as_str())
+    })
+}
+
+fn aggregate_identity_from_name_or_path(
+    object_name: &str,
+    relative_path: Option<&str>,
+) -> Option<(String, String)> {
+    if let Some(path) = relative_path {
+        let file_name = path.strip_prefix("database/objects/aggregates/")?;
         let stem = file_name.strip_suffix(".sql")?;
         let parts: Vec<&str> = stem.split('.').collect();
         if parts.len() == 3 && !parts.iter().any(|part| part.is_empty()) {

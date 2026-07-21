@@ -602,6 +602,18 @@ fn render_release_sql(
                         "-- REVIEW REQUIRED: grant exists only in target database. DbState does not generate REVOKE or destructive privilege changes."
                     )
                     .ok();
+                } else if item.object_type == "domain" {
+                    writeln!(
+                        sql,
+                        "-- REVIEW REQUIRED: domain exists only in target database. DbState does not generate DROP DOMAIN."
+                    )
+                    .ok();
+                } else if item.object_type == "aggregate" {
+                    writeln!(
+                        sql,
+                        "-- REVIEW REQUIRED: aggregate exists only in target database. DbState does not generate DROP AGGREGATE."
+                    )
+                    .ok();
                 } else if item.object_type == "rlsPolicy" {
                     writeln!(
                         sql,
@@ -679,16 +691,18 @@ fn release_object_order(item: &&PlanItem) -> (u8, String) {
         "schema" => 1,
         "extension" => 2,
         "enum" => 3,
-        "sequence" => 4,
-        "table" => 5,
-        "constraint" => 6,
-        "function" => 7,
-        "trigger" => 8,
-        "index" => 9,
-        "view" => 10,
-        "materializedView" => 11,
-        "grant" => 12,
-        "rlsPolicy" => 13,
+        "domain" => 4,
+        "aggregate" => 5,
+        "sequence" => 6,
+        "table" => 7,
+        "constraint" => 8,
+        "function" => 9,
+        "trigger" => 10,
+        "index" => 11,
+        "view" => 12,
+        "materializedView" => 13,
+        "grant" => 14,
+        "rlsPolicy" => 15,
         _ => 99,
     };
     (order, item.object_ref.clone())
@@ -709,6 +723,8 @@ fn render_create_later_sql(root: &Path, item: &PlanItem) -> Result<String, Strin
         }
         ObjectRef::Extension(_)
         | ObjectRef::Enum { .. }
+        | ObjectRef::Domain { .. }
+        | ObjectRef::Aggregate { .. }
         | ObjectRef::Sequence { .. }
         | ObjectRef::Index { .. }
         | ObjectRef::View { .. } => {
@@ -789,6 +805,18 @@ fn render_update_database_later_sql(
         if matches!(object_ref, ObjectRef::Function { .. }) {
             return Ok(
                 "-- REVIEW REQUIRED: function differs; changed functions are manual-review only. DbState does not generate DROP FUNCTION or replacement function SQL.\n"
+                    .to_string(),
+            );
+        }
+        if matches!(object_ref, ObjectRef::Domain { .. }) {
+            return Ok(
+                "-- REVIEW REQUIRED: domain differs; changed domains are manual-review only. DbState does not generate DROP DOMAIN, ALTER DOMAIN, or replacement domain SQL.\n"
+                    .to_string(),
+            );
+        }
+        if matches!(object_ref, ObjectRef::Aggregate { .. }) {
+            return Ok(
+                "-- REVIEW REQUIRED: aggregate differs; changed aggregates are manual-review only. DbState does not generate DROP AGGREGATE, ALTER AGGREGATE, or replacement aggregate SQL.\n"
                     .to_string(),
             );
         }

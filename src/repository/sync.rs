@@ -2,7 +2,9 @@ use crate::postgres::{
     invalid_postgres_url_message, is_postgres_connection_url, resolve_postgres_url,
 };
 use crate::project::{project_structure_allows_release_subfolder_backfill, GitHandoffWorkflow};
-use crate::repository::discovery::render_database_objects_for_selection;
+use crate::repository::discovery::{
+    is_supported_table_desired_state_type, render_database_objects_for_selection,
+};
 use crate::repository::objects::*;
 use crate::*;
 use std::env;
@@ -319,9 +321,9 @@ fn plan_export(
                     "Selected table '{schema}.{table}' was not found in the PostgreSQL inventory."
                 ));
             };
-            if selected_table.table_type != "BASE TABLE" {
+            if !is_supported_table_desired_state_type(&selected_table.table_type) {
                 return Err(format!(
-                    "Selected table '{schema}.{table}' is not an ordinary/base table and is deferred for Slice 3."
+                    "Selected table '{schema}.{table}' is not a supported base or partitioned table."
                 ));
             }
             let schema_path = schema_file_path(schema)?;
@@ -553,7 +555,7 @@ fn plan_sync(
                 .iter()
                 .filter(|table| table.schema_name == *schema)
             {
-                if table.table_type != "BASE TABLE" {
+                if !is_supported_table_desired_state_type(&table.table_type) {
                     skipped_files.push(table_file_path(&table.schema_name, &table.table_name)?);
                 }
             }
@@ -566,9 +568,9 @@ fn plan_sync(
                     "Selected table '{schema}.{table}' was not found in the PostgreSQL inventory."
                 ));
             };
-            if selected_table.table_type != "BASE TABLE" {
+            if !is_supported_table_desired_state_type(&selected_table.table_type) {
                 return Err(format!(
-                    "Selected table '{schema}.{table}' is not an ordinary/base table and is deferred for Slice 4."
+                    "Selected table '{schema}.{table}' is not a supported base or partitioned table."
                 ));
             }
             let schema_path = schema_file_path(schema)?;

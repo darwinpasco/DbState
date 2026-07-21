@@ -1,6 +1,7 @@
 use std::env;
 use std::path::Path;
 
+use crate::ci::{ci_validate_command, CiValidateReport};
 use crate::postgres::{inspect_postgres_scoped_command, InspectionReport};
 use crate::project::{init_project, status_report, ProjectReport};
 use crate::reference_data::{data_compare_postgres_command, ReferenceDataCompareReport};
@@ -26,6 +27,7 @@ pub enum CommandKind {
     PlanPostgres,
     ReleasePostgres,
     DataComparePostgres,
+    CiValidate,
 }
 
 impl CommandKind {
@@ -40,6 +42,7 @@ impl CommandKind {
             Self::PlanPostgres => "plan postgres",
             Self::ReleasePostgres => "release postgres",
             Self::DataComparePostgres => "data-compare postgres",
+            Self::CiValidate => "ci validate",
         }
     }
 }
@@ -54,6 +57,7 @@ pub enum CommandOutput {
     Plan(PlanReport),
     Release(ReleaseReport),
     DataCompare(ReferenceDataCompareReport),
+    CiValidate(CiValidateReport),
 }
 
 impl CommandOutput {
@@ -67,6 +71,7 @@ impl CommandOutput {
             Self::Plan(report) => report.to_text(),
             Self::Release(report) => report.to_text(),
             Self::DataCompare(report) => report.to_text(),
+            Self::CiValidate(report) => report.to_text(),
         }
     }
 
@@ -80,6 +85,7 @@ impl CommandOutput {
             Self::Plan(report) => report.to_json(),
             Self::Release(report) => report.to_json(),
             Self::DataCompare(report) => report.to_json(),
+            Self::CiValidate(report) => report.to_json(),
         }
     }
 }
@@ -191,6 +197,16 @@ pub fn run_cli(
                 exit_code,
             })
         }
+        CommandKind::CiValidate => {
+            let format = parsed.format;
+            let report = ci_validate_command(cwd, parsed);
+            let exit_code = if report.success { 0 } else { 2 };
+            Ok(CliResult {
+                format,
+                output: CommandOutput::CiValidate(report),
+                exit_code,
+            })
+        }
     }
 }
 
@@ -206,6 +222,10 @@ pub(crate) struct ParsedArgs {
     pub(crate) includes: Vec<String>,
     pub(crate) excludes: Vec<String>,
     pub(crate) release_name: Option<String>,
+    pub(crate) repository: Option<String>,
+    pub(crate) postgres_url: Option<String>,
+    pub(crate) disposable: bool,
+    pub(crate) report_path: Option<String>,
 }
 
 impl ParsedArgs {
@@ -223,6 +243,10 @@ impl ParsedArgs {
         let mut includes = Vec::new();
         let mut excludes = Vec::new();
         let mut release_name = None;
+        let mut repository = None;
+        let mut postgres_url = None;
+        let mut disposable = false;
+        let mut report_path = None;
         let mut positional = Vec::new();
         let mut index = 0;
 
@@ -252,6 +276,31 @@ impl ParsedArgs {
                         .get(index + 1)
                         .ok_or_else(|| "--url requires a value".to_string())?;
                     url = Some(value.to_string());
+                    index += 2;
+                }
+                "--repository" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or_else(|| "--repository requires a value".to_string())?;
+                    repository = Some(value.to_string());
+                    index += 2;
+                }
+                "--postgres-url" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or_else(|| "--postgres-url requires a value".to_string())?;
+                    postgres_url = Some(value.to_string());
+                    index += 2;
+                }
+                "--disposable" => {
+                    disposable = true;
+                    index += 1;
+                }
+                "--report" => {
+                    let value = args
+                        .get(index + 1)
+                        .ok_or_else(|| "--report requires a value".to_string())?;
+                    report_path = Some(value.to_string());
                     index += 2;
                 }
                 "--schema" => {
@@ -330,6 +379,7 @@ impl ParsedArgs {
             {
                 CommandKind::DataComparePostgres
             }
+            [ci, validate] if ci == "ci" && validate == "validate" => CommandKind::CiValidate,
             _ => return Err(usage()),
         };
 
@@ -394,6 +444,18 @@ impl ParsedArgs {
         if release_name.is_some() && command != CommandKind::ReleasePostgres {
             return Err("--name is only supported for dbstate release postgres".to_string());
         }
+        if repository.is_some() && command != CommandKind::CiValidate {
+            return Err("--repository is only supported for dbstate ci validate".to_string());
+        }
+        if postgres_url.is_some() && command != CommandKind::CiValidate {
+            return Err("--postgres-url is only supported for dbstate ci validate".to_string());
+        }
+        if disposable && command != CommandKind::CiValidate {
+            return Err("--disposable is only supported for dbstate ci validate".to_string());
+        }
+        if report_path.is_some() && command != CommandKind::CiValidate {
+            return Err("--report is only supported for dbstate ci validate".to_string());
+        }
 
         Ok(Self {
             command,
@@ -406,10 +468,14 @@ impl ParsedArgs {
             includes,
             excludes,
             release_name,
+            repository,
+            postgres_url,
+            disposable,
+            report_path,
         })
     }
 }
 
 pub fn usage() -> String {
-    "Usage:\n  dbstate repo status [--format json|--json]\n  dbstate init [--dry-run] [--format json|--json]\n  dbstate inspect postgres [--url <postgres-url>] [--all | --schema <schema> | --table <schema.table>] [--format json|--json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json|--json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json|--json]\n  dbstate data-compare postgres (--all | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate serve [--host <host>] [--port <port>] [--format json|--json]".to_string()
+    "Usage:\n  dbstate repo status [--format json|--json]\n  dbstate init [--dry-run] [--format json|--json]\n  dbstate inspect postgres [--url <postgres-url>] [--all | --schema <schema> | --table <schema.table>] [--format json|--json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json|--json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json|--json]\n  dbstate data-compare postgres (--all | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate ci validate --repository <path> --postgres-url <postgres-url> --disposable [--report <path>] [--format json|--json]\n  dbstate serve [--host <host>] [--port <port>] [--format json|--json]".to_string()
 }
