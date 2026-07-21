@@ -2261,6 +2261,7 @@ const UI_JS: &str = r#"(function () {
     byId("last-warnings").textContent = Array.isArray(data && data.warnings) ? data.warnings.length : 0;
     byId("last-errors").textContent = Array.isArray(data && data.errors) ? data.errors.length : 0;
     updateOperationAlert(label, data);
+    renderWarnings(data || {});
   }
 
   function updateSummary(id, entries) {
@@ -5787,12 +5788,30 @@ const UI_JS: &str = r#"(function () {
 
   function renderWarnings(data) {
     const warnings = [];
+    const seenWarningKeys = new Set();
+    function reportedWarningCount() {
+      if (Array.isArray(data && data.warnings)) {
+        return data.warnings.length;
+      }
+      if (typeof (data && data.warningCount) === "number") {
+        return data.warningCount;
+      }
+      if (typeof (data && data.warningsCount) === "number") {
+        return data.warningsCount;
+      }
+      return 0;
+    }
     function addMany(values, label, kind) {
       if (!Array.isArray(values)) {
         return;
       }
       values.forEach(function (item) {
         const text = typeof item === "string" ? projectStructureGuidance(item) : redactedJson(item);
+        const warningKey = (kind || "warning") + "|" + text;
+        if (seenWarningKeys.has(warningKey)) {
+          return;
+        }
+        seenWarningKeys.add(warningKey);
         warnings.push({
           kind: kind || "warning",
           text: label + ": " + text
@@ -5808,6 +5827,14 @@ const UI_JS: &str = r#"(function () {
     const target = byId("warnings-list");
     target.innerHTML = "";
     if (!warnings.length) {
+      const count = reportedWarningCount();
+      if (count > 0) {
+        const item = document.createElement("div");
+        item.className = "issue-item";
+        item.textContent = "Latest operation reported " + count + " warning(s). See the operation summary above.";
+        target.appendChild(item);
+        return;
+      }
       target.textContent = "No warnings yet.";
       return;
     }
