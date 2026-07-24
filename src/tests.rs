@@ -7969,6 +7969,41 @@ fn repository_object_files_list_returns_empty_state_for_empty_objects_root() {
 }
 
 #[test]
+fn repository_object_files_list_returns_initialized_directories_without_sql_files() {
+    let dir = create_temp_dir("repository-object-list-initialized-empty");
+    init_git_repo(&dir);
+    init_project(&dir, false).expect("initialize project");
+
+    let body = format!(
+        r#"{{ "repositoryPath": "{}" }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let response = service_response("POST", "/api/v1/repository/object-files/list", &body, &dir);
+
+    assert_eq!(response.status_code, 200, "{}", response.body);
+    assert_common_json_contract(&response.body);
+    for expected in EXPECTED_PATHS
+        .iter()
+        .filter(|expected| expected.kind == PathKind::Directory)
+    {
+        assert!(
+            response
+                .body
+                .contains(&format!("\"path\":\"{}\"", expected.relative)),
+            "missing initialized directory {} in {}",
+            expected.relative,
+            response.body
+        );
+    }
+    assert!(response.body.contains("\"kind\":\"directory\""));
+    assert!(!response.body.contains("\"kind\":\"file\""));
+    assert!(!response.body.contains(".sql"));
+    assert!(response.body.contains("\"readOnly\":true"));
+    assert!(response.body.contains("\"sqlExecutionAvailable\":false"));
+    assert!(response.body.contains("\"gitMutationAvailable\":false"));
+}
+
+#[test]
 fn repository_object_files_list_returns_sql_files_and_directories_in_stable_order() {
     let dir = create_temp_dir("repository-object-list-stable");
     init_git_repo(&dir);
@@ -8013,13 +8048,13 @@ fn repository_object_files_list_returns_sql_files_and_directories_in_stable_orde
     assert_eq!(response.status_code, 200, "{}", response.body);
     assert!(response
         .body
-        .contains("\"path\":\"database/objects/constraints/\""));
+        .contains("\"path\":\"database/objects/constraints\""));
     assert!(response
         .body
-        .contains("\"path\":\"database/objects/schemas/\""));
+        .contains("\"path\":\"database/objects/schemas\""));
     assert!(response
         .body
-        .contains("\"path\":\"database/objects/tables/\""));
+        .contains("\"path\":\"database/objects/tables\""));
     assert!(response
         .body
         .contains("\"path\":\"database/objects/tables/public.actor.SQL\""));
@@ -8032,11 +8067,11 @@ fn repository_object_files_list_returns_sql_files_and_directories_in_stable_orde
 
     let constraints_index = response
         .body
-        .find("database/objects/constraints/")
+        .find("database/objects/constraints")
         .expect("constraints listed");
     let schemas_index = response
         .body
-        .find("database/objects/schemas/")
+        .find("database/objects/schemas")
         .expect("schemas listed");
     let tables_index = response
         .body
@@ -8679,6 +8714,10 @@ fn repository_files_ui_contract_is_read_only_and_route_scoped() {
         "data-testid=\"repository-files-tab\"",
         "data-testid=\"repository-files-panel\"",
         "data-testid=\"repository-files-refresh\"",
+        "data-testid=\"repository-files-status\"",
+        "data-testid=\"repository-files-loading\"",
+        "data-testid=\"repository-files-loaded\"",
+        "data-testid=\"repository-files-error\"",
         "data-testid=\"repository-files-tree\"",
         "data-testid=\"repository-files-empty-state\"",
         "data-testid=\"repository-file-selected-path\"",
@@ -8703,6 +8742,12 @@ fn repository_files_ui_contract_is_read_only_and_route_scoped() {
     assert!(js.contains("repositoryObjectFilePreview: \"/api/v1/repository/object-files/preview\""));
     assert!(js.contains("function repositoryObjectPathSlug(path)"));
     assert!(js.contains("return \"repository-file-row-\" + repositoryObjectPathSlug(path);"));
+    assert!(js.contains("return \"repository-directory-row-\" + repositoryObjectPathSlug(path);"));
+    assert!(js.contains("return \"repository-directory-path-\" + repositoryObjectPathSlug(path);"));
+    assert!(js.contains("return \"repository-directory-name-\" + repositoryObjectPathSlug(path);"));
+    assert!(js.contains("setRepositoryFilesState(\"loading\""));
+    assert!(js.contains("setRepositoryFilesState(\"loaded\""));
+    assert!(js.contains("setRepositoryFilesState(\"error\""));
     assert!(js.contains("data-action\", \"repository-file-preview\""));
     assert!(js.contains("refreshRepositoryObjectFiles"));
     assert!(js.contains("previewRepositoryObjectFile"));
@@ -9259,6 +9304,58 @@ fn git_workflow_state_selector_logic_covers_expected_states() {
     assert!(js.contains("setGitWorkflowState(\"no-changes\", \"No DbState files are recommended for staging yet.\");"));
     assert!(js.contains("setGitWorkflowState(\"loading\", \"Generating semantic commit message from staged changes.\");"));
     assert!(js.contains("byId(\"git-handoff-detached-head\").textContent = branch === \"unknown\" ? \"yes\" : \"no\";"));
+}
+
+#[test]
+fn cycle3_object_diff_demo_script_is_fixed_scope_and_secret_safe() {
+    let script_path =
+        PathBuf::from("demo/video-01/scripts/invoke-pagila-country-object-diff-change.ps1");
+    let script = fs::read_to_string(&script_path).expect("read Cycle 3 demo script");
+
+    for expected in [
+        "[ValidateSet(\"Status\", \"Apply\", \"Reset\")]",
+        "$ApprovedHosts = @(\"localhost\", \"127.0.0.1\")",
+        "$ApprovedDatabase = \"pagila\"",
+        "$TargetSchema = \"public\"",
+        "$TargetTable = \"country\"",
+        "$TargetColumn = \"iso_code\"",
+        "ALTER TABLE public.country ADD COLUMN iso_code varchar(2);",
+        "ALTER TABLE public.country DROP COLUMN iso_code;",
+        "DBSTATE_DEMO_PG_PASSWORD",
+        "PGPASSWORD",
+        "ON_ERROR_STOP=1",
+        "ConvertTo-Json -Compress",
+        "columnExists",
+        "maximumLength",
+        "nullable",
+        "AlreadyReset",
+    ] {
+        assert!(
+            script.contains(expected),
+            "missing script contract text {expected}"
+        );
+    }
+
+    for forbidden in [
+        "POSTGRES_PASSWORD=postgres",
+        "postgres://postgres:postgres@",
+        "param(\n    [string]$Sql",
+        "git add",
+        "git commit",
+        "git push",
+        "git pull",
+        "git fetch",
+        "git branch",
+        "git switch",
+        "dbstate.exe",
+        "database/objects",
+        "database/releases",
+    ] {
+        assert!(
+            !script.contains(forbidden),
+            "script contains forbidden text {forbidden}"
+        );
+    }
 }
 
 fn selector_readable_slug(value: &str) -> String {
@@ -11368,6 +11465,172 @@ fn init_write_service_endpoint_requires_confirmation_and_git_repository() {
     assert_eq!(rejected.status_code, 400);
     assert!(rejected.body.contains("\"success\":false"));
     assert!(!non_git.join("database").exists());
+}
+
+#[test]
+fn database_project_initialization_automation_selector_contract_is_present() {
+    let html = ui_html();
+    let js = ui_js();
+    let combined = format!("{html}\n{js}");
+
+    for expected in [
+        "data-testid=\"workspace-initialize-project\"",
+        "data-testid=\"workspace-initialization-panel\"",
+        "data-testid=\"workspace-initialization-confirmation-input\"",
+        "data-testid=\"workspace-initialization-start\"",
+        "data-testid=\"workspace-initialization-status\"",
+        "data-testid=\"workspace-initialization-available\"",
+        "data-testid=\"workspace-initialization-blocked\"",
+        "data-testid=\"workspace-initialization-loading\"",
+        "data-testid=\"workspace-initialization-success\"",
+        "data-testid=\"workspace-initialization-error\"",
+        "data-testid=\"workspace-initialization-error-code\"",
+        "data-testid=\"workspace-initialization-error-message\"",
+        "data-testid=\"workspace-project-status\"",
+        "INITIALIZE DBSTATE PROJECT",
+    ] {
+        assert!(
+            combined.contains(expected),
+            "missing initialization automation contract {expected}"
+        );
+    }
+
+    assert!(js.contains("function setWorkspaceInitializationState(stateName, data)"));
+    assert!(js.contains("status.setAttribute(\"data-state\", stateValue);"));
+    assert!(js.contains(
+        "setHidden(\"workspace-initialization-available\", stateValue !== \"available\")"
+    ));
+    assert!(
+        js.contains("setHidden(\"workspace-initialization-blocked\", stateValue !== \"blocked\")")
+    );
+    assert!(
+        js.contains("setHidden(\"workspace-initialization-loading\", stateValue !== \"loading\")")
+    );
+    assert!(
+        js.contains("setHidden(\"workspace-initialization-success\", stateValue !== \"success\")")
+    );
+    assert!(js.contains("setHidden(\"workspace-initialization-error\", stateValue !== \"error\")"));
+    assert!(js.contains("\"protectedBranch\""));
+    assert!(js.contains("setWorkspaceInitializationState(\"loading\""));
+    assert!(js.contains("setWorkspaceInitializationState(\"blocked\""));
+    assert!(js.contains("setWorkspaceInitializationState(\"success\""));
+    assert!(js.contains("setWorkspaceInitializationState(\"available\""));
+    assert!(!combined.contains("workspace-initialization-error-code\">git switch"));
+}
+
+#[test]
+fn repository_directory_selectors_reuse_shared_path_slugging() {
+    let js = ui_js();
+    assert!(js.contains("return \"repository-directory-row-\" + repositoryObjectPathSlug(path);"));
+    assert!(js.contains("return \"repository-directory-path-\" + repositoryObjectPathSlug(path);"));
+    assert!(js.contains("return \"repository-directory-name-\" + repositoryObjectPathSlug(path);"));
+    assert!(js.contains("code.textContent = path;"));
+    assert!(js.contains("name.textContent = textOrEmpty(entry.name || path.split(\"/\").pop());"));
+
+    let representative_paths = [
+        "database",
+        "database/objects",
+        "database/objects/tables",
+        "database/objects/constraints/primary-keys",
+        "database/objects/materialized-views",
+        "database/reference-data",
+        "database/releases",
+        "database/objects/Mixed Case/path.with.dots",
+    ];
+    let mut slugs = BTreeSet::new();
+    for path in representative_paths {
+        let slug = format!(
+            "{}-{}",
+            selector_readable_slug(path),
+            stable_selector_hash(path)
+        );
+        assert!(slugs.insert(slug.clone()), "duplicate path slug {slug}");
+    }
+
+    let normalized_a = selector_readable_slug("database/objects/demo/a-b");
+    let normalized_b = selector_readable_slug("database\\objects\\demo\\a_b");
+    assert_eq!(normalized_a, normalized_b);
+    assert_ne!(
+        stable_selector_hash("database/objects/demo/a-b"),
+        stable_selector_hash("database\\objects\\demo\\a_b")
+    );
+}
+
+#[test]
+fn initialization_on_protected_branch_is_blocked_without_creating_project_files() {
+    let dir = create_temp_dir("init-write-protected-dev");
+    init_git_repo(&dir);
+    set_git_head_branch(&dir, "dev");
+    let body =
+        r#"{ "confirmInitializeProject": true, "confirmationText": "INITIALIZE DBSTATE PROJECT" }"#;
+
+    let response = service_response("POST", "/api/v1/init/write", body, &dir);
+
+    assert_eq!(response.status_code, 409, "{}", response.body);
+    assert_common_json_contract(&response.body);
+    assert!(response.body.contains("\"success\":false"));
+    assert!(response.body.contains("\"branch\":\"dev\""));
+    assert!(response.body.contains("\"isProtectedBranch\":true"));
+    assert!(response
+        .body
+        .contains("\"dbstateProjectStatus\":\"gitRepositoryWithoutDbStateStructure\""));
+    assert!(response.body.contains("Write blocked on protected branch"));
+    assert!(response
+        .body
+        .contains("git switch -c dbstate/project-init/"));
+    for expected in EXPECTED_PATHS {
+        assert!(
+            !dir.join(expected.relative).exists(),
+            "protected init created {}",
+            expected.relative
+        );
+    }
+}
+
+#[test]
+fn initialization_retry_on_working_branch_creates_only_project_structure() {
+    let dir = create_temp_dir("init-write-retry-working-branch");
+    init_git_repo(&dir);
+    set_git_head_branch(&dir, "dbstate/project-init/demo");
+    let body =
+        r#"{ "confirmInitializeProject": true, "confirmationText": "INITIALIZE DBSTATE PROJECT" }"#;
+
+    let response = service_response("POST", "/api/v1/init/write", body, &dir);
+
+    assert_eq!(response.status_code, 200, "{}", response.body);
+    assert_common_json_contract(&response.body);
+    assert!(response.body.contains("\"success\":true"));
+    assert!(response
+        .body
+        .contains("\"dbstateProjectStatus\":\"completeDbStateStructure\""));
+    for expected in EXPECTED_PATHS {
+        assert!(
+            dir.join(expected.relative).exists(),
+            "missing initialized path {}",
+            expected.relative
+        );
+    }
+    assert!(!dir
+        .join("database/objects/tables/public.country.sql")
+        .exists());
+    assert!(!dir.join("database/releases/objects/0001.sql").exists());
+    assert_eq!(
+        fs::read_to_string(dir.join("database/reference-data/dbstate.reference-data.yml"))
+            .expect("read default registry"),
+        DEFAULT_REGISTRY
+    );
+    let staged = Command::new("git")
+        .arg("diff")
+        .arg("--cached")
+        .arg("--name-only")
+        .current_dir(&dir)
+        .output()
+        .expect("run git diff cached");
+    assert!(staged.status.success(), "git diff cached failed");
+    assert!(
+        String::from_utf8_lossy(&staged.stdout).trim().is_empty(),
+        "init write staged files"
+    );
 }
 
 #[test]
