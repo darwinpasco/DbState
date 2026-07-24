@@ -167,6 +167,8 @@ Private beta readiness docs:
 - `docs/postgresql-v0.1/65-database-project-initialization-automation-selectors.md`
 - `docs/postgresql-v0.1/66-video-01-object-diff-demo-script.md`
 
+The Video 01 Object Diff demo support script is documented as a Docker-backed local Pagila demo asset. It is external to DbState runtime behavior and uses a runtime-only password environment variable.
+
 ## Windows Private Beta Installer
 
 Windows private beta installer packaging is documented in `docs/postgresql-v0.1/50-slice-19-windows-installer-packaging.md`.
