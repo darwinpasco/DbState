@@ -42,7 +42,8 @@ const UI_HTML: &str = r#"<!doctype html>
       <button type="button" class="workflow-step" data-step="reports" data-testid="tab-reports-raw-json">8. Reports / Raw JSON</button>
       <button type="button" class="workflow-step" data-step="git-workflow" data-testid="tab-git-workflow">9. Git Workflow</button>
       <button type="button" class="workflow-step" data-step="database-state-ci" data-testid="tab-database-state-ci">10. Database State CI</button>
-      <button type="button" class="workflow-step" data-step="about">11. About / Safety</button>
+      <button type="button" class="workflow-step" data-step="repository-files" data-testid="repository-files-tab">11. Repository Files</button>
+      <button type="button" class="workflow-step" data-step="about">12. About / Safety</button>
     </nav>
 
     <main class="workflow-main">
@@ -546,6 +547,36 @@ rows:
           <h3>Selected JSON Item</h3>
           <pre id="selected-json" data-testid="selected-json-item">{}</pre>
         </section>
+      </section>
+
+      <section class="workflow-panel" id="step-repository-files" data-testid="repository-files-panel">
+        <div class="panel-heading">
+          <h2>Repository Files</h2>
+          <p>Browse generated SQL files under <code>database/objects/</code> in the selected repository.</p>
+        </div>
+        <p class="note">Read-only repository preview. These are repository files, not live database objects. DbState does not edit files, execute SQL, mutate PostgreSQL, or run Git commands from this view.</p>
+        <div class="button-row">
+          <button type="button" data-action="repository-files-refresh" data-testid="repository-files-refresh">Refresh Repository Files</button>
+          <span class="note">Only <code>.sql</code> files under <code>database/objects/</code> are listed. Preview limit: 1 MiB.</span>
+        </div>
+        <div class="repository-files-layout">
+          <section class="repository-files-tree-panel">
+            <h3>Object files</h3>
+            <div id="repository-files-tree" class="repository-files-tree" data-testid="repository-files-tree">
+              <div id="repository-files-empty-state" class="issue-item" data-testid="repository-files-empty-state">No repository object files were found.</div>
+            </div>
+          </section>
+          <section class="repository-files-preview-panel">
+            <h3>Read-only repository preview</h3>
+            <dl class="summary-list compact">
+              <dt>Selected file</dt><dd id="repository-file-selected-path" data-testid="repository-file-selected-path">Select a SQL file to preview its contents.</dd>
+              <dt>Read only</dt><dd id="repository-file-preview-read-only" data-testid="repository-file-preview-read-only">Yes</dd>
+            </dl>
+            <div id="repository-file-preview-loading" class="note" data-testid="repository-file-preview-loading" hidden>Loading repository SQL preview...</div>
+            <div id="repository-file-preview-error" class="results-error-summary" data-testid="repository-file-preview-error" hidden></div>
+            <pre id="repository-file-preview" data-testid="repository-file-preview">Select a SQL file to preview its contents.</pre>
+          </section>
+        </div>
       </section>
 
       <section class="workflow-panel" id="step-warnings" data-testid="warnings-panel">
@@ -1198,6 +1229,66 @@ button:hover {
   box-shadow: 0 0 0 2px rgba(19, 116, 156, 0.18);
 }
 
+.repository-files-layout {
+  display: grid;
+  grid-template-columns: minmax(240px, 360px) minmax(0, 1fr);
+  gap: 14px;
+  align-items: start;
+}
+
+.repository-files-tree-panel,
+.repository-files-preview-panel {
+  min-width: 0;
+}
+
+.repository-files-tree {
+  display: grid;
+  gap: 4px;
+  max-height: 560px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px;
+  background: #ffffff;
+}
+
+.repository-directory-row,
+.repository-file-row {
+  width: 100%;
+  min-height: 30px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text);
+  text-align: left;
+  padding: 6px 8px;
+  font: inherit;
+}
+
+.repository-directory-row {
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.repository-file-row {
+  background: #ffffff;
+  border-color: var(--border);
+  cursor: pointer;
+}
+
+.repository-file-row:hover,
+.repository-file-row.repository-file-selected {
+  border-color: var(--accent);
+  background: #edf7fb;
+}
+
+.repository-file-meta {
+  display: block;
+  margin-top: 2px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
 .object-filter-row {
   margin-bottom: 14px;
   color: var(--muted);
@@ -1783,7 +1874,8 @@ pre {
 
   .split-pane,
   .diff-grid,
-  .related-objects-grid {
+  .related-objects-grid,
+  .repository-files-layout {
     grid-template-columns: 1fr;
   }
 
@@ -1824,6 +1916,8 @@ const UI_JS: &str = r#"(function () {
     referenceDataReviewScriptPreview: "/api/v1/reference-data/review-script/preview",
     referenceDataReviewScriptWrite: "/api/v1/reference-data/review-script/write",
     objectDdl: "/api/v1/postgres/object-ddl",
+    repositoryObjectFilesList: "/api/v1/repository/object-files/list",
+    repositoryObjectFilePreview: "/api/v1/repository/object-files/preview",
     repositorySyncPreview: "/api/v1/postgres/repository-sync/preview",
     repositorySyncWrite: "/api/v1/postgres/repository-sync/write",
     releasePreview: "/api/v1/postgres/release/preview",
@@ -1883,7 +1977,10 @@ const UI_JS: &str = r#"(function () {
     releaseResponse: null,
     lastOperation: "none",
     gitHandoffWorkflow: "",
-    gitHandoffBranchCommand: ""
+    gitHandoffBranchCommand: "",
+    repositoryObjectFiles: [],
+    selectedRepositoryObjectPath: "",
+    repositoryObjectFilesLoaded: false
   };
 
   const jsonViewer = document.getElementById("json-viewer");
@@ -2282,6 +2379,146 @@ const UI_JS: &str = r#"(function () {
     text = text.replace(/\\/g, "/");
     text = text.replace(/^\/{2,3}\?\//, "");
     return text;
+  }
+
+  function repositoryObjectPathSlug(path) {
+    const slug = textOrEmpty(path).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+    return slug || "repository-object";
+  }
+
+  function repositoryObjectRowTestId(path) {
+    return "repository-file-row-" + repositoryObjectPathSlug(path);
+  }
+
+  function formatBytes(size) {
+    if (typeof size !== "number") {
+      return "";
+    }
+    if (size < 1024) {
+      return size + " B";
+    }
+    return Math.round(size / 1024) + " KiB";
+  }
+
+  function repositoryObjectEntries(data) {
+    return Array.isArray(data && data.entries) ? data.entries : [];
+  }
+
+  function renderRepositoryObjectFiles(data) {
+    const tree = byId("repository-files-tree");
+    tree.innerHTML = "";
+    const entries = repositoryObjectEntries(data);
+    state.repositoryObjectFiles = entries;
+    if (!entries.length) {
+      const emptyState = document.createElement("div");
+      emptyState.id = "repository-files-empty-state";
+      emptyState.className = "issue-item";
+      emptyState.setAttribute("data-testid", "repository-files-empty-state");
+      emptyState.textContent = "No repository object files were found.";
+      tree.appendChild(emptyState);
+      byId("repository-file-selected-path").textContent = "Select a SQL file to preview its contents.";
+      byId("repository-file-preview").textContent = "Select a SQL file to preview its contents.";
+      return;
+    }
+    entries.forEach(function (entry) {
+      const depth = typeof entry.depth === "number" ? entry.depth : 0;
+      if (entry.kind === "directory") {
+        const row = document.createElement("div");
+        row.className = "repository-directory-row";
+        row.style.paddingLeft = String(8 + depth * 16) + "px";
+        row.textContent = "Folder: " + textOrEmpty(entry.path || entry.relativePath || entry.name);
+        tree.appendChild(row);
+        return;
+      }
+      const path = textOrEmpty(entry.path || entry.relativePath);
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "repository-file-row";
+      button.style.paddingLeft = String(8 + depth * 16) + "px";
+      button.setAttribute("data-action", "repository-file-preview");
+      button.setAttribute("data-repository-object-path", path);
+      button.setAttribute("data-testid", repositoryObjectRowTestId(path));
+      button.textContent = textOrEmpty(entry.name || path);
+      if (path === state.selectedRepositoryObjectPath) {
+        button.classList.add("repository-file-selected");
+      }
+      const meta = document.createElement("span");
+      meta.className = "repository-file-meta";
+      meta.textContent = [textOrEmpty(entry.objectCategory), formatBytes(entry.sizeBytes)]
+        .filter(Boolean)
+        .join(" | ");
+      button.appendChild(meta);
+      tree.appendChild(button);
+    });
+  }
+
+  async function refreshRepositoryObjectFiles() {
+    responseSummary.textContent = "Repository Files: loading repository object files...";
+    setOperationAlert("Repository Files", "running", 0, 0, "Loading repository object files...", "info");
+    state.repositoryObjectFilesLoaded = true;
+    try {
+      const data = await requestJson(approvedEndpoints.repositoryObjectFilesList, attachWorkspacePath({}));
+      state.lastResponse = data;
+      state.lastOperation = "Repository Files";
+      responseSummary.textContent = "Repository Files: " + summarize(data);
+      jsonViewer.textContent = redactedJson(data);
+      updateStatus("Repository Files", data);
+      renderErrorSummary(data);
+      if (data && data.success === false) {
+        throw new Error(Array.isArray(data.errors) && data.errors.length ? data.errors[0] : "Repository object file listing failed.");
+      }
+      renderRepositoryObjectFiles(data);
+    } catch (error) {
+      const message = error && error.message ? error.message : "Unknown service error.";
+      const data = { command: "repository object files list", success: false, warnings: [], errors: [message] };
+      state.lastResponse = data;
+      state.lastOperation = "Repository Files";
+      responseSummary.textContent = "Repository Files: " + message;
+      jsonViewer.textContent = redactedJson(data);
+      updateStatus("Repository Files", data);
+      renderErrorSummary(data);
+      const tree = byId("repository-files-tree");
+      tree.innerHTML = "";
+      const errorState = document.createElement("div");
+      errorState.className = "issue-item error";
+      errorState.textContent = message;
+      tree.appendChild(errorState);
+    }
+  }
+
+  async function previewRepositoryObjectFile(path) {
+    state.selectedRepositoryObjectPath = textOrEmpty(path);
+    byId("repository-file-selected-path").textContent = state.selectedRepositoryObjectPath || "Select a SQL file to preview its contents.";
+    byId("repository-file-preview").textContent = "";
+    byId("repository-file-preview-loading").hidden = false;
+    byId("repository-file-preview-error").hidden = true;
+    renderRepositoryObjectFiles({ entries: state.repositoryObjectFiles });
+    try {
+      const data = await requestJson(approvedEndpoints.repositoryObjectFilePreview, attachWorkspacePath({ path: state.selectedRepositoryObjectPath }));
+      state.lastResponse = data;
+      state.lastOperation = "Repository object preview";
+      responseSummary.textContent = "Repository object preview: " + summarize(data);
+      jsonViewer.textContent = redactedJson(data);
+      updateStatus("Repository object preview", data);
+      if (data && data.success === false) {
+        throw new Error(Array.isArray(data.errors) && data.errors.length ? data.errors[0] : "Repository object preview failed.");
+      }
+      byId("repository-file-selected-path").textContent = textOrEmpty(data.path || data.relativePath);
+      byId("repository-file-preview").textContent = textOrEmpty(data.content);
+    } catch (error) {
+      const message = error && error.message ? error.message : "Unknown service error.";
+      const data = { command: "repository object file preview", success: false, warnings: [], errors: [message] };
+      state.lastResponse = data;
+      state.lastOperation = "Repository object preview";
+      responseSummary.textContent = "Repository object preview: " + message;
+      jsonViewer.textContent = redactedJson(data);
+      updateStatus("Repository object preview", data);
+      byId("repository-file-preview-error").hidden = false;
+      byId("repository-file-preview-error").textContent = message;
+      byId("repository-file-preview").textContent = "Preview unavailable.";
+    } finally {
+      byId("repository-file-preview-loading").hidden = true;
+    }
   }
 
   function sameDirectoryPath(left, right) {
@@ -3692,6 +3929,11 @@ const UI_JS: &str = r#"(function () {
       panel.classList.toggle("active", panel.id === "step-" + step);
     });
     applyWorkflowChrome();
+    if (step === "repository-files" && !state.repositoryObjectFilesLoaded) {
+      refreshRepositoryObjectFiles().catch(function (error) {
+        responseSummary.textContent = "Repository Files: " + error.message;
+      });
+    }
   }
 
   function rowRef(row, index) {
@@ -6708,7 +6950,12 @@ const UI_JS: &str = r#"(function () {
     });
   });
 
-  document.getElementById("workspace-path").addEventListener("input", updateDatabaseStateCiCommands);
+  document.getElementById("workspace-path").addEventListener("input", function () {
+    state.repositoryObjectFilesLoaded = false;
+    state.repositoryObjectFiles = [];
+    state.selectedRepositoryObjectPath = "";
+    updateDatabaseStateCiCommands();
+  });
 
   document.getElementById("object-type-filter").addEventListener("change", function () {
     state.selectedIndex = -1;
@@ -6823,6 +7070,20 @@ const UI_JS: &str = r#"(function () {
   document.querySelector("[data-action='check-status']").addEventListener("click", async function (event) {
     event.preventDefault();
     runCheckStatus();
+  });
+
+  document.querySelector("[data-action='repository-files-refresh']").addEventListener("click", function (event) {
+    event.preventDefault();
+    refreshRepositoryObjectFiles();
+  });
+
+  byId("repository-files-tree").addEventListener("click", function (event) {
+    const row = event.target.closest("[data-action='repository-file-preview']");
+    if (!row) {
+      return;
+    }
+    event.preventDefault();
+    previewRepositoryObjectFile(row.getAttribute("data-repository-object-path") || "");
   });
 
   document.querySelector("[data-action='init-plan']").addEventListener("click", async function (event) {

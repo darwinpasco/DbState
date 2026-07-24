@@ -84,6 +84,7 @@ mod redaction;
 mod reference_data;
 mod release;
 mod repository;
+mod repository_browser;
 mod service;
 mod ui;
 mod workspace;

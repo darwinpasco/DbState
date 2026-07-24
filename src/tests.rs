@@ -7711,6 +7711,8 @@ fn slice11_service_routes_include_only_approved_endpoints() {
         ("POST", "/api/v1/reference-data/export/write"),
         ("POST", "/api/v1/postgres/data-compare"),
         ("POST", "/api/v1/postgres/object-ddl"),
+        ("POST", "/api/v1/repository/object-files/list"),
+        ("POST", "/api/v1/repository/object-files/preview"),
         ("POST", "/api/v1/postgres/repository-sync/preview"),
         ("POST", "/api/v1/postgres/repository-sync/write"),
         ("POST", "/api/v1/postgres/release/preview"),
@@ -7918,6 +7920,284 @@ fn release_artifact_preview_endpoint_rejects_unsupported_extension() {
 }
 
 #[test]
+fn repository_object_files_list_returns_empty_state_for_empty_objects_root() {
+    let dir = create_temp_dir("repository-object-list-empty");
+    init_git_repo(&dir);
+    fs::create_dir_all(dir.join("database/objects")).expect("create objects root");
+
+    let body = format!(
+        r#"{{ "repositoryPath": "{}" }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let response = service_response("POST", "/api/v1/repository/object-files/list", &body, &dir);
+
+    assert_eq!(response.status_code, 200, "{}", response.body);
+    assert_common_json_contract(&response.body);
+    assert!(response.body.contains("\"root\":\"database/objects\""));
+    assert!(response.body.contains("\"entries\":[]"));
+    assert!(response.body.contains("\"readOnly\":true"));
+    assert!(response.body.contains("\"sqlExecutionAvailable\":false"));
+    assert!(response.body.contains("\"gitMutationAvailable\":false"));
+}
+
+#[test]
+fn repository_object_files_list_returns_sql_files_and_directories_in_stable_order() {
+    let dir = create_temp_dir("repository-object-list-stable");
+    init_git_repo(&dir);
+    fs::create_dir_all(dir.join("database/objects/tables")).expect("create tables dir");
+    fs::create_dir_all(dir.join("database/objects/schemas")).expect("create schemas dir");
+    fs::create_dir_all(dir.join("database/objects/constraints/primary-keys"))
+        .expect("create constraints dir");
+    fs::create_dir_all(dir.join("database/releases")).expect("create releases dir");
+    fs::write(
+        dir.join("database/objects/tables/public.zeta.sql"),
+        "CREATE TABLE zeta(id integer);\n",
+    )
+    .expect("write zeta");
+    fs::write(
+        dir.join("database/objects/tables/public.actor.SQL"),
+        "CREATE TABLE actor(id integer);\n",
+    )
+    .expect("write uppercase sql");
+    fs::write(
+        dir.join("database/objects/tables/notes.md"),
+        "not a sql object\n",
+    )
+    .expect("write ignored file");
+    fs::write(
+        dir.join("database/objects/schemas/public.sql"),
+        "CREATE SCHEMA public;\n",
+    )
+    .expect("write schema");
+    fs::write(
+        dir.join("database/objects/constraints/primary-keys/public.actor.actor_pkey.sql"),
+        "ALTER TABLE public.actor ADD CONSTRAINT actor_pkey PRIMARY KEY (id);\n",
+    )
+    .expect("write constraint");
+    fs::write(dir.join("database/releases/ignored.sql"), "SELECT 1;\n").expect("write release");
+
+    let body = format!(
+        r#"{{ "repositoryPath": "{}" }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let response = service_response("POST", "/api/v1/repository/object-files/list", &body, &dir);
+
+    assert_eq!(response.status_code, 200, "{}", response.body);
+    assert!(response
+        .body
+        .contains("\"path\":\"database/objects/constraints/\""));
+    assert!(response
+        .body
+        .contains("\"path\":\"database/objects/schemas/\""));
+    assert!(response
+        .body
+        .contains("\"path\":\"database/objects/tables/\""));
+    assert!(response
+        .body
+        .contains("\"path\":\"database/objects/tables/public.actor.SQL\""));
+    assert!(response.body.contains("\"objectCategory\":\"table\""));
+    assert!(response.body.contains(
+        "\"path\":\"database/objects/constraints/primary-keys/public.actor.actor_pkey.sql\""
+    ));
+    assert!(!response.body.contains("notes.md"));
+    assert!(!response.body.contains("database/releases/ignored.sql"));
+
+    let constraints_index = response
+        .body
+        .find("database/objects/constraints/")
+        .expect("constraints listed");
+    let schemas_index = response
+        .body
+        .find("database/objects/schemas/")
+        .expect("schemas listed");
+    let tables_index = response
+        .body
+        .find("database/objects/tables/")
+        .expect("tables listed");
+    assert!(constraints_index < schemas_index);
+    assert!(schemas_index < tables_index);
+    let actor_index = response
+        .body
+        .find("database/objects/tables/public.actor.SQL")
+        .expect("actor listed");
+    let zeta_index = response
+        .body
+        .find("database/objects/tables/public.zeta.sql")
+        .expect("zeta listed");
+    assert!(actor_index < zeta_index);
+}
+
+#[test]
+fn repository_object_file_preview_reads_sql_under_database_objects_only() {
+    let dir = create_temp_dir("repository-object-preview-table");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let content =
+        "-- DbState PostgreSQL desired-state object\nCREATE TABLE public.actor(id integer);\n";
+    fs::write(
+        dir.join("database/objects/tables/public.actor.sql"),
+        content,
+    )
+    .expect("write table");
+
+    let body = format!(
+        r#"{{ "repositoryPath": "{}", "path": "database/objects/tables/public.actor.sql" }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let response = service_response(
+        "POST",
+        "/api/v1/repository/object-files/preview",
+        &body,
+        &dir,
+    );
+
+    assert_eq!(response.status_code, 200, "{}", response.body);
+    assert_common_json_contract(&response.body);
+    assert!(response
+        .body
+        .contains("\"path\":\"database/objects/tables/public.actor.sql\""));
+    assert!(response.body.contains("\"fileName\":\"public.actor.sql\""));
+    assert!(response.body.contains("\"objectCategory\":\"table\""));
+    assert!(response.body.contains("\"readOnly\":true"));
+    assert!(response.body.contains("\"sqlExecutionAvailable\":false"));
+    assert!(response.body.contains(&escape_json(content)));
+    assert_eq!(
+        fs::read_to_string(dir.join("database/objects/tables/public.actor.sql"))
+            .expect("read previewed file"),
+        content
+    );
+}
+
+#[test]
+fn repository_object_file_preview_accepts_windows_separators_for_object_paths() {
+    let dir = create_temp_dir("repository-object-preview-windows-path");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let content = "CREATE SCHEMA public;\n";
+    fs::write(dir.join("database/objects/schemas/public.sql"), content).expect("write schema");
+
+    let body = format!(
+        r#"{{ "repositoryPath": "{}", "path": "database\\objects\\schemas\\public.sql" }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let response = service_response(
+        "POST",
+        "/api/v1/repository/object-files/preview",
+        &body,
+        &dir,
+    );
+
+    assert_eq!(response.status_code, 200, "{}", response.body);
+    assert!(response
+        .body
+        .contains("\"path\":\"database/objects/schemas/public.sql\""));
+    assert!(response.body.contains(&escape_json(content)));
+}
+
+#[test]
+fn repository_object_file_preview_rejects_unsafe_paths_and_file_types() {
+    let dir = create_temp_dir("repository-object-preview-rejects");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    fs::write(
+        dir.join("database/objects/tables/public.actor.sql"),
+        "CREATE TABLE public.actor(id integer);\n",
+    )
+    .expect("write table");
+    fs::write(dir.join("database/releases/0001.sql"), "SELECT 1;\n").expect("write release");
+    fs::write(
+        dir.join("database/objects/tables/public.actor.txt"),
+        "text\n",
+    )
+    .expect("write txt");
+
+    for unsafe_path in [
+        "..\\..\\secrets.txt",
+        "database\\releases\\0001.sql",
+        "database/objects/../../.git/config",
+        "database/objects/%2e%2e/.git/config",
+        "database/objects/tables/public.actor.txt",
+        "database/objects/tables/missing.sql",
+        "database/objects/tables",
+        ".git/config",
+        "C:\\Windows\\System32\\drivers\\etc\\hosts",
+        "\\\\server\\share\\file.sql",
+    ] {
+        let body = format!(
+            r#"{{ "repositoryPath": "{}", "path": "{}" }}"#,
+            escape_json(&display_path(&dir)),
+            escape_json(unsafe_path)
+        );
+        let response = service_response(
+            "POST",
+            "/api/v1/repository/object-files/preview",
+            &body,
+            &dir,
+        );
+        assert_eq!(
+            response.status_code, 400,
+            "expected rejection for {unsafe_path}, got {}",
+            response.body
+        );
+        assert!(response.body.contains("\"success\":false"));
+        assert!(!response.body.contains("postgres://"));
+    }
+}
+
+#[test]
+fn repository_object_file_preview_rejects_oversized_sql_file() {
+    let dir = create_temp_dir("repository-object-preview-oversized");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    let large_content =
+        "x".repeat(crate::repository_browser::REPOSITORY_OBJECT_PREVIEW_MAX_BYTES as usize + 1);
+    fs::write(
+        dir.join("database/objects/tables/public.large.sql"),
+        large_content,
+    )
+    .expect("write large file");
+
+    let body = format!(
+        r#"{{ "repositoryPath": "{}", "path": "database/objects/tables/public.large.sql" }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let response = service_response(
+        "POST",
+        "/api/v1/repository/object-files/preview",
+        &body,
+        &dir,
+    );
+
+    assert_eq!(response.status_code, 400);
+    assert!(response.body.contains("1 MiB"));
+    assert!(response.body.contains("\"success\":false"));
+}
+
+#[test]
+fn repository_object_files_endpoints_reject_invalid_workspaces_and_missing_objects_root() {
+    let non_git = create_temp_dir("repository-object-list-non-git");
+    let response = service_response(
+        "POST",
+        "/api/v1/repository/object-files/list",
+        "{}",
+        &non_git,
+    );
+    assert_eq!(response.status_code, 400);
+    assert!(response.body.contains("local Git working tree"));
+
+    let missing_objects = create_temp_dir("repository-object-list-missing-root");
+    init_git_repo(&missing_objects);
+    let response = service_response(
+        "POST",
+        "/api/v1/repository/object-files/list",
+        "{}",
+        &missing_objects,
+    );
+    assert_eq!(response.status_code, 400);
+    assert!(response.body.contains("database/objects"));
+}
+
+#[test]
 fn slice12_ui_routes_serve_static_assets() {
     let dir = create_temp_dir("slice12-ui-routes");
 
@@ -8006,7 +8286,9 @@ fn database_state_ci_guidance_page_is_documentation_only() {
         "data-copy-target=\"database-state-ci-report-command\"",
         "data-copy-target=\"database-state-ci-clean-command\"",
         "updateDatabaseStateCiCommands",
-        "document.getElementById(\"workspace-path\").addEventListener(\"input\", updateDatabaseStateCiCommands)",
+        "document.getElementById(\"workspace-path\").addEventListener(\"input\", function ()",
+        "state.repositoryObjectFilesLoaded = false;",
+        "updateDatabaseStateCiCommands();",
     ] {
         assert!(
             combined.contains(expected),
@@ -8276,6 +8558,8 @@ fn slice12_ui_javascript_calls_only_approved_endpoints() {
         "/api/v1/reference-data/review-script/preview",
         "/api/v1/reference-data/review-script/write",
         "/api/v1/postgres/object-ddl",
+        "/api/v1/repository/object-files/list",
+        "/api/v1/repository/object-files/preview",
         "/api/v1/postgres/repository-sync/preview",
         "/api/v1/postgres/repository-sync/write",
         "/api/v1/postgres/release/preview",
@@ -8352,6 +8636,65 @@ fn slice25_ui_contains_release_artifact_preview_contract() {
         assert!(
             !combined.contains(forbidden_action),
             "release artifact preview UI exposes forbidden action {forbidden_action}"
+        );
+    }
+}
+
+#[test]
+fn repository_files_ui_contract_is_read_only_and_route_scoped() {
+    let html = ui_html();
+    let css = ui_css();
+    let js = ui_js();
+    let combined = format!("{html}\n{css}\n{js}");
+
+    for expected in [
+        "data-testid=\"repository-files-tab\"",
+        "data-testid=\"repository-files-panel\"",
+        "data-testid=\"repository-files-refresh\"",
+        "data-testid=\"repository-files-tree\"",
+        "data-testid=\"repository-files-empty-state\"",
+        "data-testid=\"repository-file-selected-path\"",
+        "data-testid=\"repository-file-preview\"",
+        "data-testid=\"repository-file-preview-loading\"",
+        "data-testid=\"repository-file-preview-error\"",
+        "data-testid=\"repository-file-preview-read-only\"",
+        "Repository Files",
+        "Refresh Repository Files",
+        "No repository object files were found.",
+        "Select a SQL file to preview its contents.",
+        "Read-only repository preview",
+        "These are repository files, not live database objects.",
+    ] {
+        assert!(
+            html.contains(expected),
+            "missing repository files UI contract {expected}"
+        );
+    }
+
+    assert!(js.contains("repositoryObjectFilesList: \"/api/v1/repository/object-files/list\""));
+    assert!(js.contains("repositoryObjectFilePreview: \"/api/v1/repository/object-files/preview\""));
+    assert!(js.contains("function repositoryObjectPathSlug(path)"));
+    assert!(js.contains("return \"repository-file-row-\" + repositoryObjectPathSlug(path);"));
+    assert!(js.contains("data-action\", \"repository-file-preview\""));
+    assert!(js.contains("refreshRepositoryObjectFiles"));
+    assert!(js.contains("previewRepositoryObjectFile"));
+    assert!(css.contains(".repository-files-layout"));
+    assert!(css.contains(".repository-file-row.repository-file-selected"));
+
+    for forbidden in [
+        "repository-file-edit",
+        "repository-file-save",
+        "repository-file-delete",
+        "repository-file-rename",
+        "repository-file-move",
+        "repository-file-execute",
+        "/api/v1/repository/object-files/write",
+        "/api/v1/repository/object-files/delete",
+        "/api/v1/repository/object-files/execute",
+    ] {
+        assert!(
+            !combined.contains(forbidden),
+            "Repository Files UI exposes forbidden control or route {forbidden}"
         );
     }
 }
@@ -8586,6 +8929,16 @@ fn ui_contains_stable_playwright_demo_selectors() {
         "data-testid=\"object-diff-repository\"",
         "data-testid=\"object-diff-database\"",
         "data-testid=\"selected-json-item\"",
+        "data-testid=\"repository-files-tab\"",
+        "data-testid=\"repository-files-panel\"",
+        "data-testid=\"repository-files-refresh\"",
+        "data-testid=\"repository-files-tree\"",
+        "data-testid=\"repository-files-empty-state\"",
+        "data-testid=\"repository-file-selected-path\"",
+        "data-testid=\"repository-file-preview\"",
+        "data-testid=\"repository-file-preview-loading\"",
+        "data-testid=\"repository-file-preview-error\"",
+        "data-testid=\"repository-file-preview-read-only\"",
         "data-testid=\"tab-warnings\"",
         "data-testid=\"warnings-panel\"",
         "data-testid=\"warnings-list\"",
@@ -9580,6 +9933,8 @@ fn reference_data_database_tables_endpoint_redacts_connection_errors() {
 fn slice15_service_routes_and_write_confirmation_are_present() {
     let routes = service_route_definitions();
     assert!(routes.contains(&("POST", "/api/v1/postgres/object-ddl")));
+    assert!(routes.contains(&("POST", "/api/v1/repository/object-files/list")));
+    assert!(routes.contains(&("POST", "/api/v1/repository/object-files/preview")));
     assert!(routes.contains(&("POST", "/api/v1/postgres/repository-sync/preview")));
     assert!(routes.contains(&("POST", "/api/v1/postgres/repository-sync/write")));
     assert!(routes.contains(&("POST", "/api/v1/postgres/release/preview")));
