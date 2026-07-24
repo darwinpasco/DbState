@@ -1608,6 +1608,15 @@ fn service_repository_sync_endpoint(
             );
         }
     }
+    let selected_paths = request_string_array(&request, "include");
+    let explicit_selected_paths = mapping_get(&request, "include").is_some();
+    if !dry_run && explicit_selected_paths && selected_paths.is_empty() {
+        return service_error_response(
+            400,
+            command,
+            "Select at least one repository object file before writing repository changes.",
+        );
+    }
     let workspace =
         match resolve_service_workspace(request_string(&request, "repositoryPath").as_deref(), cwd)
         {
@@ -1630,6 +1639,10 @@ fn service_repository_sync_endpoint(
     match service_scope_args(&request, ScopeRequirement::Required) {
         Ok(scope_args) => args.extend(scope_args),
         Err(error) => return service_error_response(400, command, &error),
+    }
+    for selected_path in selected_paths {
+        args.push("--include".to_string());
+        args.push(selected_path);
     }
     if dry_run {
         args.push("--dry-run".to_string());

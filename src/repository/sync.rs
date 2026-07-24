@@ -7,6 +7,7 @@ use crate::repository::discovery::{
 };
 use crate::repository::objects::*;
 use crate::*;
+use std::collections::BTreeSet;
 use std::env;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -390,7 +391,13 @@ pub(crate) fn sync_postgres_command(cwd: &Path, parsed: ParsedArgs) -> SyncRepor
     }
 
     match inspect_postgres(&connection_url) {
-        Ok(inventory) => sync_postgres_with_inventory(cwd, &inventory, &selection, parsed.dry_run),
+        Ok(inventory) => sync_postgres_with_inventory_for_paths(
+            cwd,
+            &inventory,
+            &selection,
+            parsed.dry_run,
+            &parsed.includes,
+        ),
         Err(error) => {
             report.errors.push(redact_message(&error, &connection_url));
             report
@@ -403,6 +410,16 @@ pub fn sync_postgres_with_inventory(
     inventory: &PostgresInventory,
     selection: &ExportSelection,
     dry_run: bool,
+) -> SyncReport {
+    sync_postgres_with_inventory_for_paths(cwd, inventory, selection, dry_run, &[])
+}
+
+pub(crate) fn sync_postgres_with_inventory_for_paths(
+    cwd: &Path,
+    inventory: &PostgresInventory,
+    selection: &ExportSelection,
+    dry_run: bool,
+    include_paths: &[String],
 ) -> SyncReport {
     let mut report = empty_sync_report(dry_run);
     report.sync_scope = selection.scope_name();
@@ -438,7 +455,16 @@ pub fn sync_postgres_with_inventory(
         );
     }
     let root = PathBuf::from(project.git_root.expect("git root exists for repository"));
-    let plan = match plan_sync(&root, inventory, selection) {
+    let selected_paths = match normalize_sync_include_paths(include_paths) {
+        Ok(paths) => paths,
+        Err(error) => {
+            report.errors.push(error);
+            return report;
+        }
+    };
+    let plan = match plan_sync(&root, inventory, selection)
+        .and_then(|plan| filter_sync_plan_by_selected_paths(plan, &selected_paths))
+    {
         Ok(plan) => plan,
         Err(error) => {
             report.errors.push(error);
@@ -503,6 +529,79 @@ pub fn sync_postgres_with_inventory(
 
     report.success = report.errors.is_empty();
     report
+}
+
+fn normalize_sync_include_paths(values: &[String]) -> Result<BTreeSet<String>, String> {
+    let mut paths = BTreeSet::new();
+    for value in values {
+        let normalized = value.replace('\\', "/");
+        let trimmed = normalized.trim();
+        if trimmed.is_empty() {
+            return Err("Repository sync include path cannot be empty.".to_string());
+        }
+        if trimmed.starts_with('/')
+            || trimmed.starts_with("//")
+            || trimmed.contains(':')
+            || trimmed.split('/').any(|segment| segment == "..")
+        {
+            return Err(format!(
+                "Repository sync include path must be a safe repository-relative path under database/objects/: {trimmed}"
+            ));
+        }
+        ensure_database_object_path(trimmed)?;
+        if !paths.insert(trimmed.to_string()) {
+            return Err(format!(
+                "Repository sync include path was provided more than once: {trimmed}"
+            ));
+        }
+    }
+    Ok(paths)
+}
+
+fn filter_sync_plan_by_selected_paths(
+    mut plan: SyncPlan,
+    selected_paths: &BTreeSet<String>,
+) -> Result<SyncPlan, String> {
+    if selected_paths.is_empty() {
+        return Ok(plan);
+    }
+
+    let available_paths: BTreeSet<String> = plan
+        .writes
+        .iter()
+        .map(|write| write.relative_path.clone())
+        .collect();
+    let missing: Vec<String> = selected_paths
+        .iter()
+        .filter(|path| !available_paths.contains(*path))
+        .cloned()
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "Selected repository sync path is not part of the current planned repository write set: {}",
+            missing.join(", ")
+        ));
+    }
+
+    plan.writes
+        .retain(|write| selected_paths.contains(&write.relative_path));
+    plan.added_files
+        .retain(|path| selected_paths.contains(path));
+    plan.changed_files
+        .retain(|path| selected_paths.contains(path));
+    plan.planned_creates = plan
+        .writes
+        .iter()
+        .filter(|write| matches!(write.action, SyncWriteAction::Create))
+        .map(|write| write.relative_path.clone())
+        .collect();
+    plan.planned_updates = plan
+        .writes
+        .iter()
+        .filter(|write| matches!(write.action, SyncWriteAction::Update))
+        .map(|write| write.relative_path.clone())
+        .collect();
+    Ok(plan)
 }
 
 #[derive(Debug, Clone)]

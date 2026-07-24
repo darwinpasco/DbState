@@ -29,7 +29,7 @@ use crate::repository::objects::{
 use crate::repository::{
     compare_postgres_command, ensure_database_object_path, enum_file_path, export_postgres_command,
     extension_file_path, index_file_path, plan_postgres_command, schema_file_path,
-    sequence_file_path, table_file_path, view_file_path,
+    sequence_file_path, sync_postgres_with_inventory_for_paths, table_file_path, view_file_path,
 };
 use crate::service::{
     load_connection_profiles_from_path, parse_connection_profile,
@@ -1846,6 +1846,129 @@ fn sync_dry_run_creates_or_updates_no_files() {
     assert!(!dir
         .join("database/objects/schemas/dbstate_slice2.sql")
         .exists());
+}
+
+#[test]
+fn sync_include_paths_limit_repository_writes_to_exact_selected_paths() {
+    let dir = create_temp_dir("sync-selected-paths");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+
+    let selected = vec![
+        "database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string(),
+        "database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
+            .to_string(),
+    ];
+    let report = sync_postgres_with_inventory_for_paths(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        false,
+        &selected,
+    );
+
+    assert!(report.success, "{:?}", report.errors);
+    let mut created_files = report.created_files.clone();
+    created_files.sort();
+    assert_eq!(
+        created_files,
+        vec![
+            "database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql"
+                .to_string(),
+            "database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string(),
+        ]
+    );
+    let mut planned_creates = report.planned_creates.clone();
+    planned_creates.sort();
+    assert_eq!(planned_creates, created_files);
+    assert!(report.updated_files.is_empty());
+    assert!(dir
+        .join("database/objects/tables/dbstate_slice2.sample_accounts.sql")
+        .is_file());
+    assert!(dir
+        .join("database/objects/functions/dbstate_slice2.account_label.account_id_integer.sql")
+        .is_file());
+    assert!(!dir
+        .join("database/objects/aggregates/dbstate_slice2.account_total.integer.sql")
+        .exists());
+}
+
+#[test]
+fn sync_include_paths_reject_unsafe_duplicate_and_unplanned_paths() {
+    let dir = create_temp_dir("sync-selected-path-safety");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+    commit_all(&dir, "complete structure");
+
+    for selected in [
+        vec!["C:/DbState/pagila/database/objects/tables/public.country.sql".to_string()],
+        vec!["database/objects/../objects/tables/public.country.sql".to_string()],
+        vec!["database/releases/objects/public.country.sql".to_string()],
+        vec![
+            "database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string(),
+            "database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string(),
+        ],
+        vec!["database/objects/tables/missing.sql".to_string()],
+    ] {
+        let report = sync_postgres_with_inventory_for_paths(
+            &dir,
+            &sample_inventory(),
+            &ExportSelection::All,
+            true,
+            &selected,
+        );
+        assert!(!report.success, "selected paths should fail: {selected:?}");
+        assert!(
+            !report.errors.is_empty(),
+            "selected paths should report an error"
+        );
+    }
+
+    let backslash_selected =
+        vec!["database\\objects\\tables\\dbstate_slice2.sample_accounts.sql".to_string()];
+    let report = sync_postgres_with_inventory_for_paths(
+        &dir,
+        &sample_inventory(),
+        &ExportSelection::All,
+        true,
+        &backslash_selected,
+    );
+    assert!(report.success, "{:?}", report.errors);
+    assert_eq!(
+        report.planned_creates,
+        vec!["database/objects/tables/dbstate_slice2.sample_accounts.sql".to_string()]
+    );
+}
+
+#[test]
+fn repository_sync_write_rejects_explicit_empty_include_selection() {
+    let dir = create_temp_dir("sync-empty-selection-service");
+    init_git_repo(&dir);
+    create_complete_structure(&dir);
+
+    let body = format!(
+        r#"{{
+            "repositoryPath": "{}",
+            "scope": "all",
+            "confirmRepositoryWrite": true,
+            "confirmationText": "WRITE REPOSITORY FILES",
+            "include": []
+        }}"#,
+        escape_json(&display_path(&dir))
+    );
+    let response = service_response(
+        "POST",
+        "/api/v1/postgres/repository-sync/write",
+        &body,
+        &dir,
+    );
+
+    assert_eq!(response.status_code, 400, "{}", response.body);
+    assert!(response
+        .body
+        .contains("Select at least one repository object file"));
+    assert!(!response.body.contains("PostgreSQL connection"));
 }
 
 #[test]
@@ -9025,6 +9148,12 @@ fn ui_contains_stable_playwright_demo_selectors() {
         "data-testid=\"results-count\"",
         "data-testid=\"results-visible-row-count\"",
         "data-testid=\"results-included-count\"",
+        "data-testid=\"results-clear-selection\"",
+        "data-testid=\"results-selected-count\"",
+        "data-testid=\"results-selection-status\"",
+        "data-testid=\"results-selection-clearing\"",
+        "data-testid=\"results-selection-cleared\"",
+        "data-testid=\"results-selection-error\"",
         "data-testid=\"results-status-legend\"",
         "data-testid=\"comparison-summary\"",
         "data-testid=\"tab-object-diff\"",
@@ -9099,6 +9228,10 @@ fn ui_contains_stable_playwright_demo_selectors() {
             "setHidden(\"database-connection-success\", stateName !== \"success\")",
             "setHidden(\"repository-sync-preview-success\", stateName !== \"success\")",
             "setHidden(\"repository-write-success\", stateName !== \"success\")",
+            "function clearResultsSelection()",
+            "state.included = new Set()",
+            "body.include = selectedRepositorySyncPaths()",
+            "byId(\"results-selected-count\").textContent = String(selectedPaths.length)",
         ] {
             assert!(js.contains(expected), "missing JS selector path {expected}");
         }
@@ -12041,9 +12174,19 @@ fn cli_rejects_apply_and_database_mutation_commands() {
     assert!(ParsedArgs::parse(&[
         "sync".to_string(),
         "postgres".to_string(),
-        "--all".to_string()
+        "--all".to_string(),
+        "--include".to_string(),
+        "database/objects/tables/public.country.sql".to_string()
     ])
     .is_ok());
+    assert!(ParsedArgs::parse(&[
+        "sync".to_string(),
+        "postgres".to_string(),
+        "--all".to_string(),
+        "--exclude".to_string(),
+        "database/objects/tables/public.country.sql".to_string()
+    ])
+    .is_err());
     assert!(ParsedArgs::parse(&[
         "compare".to_string(),
         "postgres".to_string(),

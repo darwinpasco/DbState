@@ -452,6 +452,12 @@ rows:
           <span id="results-count" data-testid="results-visible-row-count">0 result rows</span>
           <span id="results-count-automation" data-testid="results-count" hidden>0 result rows</span>
           <span id="included-count" data-testid="results-included-count">0 included</span>
+          <span id="results-selected-count" data-testid="results-selected-count" hidden>0</span>
+          <button type="button" data-action="results-clear-selection" data-testid="results-clear-selection" disabled>Clear Selection</button>
+          <span id="results-selection-status" data-testid="results-selection-status" data-state="idle" hidden>idle</span>
+          <span id="results-selection-clearing" data-testid="results-selection-clearing" hidden>Selection is clearing.</span>
+          <span id="results-selection-cleared" data-testid="results-selection-cleared" hidden>Selection cleared.</span>
+          <span id="results-selection-error" data-testid="results-selection-error" hidden></span>
         </div>
         <div class="status-legend" aria-label="Status legend" data-testid="results-status-legend">
           <span><span class="status-badge status-insync">inSync</span> repository and database match</span>
@@ -2042,6 +2048,8 @@ const UI_JS: &str = r#"(function () {
       dirtyPathCount: 0
     },
     included: new Set(),
+    autoIncludeResults: true,
+    resultsSelectionStatus: "idle",
     releaseSelectedRefs: new Set(),
     releaseCandidateSignature: "",
     selectedIndex: -1,
@@ -2371,6 +2379,7 @@ const UI_JS: &str = r#"(function () {
     if (write) {
       body.confirmRepositoryWrite = true;
       body.confirmationText = value("repository-write-confirmation");
+      body.include = selectedRepositorySyncPaths();
     }
     return body;
   }
@@ -2446,6 +2455,7 @@ const UI_JS: &str = r#"(function () {
     setHidden("repository-sync-preview-loading", stateName !== "loading");
     setHidden("repository-sync-preview-success", stateName !== "success");
     setHidden("repository-sync-preview-error", stateName !== "error");
+    updateResultCounts();
   }
 
   function setRepositoryWriteState(stateName, data) {
@@ -2460,6 +2470,7 @@ const UI_JS: &str = r#"(function () {
         : 0;
     byId("repository-write-written-count").textContent = "Written: " + written;
     byId("repository-write-skipped-count").textContent = "Skipped: " + skipped;
+    updateResultCounts();
   }
 
   function setConnectionStatusState(stateName) {
@@ -3673,7 +3684,7 @@ const UI_JS: &str = r#"(function () {
   function updateRepositoryWriteButton() {
     const button = document.querySelector("[data-action='repository-sync-write']");
     if (button) {
-      button.disabled = !repositorySyncWriteConfirmed();
+      button.disabled = !repositorySyncWriteConfirmed() || selectedRepositorySyncPaths().length === 0;
     }
   }
 
@@ -4244,6 +4255,64 @@ const UI_JS: &str = r#"(function () {
 
   function rowRef(row, index) {
     return row.objectRef || [row.objectType, row.schema, row.name, index].join(":");
+  }
+
+  function normalizedRepositoryPath(value) {
+    return textOrEmpty(value).replace(/\\/g, "/").trim();
+  }
+
+  function repositoryWritePath(row) {
+    const relativePath = normalizedRepositoryPath(row && row.relativePath);
+    if (relativePath) {
+      return relativePath;
+    }
+    const identity = normalizedRepositoryPath(resultRowIdentity(row || {}));
+    return identity.indexOf("database/objects/") === 0 ? identity : "";
+  }
+
+  function selectedRepositorySyncPaths() {
+    const paths = new Set();
+    state.rows.forEach(function (row, index) {
+      if (!state.included.has(rowRef(row, index))) {
+        return;
+      }
+      const repositoryPath = repositoryWritePath(row);
+      if (repositoryPath) {
+        paths.add(repositoryPath);
+      }
+    });
+    return Array.from(paths).sort();
+  }
+
+  function setResultsSelectionState(stateName, message) {
+    const value = stateName || "idle";
+    state.resultsSelectionStatus = value;
+    const status = byId("results-selection-status");
+    if (status) {
+      status.setAttribute("data-state", value);
+      status.textContent = value;
+    }
+    setHidden("results-selection-clearing", value !== "clearing");
+    setHidden("results-selection-cleared", value !== "cleared");
+    setHidden("results-selection-error", value !== "error");
+    const error = byId("results-selection-error");
+    if (error) {
+      error.textContent = value === "error" ? textOrEmpty(message) : "";
+    }
+  }
+
+  function clearResultsSelection() {
+    if (!state.rows.length) {
+      setResultsSelectionState("error", "Results are not loaded.");
+      return;
+    }
+    setResultsSelectionState("clearing", "");
+    state.autoIncludeResults = false;
+    state.included = new Set();
+    renderReleasePlan();
+    renderResults(state.rows, true);
+    setResultsSelectionState("cleared", "");
+    updateResultCounts();
   }
 
   function textOrEmpty(value) {
@@ -5114,6 +5183,8 @@ const UI_JS: &str = r#"(function () {
     byId("results-count").textContent = visibleRows.length + " table summary row(s)";
     byId("results-count-automation").textContent = visibleRows.length + " table summary row(s)";
     byId("included-count").textContent = "Reference-data rows available in Reports / Raw JSON";
+    byId("results-selected-count").textContent = "0";
+    updateRepositoryWriteButton();
     renderSelectedObject();
     updateReferenceDataReviewScriptWriteButton();
     renderReleasePlan();
@@ -5134,6 +5205,13 @@ const UI_JS: &str = r#"(function () {
       return rowMatchesFilter(row) && rowMatchesCurrentWorkflow(row);
     }).slice().sort(compareResultRows);
     state.visibleRows = visibleRows;
+    if (state.autoIncludeResults) {
+      state.rows.forEach(function (row, index) {
+        if (rowMatchesCurrentWorkflow(row)) {
+          state.included.add(rowRef(row, index));
+        }
+      });
+    }
     if (state.selectedIndex < 0 || state.selectedIndex >= visibleRows.length) {
       state.selectedIndex = visibleRows.length ? 0 : -1;
     }
@@ -5141,9 +5219,6 @@ const UI_JS: &str = r#"(function () {
       const sourceIndex = state.rows.indexOf(row);
       const ref = rowRef(row, sourceIndex);
       const selectorSlug = resultRowSelectorSlug(row);
-      if (!state.included.has(ref)) {
-        state.included.add(ref);
-      }
       const tr = document.createElement("tr");
       tr.dataset.index = String(visibleIndex);
       tr.setAttribute("data-testid", "results-row-" + selectorSlug);
@@ -5163,6 +5238,8 @@ const UI_JS: &str = r#"(function () {
         } else {
           state.included.delete(ref);
         }
+        state.autoIncludeResults = false;
+        setResultsSelectionState("idle", "");
         renderReleasePlan();
         updateResultCounts();
       });
@@ -5232,9 +5309,17 @@ const UI_JS: &str = r#"(function () {
     const visibleIncluded = visibleRefs.filter(function (ref) {
       return state.included.has(ref);
     }).length;
+    const selectedPaths = selectedRepositorySyncPaths();
     byId("results-count").textContent = state.visibleRows.length + " visible of " + state.rows.length + " row(s)";
     byId("results-count-automation").textContent = state.visibleRows.length + " visible of " + state.rows.length + " row(s)";
     byId("included-count").textContent = visibleIncluded + " included in filter";
+    byId("results-selected-count").textContent = String(selectedPaths.length);
+    const clearButton = document.querySelector("[data-action='results-clear-selection']");
+    if (clearButton) {
+      const busy = !byId("repository-sync-preview-loading").hidden || !byId("repository-write-loading").hidden;
+      clearButton.disabled = busy || selectedPaths.length === 0 || !state.rows.length;
+    }
+    updateRepositoryWriteButton();
   }
 
   function clearObjectDiffDetails(message) {
@@ -7250,6 +7335,8 @@ const UI_JS: &str = r#"(function () {
         updateProfileList(data);
       }
       state.included = new Set();
+      state.autoIncludeResults = true;
+      setResultsSelectionState("idle", "");
       state.selectedIndex = -1;
       if (label === "Inspect") {
         updateCompareOptionLists(data);
@@ -7318,6 +7405,9 @@ const UI_JS: &str = r#"(function () {
       updateResultsContext(label, data);
       renderErrorSummary(data);
       renderWarnings(data);
+      state.included = new Set();
+      state.autoIncludeResults = true;
+      setResultsSelectionState("idle", "");
       const rows = rowsFromResponse(data, label);
       updateObjectTypeFilterOptions(rows, label);
       updateStatusFilterOptions(rows);
@@ -7641,9 +7731,20 @@ const UI_JS: &str = r#"(function () {
       if (!repositorySyncWriteConfirmed()) {
         throw new Error("Type WRITE REPOSITORY FILES before writing repository files.");
       }
+      if (selectedRepositorySyncPaths().length === 0) {
+        throw new Error("Select at least one repository object file before writing repository changes.");
+      }
       run("Database to Repository Write", approvedEndpoints.repositorySyncWrite, repositorySyncBody(true), { step: "results" });
     } catch (error) {
       responseSummary.textContent = "Database to Repository Write: " + error.message;
+    }
+  });
+
+  document.querySelector("[data-action='results-clear-selection']").addEventListener("click", function () {
+    try {
+      clearResultsSelection();
+    } catch (error) {
+      setResultsSelectionState("error", error && error.message ? error.message : "Could not clear the current Results selection.");
     }
   });
 

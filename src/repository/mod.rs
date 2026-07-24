@@ -23,4 +23,6 @@ pub(crate) use objects::{
     view_file_path, ObjectRef,
 };
 pub(crate) use plan::{plan_postgres_command, PlanColumn, TableDifferenceAnalysis};
+#[cfg(test)]
+pub(crate) use sync::sync_postgres_with_inventory_for_paths;
 pub(crate) use sync::{export_postgres_command, sync_postgres_command};

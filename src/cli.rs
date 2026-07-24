@@ -432,12 +432,22 @@ impl ParsedArgs {
             );
         }
 
-        if (!includes.is_empty() || !excludes.is_empty())
+        if !includes.is_empty()
+            && command != CommandKind::SyncPostgres
             && command != CommandKind::PlanPostgres
             && command != CommandKind::ReleasePostgres
         {
             return Err(
-                "--include and --exclude are only supported for dbstate plan postgres and dbstate release postgres".to_string(),
+                "--include is only supported for dbstate sync postgres, dbstate plan postgres, and dbstate release postgres".to_string(),
+            );
+        }
+        if !excludes.is_empty()
+            && command != CommandKind::PlanPostgres
+            && command != CommandKind::ReleasePostgres
+        {
+            return Err(
+                "--exclude is only supported for dbstate plan postgres and dbstate release postgres"
+                    .to_string(),
             );
         }
 
@@ -477,5 +487,5 @@ impl ParsedArgs {
 }
 
 pub fn usage() -> String {
-    "Usage:\n  dbstate repo status [--format json|--json]\n  dbstate init [--dry-run] [--format json|--json]\n  dbstate inspect postgres [--url <postgres-url>] [--all | --schema <schema> | --table <schema.table>] [--format json|--json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json|--json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json|--json]\n  dbstate data-compare postgres (--all | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate ci validate --repository <path> --postgres-url <postgres-url> --disposable [--report <path>] [--format json|--json]\n  dbstate serve [--host <host>] [--port <port>] [--format json|--json]".to_string()
+    "Usage:\n  dbstate repo status [--format json|--json]\n  dbstate init [--dry-run] [--format json|--json]\n  dbstate inspect postgres [--url <postgres-url>] [--all | --schema <schema> | --table <schema.table>] [--format json|--json]\n  dbstate export postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--dry-run] [--format json|--json]\n  dbstate sync postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <repository-path>] [--dry-run] [--format json|--json]\n  dbstate compare postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate plan postgres (--all | --schema <schema> | --table <schema.table>) [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--format json|--json]\n  dbstate release postgres (--all | --schema <schema> | --table <schema.table>) --name <release-name> [--url <postgres-url>] [--include <object-ref>] [--exclude <object-ref>] [--dry-run] [--format json|--json]\n  dbstate data-compare postgres (--all | --table <schema.table>) [--url <postgres-url>] [--format json|--json]\n  dbstate ci validate --repository <path> --postgres-url <postgres-url> --disposable [--report <path>] [--format json|--json]\n  dbstate serve [--host <host>] [--port <port>] [--format json|--json]".to_string()
 }
