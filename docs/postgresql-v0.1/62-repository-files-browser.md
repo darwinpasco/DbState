@@ -95,8 +95,9 @@ Slugging rule:
 1. Start with the repository-relative path, for example `database/objects/tables/public.actor.sql`.
 2. Lowercase ASCII letters.
 3. Replace every non-ASCII-alphanumeric character with `-`.
-4. Collapse repeated separators by removing empty segments.
-5. Trim leading and trailing separators.
+4. Trim leading and trailing separators.
+5. Limit the readable prefix to 72 characters.
+6. Append a deterministic FNV-1a hash suffix over the original selector identity.
 
 Example:
 
@@ -107,7 +108,7 @@ database/objects/tables/public.actor.sql
 becomes:
 
 ```text
-repository-file-row-database-objects-tables-public-actor-sql
+repository-file-row-database-objects-tables-public-actor-sql-<hash>
 ```
 
 Selectors are derived from repository-relative paths, not array indexes, screen position, CSS classes, visible SQL text, or runtime-generated identifiers.
