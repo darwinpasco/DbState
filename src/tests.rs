@@ -2201,7 +2201,14 @@ fn slice35_git_handoff_ui_contract_is_present() {
     for expected in [
         "data-testid=\"tab-git-workflow\"",
         "data-testid=\"workspace-git-workflow-pointer\"",
+        "data-testid=\"git-workflow-panel\"",
         "data-testid=\"git-handoff-panel\"",
+        "data-testid=\"git-workflow-status\"",
+        "data-testid=\"git-workflow-ready-state\"",
+        "data-testid=\"git-workflow-blocked-state\"",
+        "data-testid=\"git-workflow-no-changes-state\"",
+        "data-testid=\"git-workflow-loading-state\"",
+        "data-testid=\"git-workflow-error-state\"",
         "Open Git Workflow",
         "Current branch",
         "Protected branch",
@@ -2211,6 +2218,17 @@ fn slice35_git_handoff_ui_contract_is_present() {
         "Suggested Manual Git Commands",
         "Suggested Commit Title",
         "Suggested Commit Body",
+        "data-testid=\"git-workflow-suggested-branch\"",
+        "data-testid=\"git-workflow-suggested-branch-name\"",
+        "data-testid=\"git-workflow-copy-branch-name\"",
+        "data-testid=\"git-workflow-branch-reason\"",
+        "data-testid=\"git-workflow-suggested-files\"",
+        "data-testid=\"git-workflow-suggested-files-count\"",
+        "data-testid=\"git-workflow-suggested-files-empty\"",
+        "data-testid=\"git-workflow-suggested-commit-title\"",
+        "data-testid=\"git-workflow-suggested-commit-body\"",
+        "data-testid=\"git-workflow-copy-commit-title\"",
+        "data-testid=\"git-workflow-copy-commit-message\"",
         "data-testid=\"copy-recommended-branch\"",
         "data-testid=\"copy-manual-git-commands\"",
         "data-testid=\"copy-commit-title\"",
@@ -2270,6 +2288,10 @@ fn slice35_git_handoff_ui_contract_is_present() {
         "DbState never runs git add, commit, push, pull, fetch, tag, switch, checkout, or branch commands.",
         "Already on working branch: ",
         "writeSucceededOnWorkingBranch",
+        "renderGitWorkflowSuggestedFiles(suggestedPaths);",
+        "setGitWorkflowState(\"blocked\"",
+        "setGitWorkflowState(\"ready\"",
+        "setGitWorkflowState(\"no-changes\"",
     ] {
         assert!(
             combined.contains(expected),
@@ -2334,6 +2356,12 @@ fn slice35_git_handoff_ui_contract_is_present() {
     let branch_block = &js[branch_start..branch_start + 500.min(js.len() - branch_start)];
     assert!(branch_block.contains("git switch -c"));
     assert!(js.contains("byId(\"git-handoff-recommended-branch\").textContent = branchDisplay;"));
+    assert!(js.contains(
+        "byId(\"git-workflow-suggested-branch-name\").textContent = suggestedBranchName;"
+    ));
+    assert!(
+        !js.contains("byId(\"git-workflow-suggested-branch-name\").textContent = branchCommand")
+    );
     assert!(js.contains("data && data.success === true && written.length && !protectedBranch"));
     assert!(js.contains("byId(\"git-handoff-large-add-note\").hidden = !manualCommands.grouped;"));
     let full_commit_start = js
@@ -9107,6 +9135,130 @@ fn password_selectors_do_not_derive_from_secret_values() {
     assert!(!js.contains("profilePassword"));
     assert!(js.contains("const password = value(\"profile-password\")"));
     assert!(!js.contains("setAttribute(\"data-testid\", value(\"profile-password\")"));
+}
+
+#[test]
+fn git_workflow_recommendation_selectors_expose_exact_machine_values() {
+    let html = ui_html();
+    let js = ui_js();
+
+    for selector in [
+        "data-testid=\"git-workflow-panel\"",
+        "data-testid=\"git-workflow-status\"",
+        "data-testid=\"git-workflow-ready-state\"",
+        "data-testid=\"git-workflow-blocked-state\"",
+        "data-testid=\"git-workflow-no-changes-state\"",
+        "data-testid=\"git-workflow-loading-state\"",
+        "data-testid=\"git-workflow-error-state\"",
+        "data-testid=\"git-workflow-suggested-branch\"",
+        "data-testid=\"git-workflow-suggested-branch-name\"",
+        "data-testid=\"git-workflow-copy-branch-name\"",
+        "data-testid=\"git-workflow-branch-reason\"",
+        "data-testid=\"git-workflow-suggested-files\"",
+        "data-testid=\"git-workflow-suggested-files-count\"",
+        "data-testid=\"git-workflow-suggested-files-empty\"",
+        "data-testid=\"git-workflow-suggested-commit-title\"",
+        "data-testid=\"git-workflow-suggested-commit-body\"",
+        "data-testid=\"git-workflow-copy-commit-title\"",
+        "data-testid=\"git-workflow-copy-commit-message\"",
+        "data-testid=\"git-current-branch\"",
+        "data-testid=\"git-default-branch\"",
+        "data-testid=\"git-protected-branch-status\"",
+        "data-testid=\"git-working-tree-status\"",
+        "data-testid=\"git-detached-head-status\"",
+    ] {
+        assert!(
+            html.contains(selector),
+            "missing Git Workflow selector {selector}"
+        );
+    }
+
+    assert!(js.contains("const suggestedBranchName = writeSucceededOnWorkingBranch ? branch : branchCommand.replace"));
+    assert!(js.contains(
+        "byId(\"git-workflow-suggested-branch-name\").textContent = suggestedBranchName;"
+    ));
+    assert!(!js.contains("\"Suggested branch: \" + suggestedBranchName"));
+    assert!(!js.contains("\"git switch -c \" + suggestedBranchName"));
+    assert!(js.contains("byId(\"git-workflow-suggested-commit-title\").textContent = nextTitle;"));
+    assert!(js.contains("byId(\"git-workflow-suggested-commit-body\").textContent = nextBody;"));
+    assert!(js.contains("byId(\"git-workflow-suggested-commit-title\").textContent = title;"));
+    assert!(js.contains("byId(\"git-workflow-suggested-commit-body\").textContent = body;"));
+    assert!(!js.contains("\"Commit title: \" + nextTitle"));
+    assert!(!js.contains("\"Commit body: \" + nextBody"));
+    assert!(js.contains("code.textContent = path;"));
+    assert!(
+        js.contains("item.setAttribute(\"data-testid\", gitWorkflowSuggestedFileTestId(path));")
+    );
+    assert!(js
+        .contains("code.setAttribute(\"data-testid\", gitWorkflowSuggestedFilePathTestId(path));"));
+}
+
+#[test]
+fn git_workflow_suggested_file_selectors_reuse_repository_path_slugging() {
+    let js = ui_js();
+
+    assert!(
+        js.contains("return \"git-workflow-suggested-file-\" + repositoryObjectPathSlug(path);")
+    );
+    assert!(js.contains(
+        "return \"git-workflow-suggested-file-path-\" + repositoryObjectPathSlug(path);"
+    ));
+    assert!(js.contains("return \"repository-file-row-\" + repositoryObjectPathSlug(path);"));
+
+    let representative_paths = [
+        "database/objects/tables/public.country.sql",
+        "database/objects/functions/public.calculate_total.sql",
+        "database/objects/constraints/foreign-keys/public.city.country_fk.sql",
+        "database/objects/grants/tables/public.country.app_reader.sql",
+        "database/objects/rls-policies/public.customer.tenant_policy.sql",
+        "database/objects/tables/Public.Mixed-Case_Name.sql",
+    ];
+    let mut slugs = std::collections::BTreeSet::new();
+    for path in representative_paths {
+        let slug = format!(
+            "{}-{}",
+            selector_readable_slug(path),
+            stable_selector_hash(path)
+        );
+        assert!(
+            slugs.insert(slug.clone()),
+            "duplicate slug for {path}: {slug}"
+        );
+        assert!(
+            slug.starts_with("database-objects-"),
+            "repository object path should keep readable prefix: {slug}"
+        );
+    }
+
+    let normalized_a = selector_readable_slug("database/objects/tables/public.a-b.sql");
+    let normalized_b = selector_readable_slug("database/objects/tables/public.a_b.sql");
+    assert_eq!(normalized_a, normalized_b);
+    assert_ne!(
+        stable_selector_hash("database/objects/tables/public.a-b.sql"),
+        stable_selector_hash("database/objects/tables/public.a_b.sql")
+    );
+}
+
+#[test]
+fn git_workflow_state_selector_logic_covers_expected_states() {
+    let js = ui_js();
+
+    assert!(js.contains("function setGitWorkflowState(stateName, message)"));
+    assert!(js.contains("status.setAttribute(\"data-state\", stateValue);"));
+    assert!(js.contains("setHidden(\"git-workflow-ready-state\", stateValue !== \"ready\")"));
+    assert!(js.contains("setHidden(\"git-workflow-blocked-state\", stateValue !== \"blocked\")"));
+    assert!(
+        js.contains("setHidden(\"git-workflow-no-changes-state\", stateValue !== \"no-changes\")")
+    );
+    assert!(js.contains("setHidden(\"git-workflow-loading-state\", stateValue !== \"loading\")"));
+    assert!(js.contains("setHidden(\"git-workflow-error-state\", stateValue !== \"error\")"));
+    assert!(js.contains("if (blocked)"));
+    assert!(js.contains("protectedBranch || errors.toLowerCase().indexOf(\"blocked\") >= 0"));
+    assert!(js.contains("} else if (data && data.success === false)"));
+    assert!(js.contains("} else if (suggestedPaths.length)"));
+    assert!(js.contains("setGitWorkflowState(\"no-changes\", \"No DbState files are recommended for staging yet.\");"));
+    assert!(js.contains("setGitWorkflowState(\"loading\", \"Generating semantic commit message from staged changes.\");"));
+    assert!(js.contains("byId(\"git-handoff-detached-head\").textContent = branch === \"unknown\" ? \"yes\" : \"no\";"));
 }
 
 fn selector_readable_slug(value: &str) -> String {
