@@ -9316,18 +9316,35 @@ fn cycle3_object_diff_demo_script_is_fixed_scope_and_secret_safe() {
         "[ValidateSet(\"Status\", \"Apply\", \"Reset\")]",
         "$ApprovedHosts = @(\"localhost\", \"127.0.0.1\")",
         "$ApprovedDatabase = \"pagila\"",
+        "$ApprovedUsername = \"exitpass\"",
+        "$ApprovedContainer = \"exitpass-postgres\"",
+        "$ApprovedDockerPort = \"5432\"",
+        "$ExecutionMode = if ($env:DBSTATE_DEMO_PG_EXECUTION_MODE)",
         "$TargetSchema = \"public\"",
         "$TargetTable = \"country\"",
         "$TargetColumn = \"iso_code\"",
         "ALTER TABLE public.country ADD COLUMN iso_code varchar(2);",
         "ALTER TABLE public.country DROP COLUMN iso_code;",
+        "$null = Invoke-DemoPsql -Sql \"ALTER TABLE public.country ADD COLUMN iso_code varchar(2);\"",
+        "$null = Invoke-DemoPsql -Sql \"ALTER TABLE public.country DROP COLUMN iso_code;\"",
+        "DBSTATE_DEMO_PG_CONTAINER",
         "DBSTATE_DEMO_PG_PASSWORD",
         "PGPASSWORD",
-        "ON_ERROR_STOP=1",
+        "--env\", \"PGPASSWORD\"",
+        "--set=ON_ERROR_STOP=1",
+        "--field-separator=|",
         "ConvertTo-Json -Compress",
         "columnExists",
         "maximumLength",
         "nullable",
+        "DockerUnavailable",
+        "ContainerMissing",
+        "ContainerStopped",
+        "ContainerPsqlUnavailable",
+        "UnsafeContainer",
+        "UnexpectedPort",
+        "UnexpectedUsername",
+        "AlreadyApplied",
         "AlreadyReset",
     ] {
         assert!(
@@ -9340,6 +9357,8 @@ fn cycle3_object_diff_demo_script_is_fixed_scope_and_secret_safe() {
         "POSTGRES_PASSWORD=postgres",
         "postgres://postgres:postgres@",
         "param(\n    [string]$Sql",
+        "2>&1",
+        "--env PGPASSWORD=",
         "git add",
         "git commit",
         "git push",
@@ -9354,6 +9373,89 @@ fn cycle3_object_diff_demo_script_is_fixed_scope_and_secret_safe() {
         assert!(
             !script.contains(forbidden),
             "script contains forbidden text {forbidden}"
+        );
+    }
+}
+
+#[test]
+fn cycle3_object_diff_demo_script_has_docker_process_and_parser_contract() {
+    let script_path =
+        PathBuf::from("demo/video-01/scripts/invoke-pagila-country-object-diff-change.ps1");
+    let script = fs::read_to_string(&script_path).expect("read Cycle 3 demo script");
+
+    for expected in [
+        "function Invoke-ProcessCaptured",
+        "Stdout = [System.IO.File]::ReadAllText($stdoutFile)",
+        "Stderr = [System.IO.File]::ReadAllText($stderrFile)",
+        "& $FilePath @Arguments > $stdoutFile 2> $stderrFile",
+        "@(\"exec\", \"-i\", \"--env\", \"PGPASSWORD\", $Container, \"psql\") + $psqlArguments",
+        "-FilePath \"docker\" -Arguments @(\"version\", \"--format\", \"{{.Server.Version}}\")",
+        "-Arguments @(\"inspect\", \"--format\", \"{{.Name}}|{{.State.Running}}\", $Container)",
+        "Invoke-ProcessCaptured -FilePath \"docker\" -Arguments @(\"exec\", $Container, \"psql\", \"--version\")",
+        "function Test-TableExists",
+        "to_regclass('public.country')",
+        "function ConvertTo-ColumnState",
+        "$parts = $line -split \"\\|\"",
+        "if ($parts.Count -ne 4)",
+        "if ($parts[0] -ne \"true\" -and $parts[0] -ne \"false\")",
+        "if ($parts[1] -ne \"\" -or $parts[2] -ne \"\" -or $parts[3] -ne \"\")",
+        "[int]::TryParse($parts[2], [ref]$parsedLength)",
+        "$parts[3] -eq \"YES\"",
+        "$parts[3] -eq \"NO\"",
+        "Absent column state included unexpected metadata.",
+        "Present column state was missing metadata.",
+        "Column maximum length was not a valid integer.",
+        "Column nullability was not a valid PostgreSQL value.",
+    ] {
+        assert!(
+            script.contains(expected),
+            "missing parser/process contract text {expected}"
+        );
+    }
+
+    assert!(!script.contains("Invoke-Expression"));
+    assert!(!script.contains("Out-String"));
+    assert!(!script.contains("New-TemporaryFile"));
+}
+
+#[test]
+fn cycle3_object_diff_demo_script_documents_expected_metadata_rows() {
+    let docs = fs::read_to_string("docs/postgresql-v0.1/66-video-01-object-diff-demo-script.md")
+        .expect("read Cycle 3 script docs");
+
+    for expected in [
+        "Docker is the canonical Video 1 PostgreSQL execution environment.",
+        "container: `exitpass-postgres`",
+        "container port: `5432`",
+        "host port: `5433`",
+        "database: `pagila`",
+        "username: `exitpass`",
+        "`DBSTATE_DEMO_PG_EXECUTION_MODE`: `docker`",
+        "`DBSTATE_DEMO_PG_CONTAINER`: `exitpass-postgres`",
+        "`DBSTATE_DEMO_PG_PASSWORD` has no default",
+        "the password is forwarded by inherited environment variable name with `--env PGPASSWORD`.",
+        "columnExists|dataType|maximumLength|nullable",
+        "false|||",
+        "true|character varying|2|YES",
+        "Status, Apply, Status, repeated Apply, Reset, Status, repeated Reset",
+        "The final validation state must have `public.country.iso_code` absent.",
+        "DbState does not execute or apply this change.",
+    ] {
+        assert!(
+            docs.contains(expected),
+            "missing documentation text {expected}"
+        );
+    }
+
+    for forbidden in [
+        "POSTGRES_PASSWORD=postgres",
+        "postgres://postgres:postgres@",
+        "D:\\SourceCodes\\DbState",
+        "D:\\DbState\\pagila",
+    ] {
+        assert!(
+            !docs.contains(forbidden),
+            "docs contain forbidden tester-facing text {forbidden}"
         );
     }
 }
