@@ -2,6 +2,9 @@ use crate::commit_message;
 use crate::object_ddl::service_object_ddl_endpoint;
 use crate::postgres::{invalid_postgres_url_message, is_postgres_connection_url};
 use crate::project::project_structure_allows_release_subfolder_backfill;
+use crate::repository_browser::{
+    service_repository_object_file_preview_endpoint, service_repository_object_files_list_endpoint,
+};
 use crate::ui;
 use crate::workspace::{
     resolve_service_workspace, validate_browse_directory_value, workspace_directory_listing,
@@ -324,6 +327,12 @@ pub fn service_response(method: &str, path: &str, body: &str, cwd: &Path) -> Ser
             service_reference_data_review_script_endpoint(body, cwd, false)
         }
         ("POST", "/api/v1/postgres/object-ddl") => service_object_ddl_endpoint(body, cwd),
+        ("POST", "/api/v1/repository/object-files/list") => {
+            service_repository_object_files_list_endpoint(body, cwd)
+        }
+        ("POST", "/api/v1/repository/object-files/preview") => {
+            service_repository_object_file_preview_endpoint(body, cwd)
+        }
         ("POST", "/api/v1/postgres/repository-sync/preview") => {
             service_repository_sync_endpoint("repository-sync preview", body, cwd, true)
         }
@@ -387,6 +396,8 @@ pub fn service_route_definitions() -> Vec<(&'static str, &'static str)> {
         ("POST", "/api/v1/reference-data/review-script/preview"),
         ("POST", "/api/v1/reference-data/review-script/write"),
         ("POST", "/api/v1/postgres/object-ddl"),
+        ("POST", "/api/v1/repository/object-files/list"),
+        ("POST", "/api/v1/repository/object-files/preview"),
         ("POST", "/api/v1/postgres/repository-sync/preview"),
         ("POST", "/api/v1/postgres/repository-sync/write"),
         ("POST", "/api/v1/postgres/release/preview"),

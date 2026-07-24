@@ -161,6 +161,7 @@ Private beta readiness docs:
 - `docs/postgresql-v0.1/59-private-beta-2-release-readiness.md`
 - `docs/postgresql-v0.1/60-private-beta-2-tester-onboarding.md`
 - `docs/postgresql-v0.1/61-private-beta-2-tester-announcement-and-feedback.md`
+- `docs/postgresql-v0.1/62-repository-files-browser.md`
 
 ## Windows Private Beta Installer
 
