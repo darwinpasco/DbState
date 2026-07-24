@@ -4,6 +4,8 @@ This note documents stable browser automation selectors for DbState `Git Workflo
 
 DbState remains the authority for suggested Git workflow values shown in the browser. A future external Git client automation may read these values and perform Git operations outside DbState, but DbState does not create branches, switch branches, stage files, commit, push, pull, fetch, or tag.
 
+Database Project initialization selectors for the protected-branch retry cycle are documented in `docs/postgresql-v0.1/65-database-project-initialization-automation-selectors.md`.
+
 ## Recommendation Contract
 
 Machine-readable recommendation values are separate from presentation text.

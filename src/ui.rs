@@ -72,14 +72,25 @@ const UI_HTML: &str = r#"<!doctype html>
           <button type="button" data-action="check-status" data-testid="workspace-check-status">Check Status</button>
           <button type="button" data-action="init-plan" data-testid="workspace-init-plan">Init Plan</button>
         </div>
-        <div class="subsection">
+        <div class="subsection" id="workspace-initialization-panel" data-testid="workspace-initialization-panel">
           <h3>Initialize DbState Project</h3>
           <p class="note">This creates local DbState project folders/files only. It does not connect to PostgreSQL, execute SQL, mutate a database, or commit Git changes.</p>
           <label for="init-confirmation">Type INITIALIZE DBSTATE PROJECT
-            <input id="init-confirmation" type="text" autocomplete="off" spellcheck="false">
+            <input id="init-confirmation" data-testid="workspace-initialization-confirmation-input" type="text" autocomplete="off" spellcheck="false">
           </label>
-          <div class="button-row">
-            <button type="button" data-action="init-write" data-testid="workspace-initialize-project" disabled>Initialize DbState Project</button>
+          <div class="button-row" data-testid="workspace-initialize-project">
+            <button type="button" data-action="init-write" data-testid="workspace-initialization-start" disabled>Initialize DbState Project</button>
+          </div>
+          <div id="workspace-initialization-status" class="status-strip" data-testid="workspace-initialization-status" data-state="available">
+            <span id="workspace-initialization-available" data-testid="workspace-initialization-available">Initialization available.</span>
+            <span id="workspace-initialization-blocked" data-testid="workspace-initialization-blocked" hidden>Initialization blocked.</span>
+            <span id="workspace-initialization-loading" data-testid="workspace-initialization-loading" hidden>Initialization in progress.</span>
+            <span id="workspace-initialization-success" data-testid="workspace-initialization-success" hidden>Initialization completed.</span>
+            <span id="workspace-initialization-error" data-testid="workspace-initialization-error" hidden>Initialization failed.</span>
+          </div>
+          <div id="workspace-initialization-error-detail" class="issue-item error" hidden>
+            <code id="workspace-initialization-error-code" data-testid="workspace-initialization-error-code"></code>
+            <p id="workspace-initialization-error-message" data-testid="workspace-initialization-error-message"></p>
           </div>
         </div>
         <div class="directory-picker" id="directory-picker" data-testid="directory-picker" hidden>
@@ -592,6 +603,11 @@ rows:
         <div class="repository-files-layout">
           <section class="repository-files-tree-panel">
             <h3>Object files</h3>
+            <div id="repository-files-status" class="status-strip" data-testid="repository-files-status" data-state="empty">
+              <span id="repository-files-loading" data-testid="repository-files-loading" hidden>Loading repository files.</span>
+              <span id="repository-files-loaded" data-testid="repository-files-loaded" hidden>Repository files loaded.</span>
+              <span id="repository-files-error" data-testid="repository-files-error" hidden>Repository files unavailable.</span>
+            </div>
             <div id="repository-files-tree" class="repository-files-tree" data-testid="repository-files-tree">
               <div id="repository-files-empty-state" class="issue-item" data-testid="repository-files-empty-state">No repository object files were found.</div>
             </div>
@@ -2452,6 +2468,47 @@ const UI_JS: &str = r#"(function () {
     setHidden("database-connection-error", stateName !== "error");
   }
 
+  function setWorkspaceInitializationState(stateName, data) {
+    const stateValue = stateName || "available";
+    const status = byId("workspace-initialization-status");
+    status.setAttribute("data-state", stateValue);
+    setHidden("workspace-initialization-available", stateValue !== "available");
+    setHidden("workspace-initialization-blocked", stateValue !== "blocked");
+    setHidden("workspace-initialization-loading", stateValue !== "loading");
+    setHidden("workspace-initialization-success", stateValue !== "success");
+    setHidden("workspace-initialization-error", stateValue !== "error");
+    const errors = Array.isArray(data && data.errors) ? data.errors.map(textOrEmpty).filter(Boolean) : [];
+    const message = errors.length ? errors[0] : "";
+    const code = stateValue === "blocked" && message.toLowerCase().indexOf("protected branch") >= 0
+      ? "protectedBranch"
+      : stateValue === "error"
+        ? "initializationFailed"
+        : "";
+    byId("workspace-initialization-error-detail").hidden = !(stateValue === "blocked" || stateValue === "error");
+    byId("workspace-initialization-error-code").textContent = code;
+    byId("workspace-initialization-error-message").textContent = message;
+    if (stateValue !== "blocked" && stateValue !== "error") {
+      byId("workspace-initialization-error-code").textContent = "";
+      byId("workspace-initialization-error-message").textContent = "";
+    }
+  }
+
+  function setRepositoryFilesState(stateName, message) {
+    const stateValue = stateName || "empty";
+    const status = byId("repository-files-status");
+    status.setAttribute("data-state", stateValue);
+    setHidden("repository-files-loading", stateValue !== "loading");
+    setHidden("repository-files-loaded", stateValue !== "loaded");
+    setHidden("repository-files-error", stateValue !== "error");
+    if (stateValue === "loading") {
+      byId("repository-files-loading").textContent = message || "Loading repository files.";
+    } else if (stateValue === "loaded") {
+      byId("repository-files-loaded").textContent = message || "Repository files loaded.";
+    } else if (stateValue === "error") {
+      byId("repository-files-error").textContent = message || "Repository files unavailable.";
+    }
+  }
+
   function updateSummary(id, entries) {
     const target = byId(id);
     target.innerHTML = "";
@@ -2495,6 +2552,18 @@ const UI_JS: &str = r#"(function () {
 
   function repositoryObjectRowTestId(path) {
     return "repository-file-row-" + repositoryObjectPathSlug(path);
+  }
+
+  function repositoryDirectoryRowTestId(path) {
+    return "repository-directory-row-" + repositoryObjectPathSlug(path);
+  }
+
+  function repositoryDirectoryPathTestId(path) {
+    return "repository-directory-path-" + repositoryObjectPathSlug(path);
+  }
+
+  function repositoryDirectoryNameTestId(path) {
+    return "repository-directory-name-" + repositoryObjectPathSlug(path);
   }
 
   function directoryEntryTestId(path) {
@@ -2584,6 +2653,7 @@ const UI_JS: &str = r#"(function () {
     const entries = repositoryObjectEntries(data);
     state.repositoryObjectFiles = entries;
     if (!entries.length) {
+      setRepositoryFilesState("empty", "No repository object files were found.");
       const emptyState = document.createElement("div");
       emptyState.id = "repository-files-empty-state";
       emptyState.className = "issue-item";
@@ -2594,13 +2664,24 @@ const UI_JS: &str = r#"(function () {
       byId("repository-file-preview").textContent = "Select a SQL file to preview its contents.";
       return;
     }
+    setRepositoryFilesState("loaded", "Repository directory structure loaded.");
     entries.forEach(function (entry) {
       const depth = typeof entry.depth === "number" ? entry.depth : 0;
       if (entry.kind === "directory") {
+        const path = textOrEmpty(entry.path || entry.relativePath || entry.name).replace(/\/+$/g, "");
         const row = document.createElement("div");
         row.className = "repository-directory-row";
         row.style.paddingLeft = String(8 + depth * 16) + "px";
-        row.textContent = "Folder: " + textOrEmpty(entry.path || entry.relativePath || entry.name);
+        row.setAttribute("data-testid", repositoryDirectoryRowTestId(path));
+        const name = document.createElement("span");
+        name.setAttribute("data-testid", repositoryDirectoryNameTestId(path));
+        name.textContent = textOrEmpty(entry.name || path.split("/").pop());
+        const code = document.createElement("code");
+        code.setAttribute("data-testid", repositoryDirectoryPathTestId(path));
+        code.textContent = path;
+        row.appendChild(name);
+        row.appendChild(document.createTextNode(" "));
+        row.appendChild(code);
         tree.appendChild(row);
         return;
       }
@@ -2629,6 +2710,7 @@ const UI_JS: &str = r#"(function () {
   async function refreshRepositoryObjectFiles() {
     responseSummary.textContent = "Repository Files: loading repository object files...";
     setOperationAlert("Repository Files", "running", 0, 0, "Loading repository object files...", "info");
+    setRepositoryFilesState("loading", "Loading repository object files...");
     state.repositoryObjectFilesLoaded = true;
     try {
       const data = await requestJson(approvedEndpoints.repositoryObjectFilesList, attachWorkspacePath({}));
@@ -2657,6 +2739,7 @@ const UI_JS: &str = r#"(function () {
       errorState.className = "issue-item error";
       errorState.textContent = message;
       tree.appendChild(errorState);
+      setRepositoryFilesState("error", message);
     }
   }
 
@@ -2872,6 +2955,11 @@ const UI_JS: &str = r#"(function () {
     if (data.dbstateProjectStatus) {
       byId("repository-project").textContent = data.dbstateProjectStatus;
       state.workspace.dbstateProjectStatus = data.dbstateProjectStatus;
+      if (data.dbstateProjectStatus === "completeDbStateStructure") {
+        setWorkspaceInitializationState("success", {});
+      } else if (data.dbstateProjectStatus === "gitRepositoryWithoutDbStateStructure" || data.dbstateProjectStatus === "partialDbStateStructure") {
+        setWorkspaceInitializationState("available", {});
+      }
     }
     if (typeof data.isDirty === "boolean") {
       byId("repository-dirty").textContent = data.isDirty ? "dirty" : "clean";
@@ -7138,6 +7226,9 @@ const UI_JS: &str = r#"(function () {
     if (label === "Database to Repository Write") {
       setRepositoryWriteState("loading", {});
     }
+    if (label === "Initialize DbState Project") {
+      setWorkspaceInitializationState("loading", {});
+    }
     showStep(config.step || "reports");
     try {
       const data = await requestJson(endpoint, body, config.method);
@@ -7203,6 +7294,16 @@ const UI_JS: &str = r#"(function () {
       if (label === "Database to Repository Write") {
         setRepositoryWriteState(data && data.success ? "success" : "error", data);
       }
+      if (label === "Initialize DbState Project") {
+        if (data && data.success) {
+          setWorkspaceInitializationState("success", data);
+          state.repositoryObjectFilesLoaded = false;
+        } else if (data && data.isProtectedBranch) {
+          setWorkspaceInitializationState("blocked", data);
+        } else {
+          setWorkspaceInitializationState("error", data);
+        }
+      }
       if (writeGenerateSuccessOpensGitWorkflow(label, data)) {
         openGitWorkflowAfterWrite(label, data);
       }
@@ -7232,6 +7333,9 @@ const UI_JS: &str = r#"(function () {
       }
       if (label === "Database to Repository Write") {
         setRepositoryWriteState("error", data);
+      }
+      if (label === "Initialize DbState Project") {
+        setWorkspaceInitializationState("error", data);
       }
     }
   }

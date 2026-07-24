@@ -1,4 +1,5 @@
 use crate::git::git_root;
+use crate::project::{PathKind, EXPECTED_PATHS};
 use crate::service::{
     parse_service_request, request_string, service_error_response, service_json_response,
     validate_service_request_is_safe, ServiceHttpResponse,
@@ -102,10 +103,68 @@ fn resolve_repository_root_from_request(
 }
 
 fn list_repository_object_files(root: &Path) -> Result<Vec<RepositoryObjectEntry>, String> {
+    let canonical_root = fs::canonicalize(root)
+        .map_err(|_| "Could not resolve selected repository root.".to_string())?;
     let objects_root = canonical_objects_root(root)?;
     let mut entries = Vec::new();
+    if canonical_root
+        .join("database")
+        .join("reference-data")
+        .join("dbstate.reference-data.yml")
+        .is_file()
+    {
+        collect_initialized_project_directories(&canonical_root, &mut entries)?;
+    }
     collect_repository_object_entries(&objects_root, &objects_root, 0, &mut entries)?;
+    entries.sort_by(|left, right| {
+        let left_kind = match left.kind {
+            RepositoryObjectEntryKind::Directory => 0,
+            RepositoryObjectEntryKind::File => 1,
+        };
+        let right_kind = match right.kind {
+            RepositoryObjectEntryKind::Directory => 0,
+            RepositoryObjectEntryKind::File => 1,
+        };
+        left_kind
+            .cmp(&right_kind)
+            .then_with(|| left.relative_path.cmp(&right.relative_path))
+    });
+    entries.dedup_by(|left, right| {
+        left.kind == right.kind && left.relative_path == right.relative_path
+    });
     Ok(entries)
+}
+
+fn collect_initialized_project_directories(
+    root: &Path,
+    entries: &mut Vec<RepositoryObjectEntry>,
+) -> Result<(), String> {
+    for expected in EXPECTED_PATHS {
+        if expected.kind != PathKind::Directory {
+            continue;
+        }
+        let target = root.join(expected.relative);
+        if !target.is_dir() {
+            continue;
+        }
+        let canonical = fs::canonicalize(&target)
+            .map_err(|_| "Could not resolve DbState project directory path.".to_string())?;
+        if !canonical.starts_with(root) {
+            return Err(
+                "Refusing to list DbState project directory outside repository.".to_string(),
+            );
+        }
+        entries.push(RepositoryObjectEntry {
+            kind: RepositoryObjectEntryKind::Directory,
+            name: file_name(&canonical)?,
+            relative_path: expected.relative.to_string(),
+            depth: expected.relative.matches('/').count(),
+            object_category: object_category(expected.relative),
+            extension: None,
+            size_bytes: None,
+        });
+    }
+    Ok(())
 }
 
 fn collect_repository_object_entries(
@@ -147,6 +206,14 @@ fn collect_repository_object_entries(
             );
         }
         let relative_path = repository_relative_path(objects_root, &canonical, true)?;
+        if repository_entry_exists(
+            entries,
+            RepositoryObjectEntryKind::Directory,
+            &relative_path,
+        ) {
+            collect_repository_object_entries(objects_root, &canonical, depth + 1, entries)?;
+            continue;
+        }
         entries.push(RepositoryObjectEntry {
             kind: RepositoryObjectEntryKind::Directory,
             name: file_name(&canonical)?,
@@ -181,6 +248,16 @@ fn collect_repository_object_entries(
         });
     }
     Ok(())
+}
+
+fn repository_entry_exists(
+    entries: &[RepositoryObjectEntry],
+    kind: RepositoryObjectEntryKind,
+    relative_path: &str,
+) -> bool {
+    entries
+        .iter()
+        .any(|entry| entry.kind == kind && entry.relative_path == relative_path)
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -308,14 +385,12 @@ fn repository_relative_path(
         })
         .collect::<Vec<_>>()
         .join("/");
-    let mut path = if suffix.is_empty() {
+    let path = if suffix.is_empty() {
         OBJECTS_ROOT.to_string()
     } else {
         format!("{OBJECTS_ROOT}/{suffix}")
     };
-    if directory {
-        path.push('/');
-    }
+    let _ = directory;
     Ok(path)
 }
 

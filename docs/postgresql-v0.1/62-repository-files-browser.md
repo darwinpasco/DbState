@@ -75,6 +75,10 @@ The Repository Files UI exposes stable selectors for future browser automation:
 repository-files-tab
 repository-files-panel
 repository-files-refresh
+repository-files-status
+repository-files-loading
+repository-files-loaded
+repository-files-error
 repository-files-tree
 repository-files-empty-state
 repository-file-selected-path
@@ -89,6 +93,16 @@ File rows use:
 ```text
 repository-file-row-{stable-path-slug}
 ```
+
+Directory rows use:
+
+```text
+repository-directory-row-{stable-path-slug}
+repository-directory-path-{stable-path-slug}
+repository-directory-name-{stable-path-slug}
+```
+
+Initialized project directories are listed so a newly initialized Database Project can be verified before any schema object SQL files are captured.
 
 Slugging rule:
 

@@ -6,6 +6,8 @@ The selectors are for browser automation only. They do not add Playwright, video
 
 Git Workflow recommendation selectors are documented separately in `docs/postgresql-v0.1/64-git-workflow-automation-selectors.md`.
 
+Database Project initialization selectors for the first demo cycle are documented in `docs/postgresql-v0.1/65-database-project-initialization-automation-selectors.md`.
+
 ## Workflow
 
 The selector contract covers this demo path:

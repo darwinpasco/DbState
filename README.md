@@ -164,6 +164,8 @@ Private beta readiness docs:
 - `docs/postgresql-v0.1/62-repository-files-browser.md`
 - `docs/postgresql-v0.1/63-schema-db-to-repo-automation-selectors.md`
 - `docs/postgresql-v0.1/64-git-workflow-automation-selectors.md`
+- `docs/postgresql-v0.1/65-database-project-initialization-automation-selectors.md`
+- `docs/postgresql-v0.1/66-video-01-object-diff-demo-script.md`
 
 ## Windows Private Beta Installer
 
