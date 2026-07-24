@@ -1217,6 +1217,50 @@ select {
   background: #ffffff;
 }
 
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.results-include-control {
+  display: inline-flex;
+  align-items: center;
+  min-height: 28px;
+  cursor: pointer;
+}
+
+.results-include-control input[type="checkbox"] {
+  width: auto;
+  min-height: auto;
+  margin: 0;
+}
+
+.result-open-button {
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--accent);
+  padding: 0;
+  font: inherit;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.result-open-button:hover,
+.result-open-button:focus {
+  background: transparent;
+  color: var(--accent-strong);
+  text-decoration: underline;
+}
+
 button {
   border: 0;
   border-radius: 6px;
@@ -4315,6 +4359,49 @@ const UI_JS: &str = r#"(function () {
     updateResultCounts();
   }
 
+  function setRepositoryPathIncluded(row, sourceIndex, checked) {
+    const repositoryPath = repositoryWritePath(row);
+    if (!repositoryPath) {
+      const ref = rowRef(row, sourceIndex);
+      if (checked) {
+        state.included.add(ref);
+      } else {
+        state.included.delete(ref);
+      }
+      return;
+    }
+    state.rows.forEach(function (candidate, index) {
+      if (repositoryWritePath(candidate) !== repositoryPath) {
+        return;
+      }
+      const ref = rowRef(candidate, index);
+      if (checked) {
+        state.included.add(ref);
+      } else {
+        state.included.delete(ref);
+      }
+    });
+  }
+
+  function activateResultRow(row, visibleIndex) {
+    state.selectedIndex = visibleIndex;
+    renderResults(state.rows, true);
+    renderSelectedObject();
+    showStep(row.objectType === "referenceDataRow" ? "results" : "object-diff");
+  }
+
+  function isInteractiveResultEvent(event) {
+    const target = event && event.target;
+    if (!(target instanceof Element)) {
+      return false;
+    }
+    return !!target.closest(
+      "input, label, button, a, select, textarea, " +
+      "[role='button'], [role='checkbox'], " +
+      "[data-results-interactive], [data-results-include-control]"
+    );
+  }
+
   function textOrEmpty(value) {
     if (value == null) {
       return "";
@@ -5230,25 +5317,46 @@ const UI_JS: &str = r#"(function () {
       const include = document.createElement("input");
       include.type = "checkbox";
       include.setAttribute("data-testid", "results-include-" + selectorSlug);
+      include.setAttribute("aria-label", "Include " + resultRowIdentity(row) + " for repository write");
       include.checked = state.included.has(ref);
+      include.addEventListener("click", function (event) {
+        event.stopPropagation();
+      });
       include.addEventListener("change", function (event) {
         event.stopPropagation();
-        if (include.checked) {
-          state.included.add(ref);
-        } else {
-          state.included.delete(ref);
-        }
+        setRepositoryPathIncluded(row, sourceIndex, include.checked);
         state.autoIncludeResults = false;
         setResultsSelectionState("idle", "");
         renderReleasePlan();
-        updateResultCounts();
+        renderResults(state.rows, true);
+      });
+      const includeLabel = document.createElement("label");
+      includeLabel.className = "results-include-control";
+      includeLabel.setAttribute("data-results-include-control", "true");
+      includeLabel.addEventListener("click", function (event) {
+        event.stopPropagation();
+      });
+      includeLabel.appendChild(include);
+      const includeText = document.createElement("span");
+      includeText.className = "visually-hidden";
+      includeText.textContent = "Include " + resultRowIdentity(row) + " for repository write";
+      includeLabel.appendChild(includeText);
+      const openButton = document.createElement("button");
+      openButton.type = "button";
+      openButton.className = "result-open-button";
+      openButton.setAttribute("data-testid", "results-open-" + selectorSlug);
+      openButton.setAttribute("data-results-interactive", "true");
+      openButton.textContent = textOrEmpty(row.name);
+      openButton.addEventListener("click", function (event) {
+        event.stopPropagation();
+        activateResultRow(row, visibleIndex);
       });
 
       [
-        { value: include },
+        { value: includeLabel, includeControl: true },
         { value: row.objectType, testId: "results-row-type-" + selectorSlug },
         { value: row.schema },
-        { value: row.name, testId: "results-open-" + selectorSlug },
+        { value: openButton },
         { value: statusBadge(row.status), testId: "results-row-status-" + selectorSlug },
         { value: row.operation || "", testId: "results-row-path-" + selectorSlug, repositoryPath: row.relativePath || "" },
         { value: Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings) },
@@ -5263,6 +5371,12 @@ const UI_JS: &str = r#"(function () {
         if (item.repositoryPath) {
           td.setAttribute("data-repository-path", item.repositoryPath);
         }
+        if (item.includeControl) {
+          td.setAttribute("data-results-include-control", "true");
+          td.addEventListener("click", function (event) {
+            event.stopPropagation();
+          });
+        }
         if (item.value instanceof HTMLElement) {
           td.appendChild(item.value);
         } else {
@@ -5271,11 +5385,11 @@ const UI_JS: &str = r#"(function () {
         tr.appendChild(td);
       });
 
-      tr.addEventListener("click", function () {
-        state.selectedIndex = visibleIndex;
-        renderResults(state.rows, true);
-        renderSelectedObject();
-        showStep(row.objectType === "referenceDataRow" ? "results" : "object-diff");
+      tr.addEventListener("click", function (event) {
+        if (isInteractiveResultEvent(event)) {
+          return;
+        }
+        activateResultRow(row, visibleIndex);
       });
       body.appendChild(tr);
     });

@@ -9284,6 +9284,72 @@ fn schema_database_to_repository_selector_contract_is_documented_in_ui_source() 
 }
 
 #[test]
+fn results_include_controls_do_not_trigger_row_object_diff_navigation() {
+    let js = ui_js();
+    let css = ui_css();
+
+    for expected in [
+        "function isInteractiveResultEvent(event)",
+        "function activateResultRow(row, visibleIndex)",
+        "include.addEventListener(\"click\", function (event) {\n        event.stopPropagation();",
+        "include.addEventListener(\"change\", function (event) {\n        event.stopPropagation();",
+        "includeLabel.addEventListener(\"click\", function (event) {\n        event.stopPropagation();",
+        "td.setAttribute(\"data-results-include-control\", \"true\")",
+        "td.addEventListener(\"click\", function (event) {\n            event.stopPropagation();",
+        "if (isInteractiveResultEvent(event)) {\n          return;\n        }\n        activateResultRow(row, visibleIndex);",
+        "\"input, label, button, a, select, textarea, \"",
+        "\"[role='button'], [role='checkbox'], \"",
+        "\"[data-results-interactive], [data-results-include-control]\"",
+        "setRepositoryPathIncluded(row, sourceIndex, include.checked)",
+        "renderResults(state.rows, true)",
+        "openButton.addEventListener(\"click\", function (event) {\n        event.stopPropagation();\n        activateResultRow(row, visibleIndex);",
+    ] {
+        assert!(
+            js.contains(expected),
+            "missing Results interaction guard contract: {expected}"
+        );
+    }
+
+    for expected in [
+        ".results-include-control",
+        ".results-include-control input[type=\"checkbox\"]",
+        ".result-open-button",
+        ".visually-hidden",
+    ] {
+        assert!(css.contains(expected), "missing CSS support for {expected}");
+    }
+
+    assert!(js.contains(
+        "include.setAttribute(\"aria-label\", \"Include \" + resultRowIdentity(row) + \" for repository write\")"
+    ));
+    assert!(js.contains(
+        "includeText.textContent = \"Include \" + resultRowIdentity(row) + \" for repository write\""
+    ));
+}
+
+#[test]
+fn results_include_toggles_reconcile_duplicate_repository_paths() {
+    let js = ui_js();
+
+    for expected in [
+        "function setRepositoryPathIncluded(row, sourceIndex, checked)",
+        "const repositoryPath = repositoryWritePath(row)",
+        "state.rows.forEach(function (candidate, index)",
+        "if (repositoryWritePath(candidate) !== repositoryPath)",
+        "state.included.add(ref)",
+        "state.included.delete(ref)",
+        "const paths = new Set()",
+        "paths.add(repositoryPath)",
+        "return Array.from(paths).sort()",
+    ] {
+        assert!(
+            js.contains(expected),
+            "missing duplicate repository path reconciliation contract: {expected}"
+        );
+    }
+}
+
+#[test]
 fn selector_slugging_uses_deterministic_hash_suffix_for_collisions() {
     let js = ui_js();
 
