@@ -92,6 +92,12 @@ Results:
 - `results-status-filter`
 - `results-search-input`
 - `results-count`
+- `results-selected-count`
+- `results-clear-selection`
+- `results-selection-status`
+- `results-selection-clearing`
+- `results-selection-cleared`
+- `results-selection-error`
 - `results-empty-state`
 - `results-row-{object-ref-slug}`
 - `results-row-status-{object-ref-slug}`
@@ -99,6 +105,15 @@ Results:
 - `results-row-path-{object-ref-slug}`
 - `results-include-{object-ref-slug}`
 - `results-open-{object-ref-slug}`
+
+Selection state:
+
+- `results-selected-count` contains only the integer count of unique repository-relative object paths currently included for repository writing.
+- `results-clear-selection` is the visible semantic button that clears the current repository-write selection.
+- `results-selection-status` exposes `idle`, `clearing`, `cleared`, or `error`.
+- `results-selection-cleared` is durable after the authoritative selected repository path set is empty and `results-selected-count` is `0`.
+
+See `docs/postgresql-v0.1/67-results-clear-selection.md` for the authoritative selection contract.
 
 Object Diff:
 
