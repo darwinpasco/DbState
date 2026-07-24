@@ -4,6 +4,8 @@ This note documents stable browser automation selectors for the `Schema Compare:
 
 The selectors are for browser automation only. They do not add Playwright, video automation, branch creation, Git mutation, SQL execution, or repository-write behavior.
 
+Git Workflow recommendation selectors are documented separately in `docs/postgresql-v0.1/64-git-workflow-automation-selectors.md`.
+
 ## Workflow
 
 The selector contract covers this demo path:

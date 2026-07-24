@@ -711,7 +711,7 @@ rows:
         <pre id="json-viewer" data-testid="raw-json-panel">{}</pre>
       </section>
 
-      <section class="workflow-panel" id="step-git-workflow">
+      <section class="workflow-panel" id="step-git-workflow" data-testid="git-workflow-panel">
         <div class="panel-heading">
           <h2>Git Workflow</h2>
           <p>Review branch safety, DbState file changes, and manual Git handoff guidance for the selected workflow.</p>
@@ -721,6 +721,13 @@ rows:
           <p class="note">Advisory only. DbState never runs git add, commit, push, pull, fetch, tag, switch, checkout, or branch commands.</p>
           <p class="note" data-testid="git-workflow-staged-scope-note">Commit message is generated from staged changes. DbState does not stage files from the UI.</p>
           <div id="git-workflow-message" class="response-summary" data-testid="git-workflow-message">Review Git handoff details after a write or generate action.</div>
+          <div id="git-workflow-status" class="status-strip" data-testid="git-workflow-status" data-state="no-changes">
+            <span id="git-workflow-ready-state" data-testid="git-workflow-ready-state" hidden>Ready.</span>
+            <span id="git-workflow-blocked-state" data-testid="git-workflow-blocked-state" hidden>Blocked.</span>
+            <span id="git-workflow-no-changes-state" data-testid="git-workflow-no-changes-state">No relevant changes.</span>
+            <span id="git-workflow-loading-state" data-testid="git-workflow-loading-state" hidden>Loading.</span>
+            <span id="git-workflow-error-state" data-testid="git-workflow-error-state" hidden>Error.</span>
+          </div>
           <dl class="summary-list compact" id="git-handoff-summary" data-testid="git-handoff-summary">
             <dt>Current branch</dt><dd id="git-handoff-current-branch" data-testid="git-current-branch">unknown</dd>
             <dt>Default branch</dt><dd id="git-handoff-default-branch" data-testid="git-default-branch">unknown</dd>
@@ -731,6 +738,21 @@ rows:
             <dt>Suggested branch name</dt><dd id="git-handoff-branch-name">unknown</dd>
             <dt>Suggested commit title</dt><dd id="git-handoff-commit-title">unknown</dd>
           </dl>
+          <section class="subsection" id="git-workflow-suggested-branch" data-testid="git-workflow-suggested-branch">
+            <h4>Suggested Branch</h4>
+            <p class="note" id="git-workflow-branch-reason" data-testid="git-workflow-branch-reason">Run a write or generate action to get branch guidance.</p>
+            <div class="button-row">
+              <button type="button" class="secondary-button" data-copy-target="git-workflow-suggested-branch-name" data-testid="git-workflow-copy-branch-name">Copy suggested branch name</button>
+            </div>
+            <code id="git-workflow-suggested-branch-name" data-testid="git-workflow-suggested-branch-name">unknown</code>
+          </section>
+          <section class="subsection" id="git-workflow-suggested-files" data-testid="git-workflow-suggested-files">
+            <h4>Suggested Files to Stage</h4>
+            <p class="note">Repository-relative paths only. Use these exact paths when staging reviewed DbState changes manually.</p>
+            <p>Count: <strong id="git-workflow-suggested-files-count" data-testid="git-workflow-suggested-files-count">0</strong></p>
+            <div id="git-workflow-suggested-files-empty" class="issue-item" data-testid="git-workflow-suggested-files-empty">No DbState files are recommended for staging yet.</div>
+            <div id="git-workflow-suggested-files-list"></div>
+          </section>
           <div class="button-row">
             <button type="button" class="secondary-button" data-action="regenerate-commit-message" data-testid="regenerate-commit-message">Generate / Regenerate Commit Message</button>
           </div>
@@ -758,13 +780,17 @@ rows:
           <h4>Suggested Commit Title</h4>
           <div class="button-row">
             <button type="button" class="secondary-button" data-copy-target="git-handoff-commit-title-text" data-testid="copy-commit-title">Copy Suggested commit title</button>
+            <button type="button" class="secondary-button" data-copy-target="git-workflow-suggested-commit-title" data-testid="git-workflow-copy-commit-title">Copy exact commit title</button>
           </div>
           <pre id="git-handoff-commit-title-text" data-testid="git-handoff-commit-title-text">No suggested commit title yet.</pre>
+          <pre id="git-workflow-suggested-commit-title" data-testid="git-workflow-suggested-commit-title">No suggested commit title yet.</pre>
           <h4>Suggested Commit Body</h4>
           <div class="button-row">
             <button type="button" class="secondary-button" data-copy-target="git-handoff-commit-body" data-testid="copy-commit-body">Copy Suggested commit body</button>
+            <button type="button" class="secondary-button" data-copy-target="git-workflow-suggested-commit-body" data-testid="git-workflow-copy-commit-message">Copy exact commit body</button>
           </div>
           <pre id="git-handoff-commit-body" data-testid="git-handoff-commit-body">No suggested commit body yet.</pre>
+          <pre id="git-workflow-suggested-commit-body" data-testid="git-workflow-suggested-commit-body">No suggested commit body yet.</pre>
           <h4>Full Commit Message</h4>
           <div class="button-row">
             <button type="button" class="secondary-button" data-copy-target="git-handoff-full-message" data-testid="copy-full-commit-message">Copy full message</button>
@@ -2489,6 +2515,55 @@ const UI_JS: &str = r#"(function () {
     return selectorSlug(resultRowIdentity(row), "result");
   }
 
+  function gitWorkflowSuggestedFileTestId(path) {
+    return "git-workflow-suggested-file-" + repositoryObjectPathSlug(path);
+  }
+
+  function gitWorkflowSuggestedFilePathTestId(path) {
+    return "git-workflow-suggested-file-path-" + repositoryObjectPathSlug(path);
+  }
+
+  function setGitWorkflowState(stateName, message) {
+    const stateValue = stateName || "no-changes";
+    const status = byId("git-workflow-status");
+    status.setAttribute("data-state", stateValue);
+    setHidden("git-workflow-ready-state", stateValue !== "ready");
+    setHidden("git-workflow-blocked-state", stateValue !== "blocked");
+    setHidden("git-workflow-no-changes-state", stateValue !== "no-changes");
+    setHidden("git-workflow-loading-state", stateValue !== "loading");
+    setHidden("git-workflow-error-state", stateValue !== "error");
+    const labels = {
+      ready: "Ready: " + (message || "Git Workflow recommendations are available."),
+      blocked: "Blocked: " + (message || "Review the blocking condition before writing files."),
+      "no-changes": "No relevant changes: " + (message || "No DbState files are recommended for staging yet."),
+      loading: "Loading: " + (message || "Refreshing Git Workflow recommendations."),
+      error: "Error: " + (message || "Git Workflow recommendations could not be refreshed.")
+    };
+    const active = byId("git-workflow-" + stateValue + "-state");
+    if (active) {
+      active.textContent = labels[stateValue] || labels["no-changes"];
+    }
+  }
+
+  function renderGitWorkflowSuggestedFiles(paths) {
+    const list = byId("git-workflow-suggested-files-list");
+    const empty = byId("git-workflow-suggested-files-empty");
+    const values = Array.from(new Set((paths || []).map(textOrEmpty).filter(Boolean))).sort();
+    list.innerHTML = "";
+    byId("git-workflow-suggested-files-count").textContent = String(values.length);
+    empty.hidden = values.length > 0;
+    values.forEach(function (path) {
+      const item = document.createElement("div");
+      item.className = "issue-item";
+      item.setAttribute("data-testid", gitWorkflowSuggestedFileTestId(path));
+      const code = document.createElement("code");
+      code.setAttribute("data-testid", gitWorkflowSuggestedFilePathTestId(path));
+      code.textContent = path;
+      item.appendChild(code);
+      list.appendChild(item);
+    });
+  }
+
   function formatBytes(size) {
     if (typeof size !== "number") {
       return "";
@@ -3022,9 +3097,18 @@ const UI_JS: &str = r#"(function () {
     byId("git-handoff-dirty-count").textContent = dirtyCount;
     const writeSucceededOnWorkingBranch = data && data.success === true && written.length && !protectedBranch && branch !== "unknown";
     const branchDisplay = writeSucceededOnWorkingBranch ? "Already on working branch: " + branch : branchCommand;
-    byId("git-handoff-branch-name").textContent = writeSucceededOnWorkingBranch ? branch : branchCommand.replace(/^git switch -c\s+/, "");
+    const suggestedBranchName = writeSucceededOnWorkingBranch ? branch : branchCommand.replace(/^git switch -c\s+/, "");
+    const suggestedPaths = Array.from(new Set(intended.concat(written))).sort();
+    byId("git-handoff-branch-name").textContent = suggestedBranchName;
+    byId("git-workflow-suggested-branch-name").textContent = suggestedBranchName;
+    byId("git-workflow-branch-reason").textContent = writeSucceededOnWorkingBranch
+      ? "Already on a non-protected working branch after repository files were written."
+      : protectedBranch
+        ? "Repository writes are blocked on protected branches. Create this working branch manually outside DbState, then run the write action again."
+        : "Use this branch name if you want a dedicated working branch before writing files.";
     byId("git-handoff-commit-title").textContent = nextTitle;
     byId("git-handoff-commit-title-text").textContent = nextTitle;
+    byId("git-workflow-suggested-commit-title").textContent = nextTitle;
     byId("git-handoff-intended-paths").textContent = intended.length ? intended.join("\n") : "No intended write paths yet.";
     byId("git-handoff-written-paths").textContent = written.length ? written.join("\n") : "No written/generated paths yet.";
     byId("git-handoff-recommended-branch").textContent = branchDisplay;
@@ -3032,7 +3116,20 @@ const UI_JS: &str = r#"(function () {
     byId("git-handoff-commands").textContent = manualCommands.text;
     byId("git-handoff-large-add-note").hidden = !manualCommands.grouped;
     byId("git-handoff-commit-body").textContent = nextBody;
+    byId("git-workflow-suggested-commit-body").textContent = nextBody;
     byId("git-handoff-full-message").textContent = nextTitle && nextBody ? nextTitle + "\n\n" + nextBody : "No generated commit message yet.";
+    renderGitWorkflowSuggestedFiles(suggestedPaths);
+    const errors = Array.isArray(data && data.errors) ? data.errors.map(textOrEmpty).join(" ") : "";
+    const blocked = protectedBranch || errors.toLowerCase().indexOf("blocked") >= 0;
+    if (blocked) {
+      setGitWorkflowState("blocked", errors || "Repository writes are blocked by the current Git/workspace state.");
+    } else if (data && data.success === false) {
+      setGitWorkflowState("error", errors || "The latest operation failed.");
+    } else if (suggestedPaths.length) {
+      setGitWorkflowState("ready", "Suggested files and commit text are available.");
+    } else {
+      setGitWorkflowState("no-changes", "No DbState files are recommended for staging yet.");
+    }
     updateSuggestedFullCommitCommand();
     updateSuggestedPullRequest(nextTitle, nextBody, data || {}, intended, written);
   }
@@ -3306,9 +3403,11 @@ const UI_JS: &str = r#"(function () {
     if (title) {
       byId("git-handoff-commit-title").textContent = title;
       byId("git-handoff-commit-title-text").textContent = title;
+      byId("git-workflow-suggested-commit-title").textContent = title;
     }
     if (body) {
       byId("git-handoff-commit-body").textContent = body;
+      byId("git-workflow-suggested-commit-body").textContent = body;
     }
     byId("git-handoff-full-message").textContent = title && body ? title + "\n\n" + body : textOrEmpty(data.message) || "No generated commit message yet.";
     updateSuggestedFullCommitCommand();
@@ -3331,12 +3430,19 @@ const UI_JS: &str = r#"(function () {
       summary.push(renderCommitMessageFileList("Errors", data.errors));
     }
     byId("git-handoff-staged-change-summary").textContent = summary.join("\n\n");
+    renderGitWorkflowSuggestedFiles(Array.isArray(data && data.analyzedFiles) ? data.analyzedFiles : []);
+    if (data.success) {
+      setGitWorkflowState("ready", "Semantic commit text is available for staged DbState changes.");
+    } else {
+      setGitWorkflowState("error", Array.isArray(data.errors) && data.errors.length ? data.errors[0] : "No staged changes found.");
+    }
     responseSummary.textContent = data.success
       ? "Git Workflow: generated semantic commit message from staged changes."
       : "Git Workflow: " + (Array.isArray(data.errors) && data.errors.length ? data.errors[0] : "No staged changes found. Stage reviewed DbState paths manually, then regenerate.");
   }
 
   async function regenerateCommitMessageFromStagedChanges() {
+    setGitWorkflowState("loading", "Generating semantic commit message from staged changes.");
     const data = await requestJson(approvedEndpoints.commitMessage, attachWorkspacePath({
       style: "conventional"
     }));
@@ -7544,6 +7650,7 @@ const UI_JS: &str = r#"(function () {
     updateGitHandoff(state.lastResponse || {}, state.lastOperation || "Git Workflow");
     regenerateCommitMessageFromStagedChanges().catch(function (error) {
       responseSummary.textContent = "Git Workflow: " + error.message;
+      setGitWorkflowState("error", error.message);
     });
   });
 
