@@ -8901,29 +8901,66 @@ fn ui_contains_stable_playwright_demo_selectors() {
     let js = ui_js();
     let expected_html_selectors = [
         "data-testid=\"tab-workspace\"",
+        "data-testid=\"workspace-path-input\"",
         "data-testid=\"workspace-browse\"",
         "data-testid=\"workspace-health\"",
         "data-testid=\"workspace-check-status\"",
+        "data-testid=\"workspace-status\"",
+        "data-testid=\"workspace-git-branch\"",
+        "data-testid=\"workspace-protected-branch\"",
+        "data-testid=\"workspace-project-status\"",
         "data-testid=\"operation-alert\"",
         "data-testid=\"workspace-init-plan\"",
         "data-testid=\"workspace-initialize-project\"",
+        "data-testid=\"directory-picker\"",
+        "data-testid=\"directory-picker-path-input\"",
+        "data-testid=\"directory-picker-parent\"",
+        "data-testid=\"directory-select-current\"",
+        "data-testid=\"directory-picker-cancel\"",
+        "data-testid=\"directory-picker-error\"",
         "data-testid=\"tab-source-target\"",
         "data-testid=\"workflow-mode\"",
+        "data-testid=\"active-workflow-mode\"",
         "data-testid=\"connection-mode\"",
+        "data-testid=\"profile-select\"",
+        "data-testid=\"profile-password-input\"",
         "data-testid=\"source-connection-input\"",
         "data-testid=\"target-connection-input\"",
         "data-testid=\"source-target-run\"",
+        "data-testid=\"database-connection-status\"",
+        "data-testid=\"database-connection-success\"",
+        "data-testid=\"database-connection-error\"",
         "data-testid=\"tab-compare-options\"",
         "data-testid=\"preview-repository-sync\"",
+        "data-testid=\"repository-sync-preview-status\"",
+        "data-testid=\"repository-sync-preview-loading\"",
+        "data-testid=\"repository-sync-preview-success\"",
+        "data-testid=\"repository-sync-preview-error\"",
         "data-testid=\"write-repository-changes\"",
+        "data-testid=\"repository-write-confirmation-input\"",
+        "data-testid=\"repository-write-preflight\"",
+        "data-testid=\"repository-write-loading\"",
+        "data-testid=\"repository-write-success\"",
+        "data-testid=\"repository-write-error\"",
+        "data-testid=\"repository-write-written-count\"",
+        "data-testid=\"repository-write-skipped-count\"",
         "data-testid=\"tab-results\"",
         "data-testid=\"results-object-type-filter\"",
         "data-testid=\"results-status-filter\"",
+        "data-testid=\"results-search-input\"",
         "data-testid=\"results-table\"",
+        "data-testid=\"results-count\"",
         "data-testid=\"results-visible-row-count\"",
         "data-testid=\"results-included-count\"",
         "data-testid=\"results-status-legend\"",
+        "data-testid=\"comparison-summary\"",
         "data-testid=\"tab-object-diff\"",
+        "data-testid=\"object-diff-panel\"",
+        "data-testid=\"object-diff-object-ref\"",
+        "data-testid=\"object-diff-object-type\"",
+        "data-testid=\"object-diff-status\"",
+        "data-testid=\"object-diff-loading\"",
+        "data-testid=\"object-diff-error\"",
         "data-testid=\"object-diff-left\"",
         "data-testid=\"object-diff-right\"",
         "data-testid=\"object-diff-repository\"",
@@ -8954,6 +8991,12 @@ fn ui_contains_stable_playwright_demo_selectors() {
         "data-testid=\"reports-panel\"",
         "data-testid=\"raw-json-panel\"",
         "data-testid=\"raw-json-copy\"",
+        "data-testid=\"tab-git-workflow\"",
+        "data-testid=\"git-current-branch\"",
+        "data-testid=\"git-default-branch\"",
+        "data-testid=\"git-protected-branch-status\"",
+        "data-testid=\"git-working-tree-status\"",
+        "data-testid=\"git-detached-head-status\"",
     ];
 
     for selector in expected_html_selectors {
@@ -8964,12 +9007,25 @@ fn ui_contains_stable_playwright_demo_selectors() {
     }
 
     for expected in [
-            "tr.setAttribute(\"data-testid\", \"results-row-actor\")",
-            "include.setAttribute(\"data-testid\", \"results-include-checkbox\")",
+            "function stableSelectorHash(value)",
+            "function selectorSlug(value, fallback)",
+            "function resultRowSelectorSlug(row)",
+            "tr.setAttribute(\"data-testid\", \"results-row-\" + selectorSlug)",
+            "include.setAttribute(\"data-testid\", \"results-include-\" + selectorSlug)",
+            "\"results-row-status-\" + selectorSlug",
+            "\"results-row-type-\" + selectorSlug",
+            "\"results-row-path-\" + selectorSlug",
+            "\"results-open-\" + selectorSlug",
+            "button.setAttribute(\"data-testid\", directoryEntryTestId(root.path))",
+            "row.setAttribute(\"data-testid\", directoryEntryTestId(directory.path))",
             "td.setAttribute(\"data-testid\", \"results-row-first-selectable\")",
             "function setObjectDiffDdlTestIds(direction)",
             "sourceDetail.setAttribute(\"data-testid\", direction.sourceDdlSide === \"database\" ? \"object-diff-database\" : \"object-diff-repository\")",
             "targetDetail.setAttribute(\"data-testid\", direction.targetDdlSide === \"repository\" ? \"object-diff-repository\" : \"object-diff-database\")",
+            "byId(\"object-diff-object-ref\").textContent = resultRowIdentity(row)",
+            "setHidden(\"database-connection-success\", stateName !== \"success\")",
+            "setHidden(\"repository-sync-preview-success\", stateName !== \"success\")",
+            "setHidden(\"repository-write-success\", stateName !== \"success\")",
         ] {
             assert!(js.contains(expected), "missing JS selector path {expected}");
         }
@@ -8984,6 +9040,100 @@ fn ui_contains_stable_playwright_demo_selectors() {
             "selector should not exist without a corresponding UI element: {not_added}"
         );
     }
+}
+
+#[test]
+fn schema_database_to_repository_selector_contract_is_documented_in_ui_source() {
+    let html = ui_html();
+    let js = ui_js();
+
+    assert!(html.contains(r#"<option value="schemaDatabaseToRepository">Schema Compare: Database to Repository</option>"#));
+    assert!(html.contains(r#"id="active-workflow-mode" data-testid="active-workflow-mode""#));
+    assert!(js.contains(
+        r#"byId("active-workflow-mode").setAttribute("data-workflow-mode", selectedMode)"#
+    ));
+
+    for object_ref in [
+        "table:public.country",
+        "table:public.actor",
+        "constraint:primaryKey.public.country.country_pkey",
+        "constraint:foreignKey.public.city.city_country_id_fkey",
+        "function:public.last_updated()",
+        "trigger:public.actor.last_updated",
+        "grant:table.public.country.app_reader",
+        "rlsPolicy:public.account.account_tenant_policy",
+    ] {
+        let readable = selector_readable_slug(object_ref);
+        assert!(
+            !readable.is_empty(),
+            "object ref should produce readable selector slug: {object_ref}"
+        );
+    }
+
+    assert!(js.contains("return textOrEmpty(row.objectRef)"));
+    assert!(js.contains("|| textOrEmpty(row.relativePath)"));
+    assert!(js.contains(
+        "[row.objectType, row.schema, row.parentName, row.name].filter(Boolean).join(\":\")"
+    ));
+}
+
+#[test]
+fn selector_slugging_uses_deterministic_hash_suffix_for_collisions() {
+    let js = ui_js();
+
+    assert!(js.contains("let hash = 2166136261"));
+    assert!(js.contains("hash = Math.imul(hash, 16777619) >>> 0"));
+    assert!(js.contains("return base + \"-\" + stableSelectorHash(text);"));
+    assert!(js.contains("function repositoryObjectPathSlug(path)"));
+    assert!(js.contains("return selectorSlug(friendlyPath(path), \"repository-object\");"));
+
+    let normalized_a = selector_readable_slug("table:public.a-b");
+    let normalized_b = selector_readable_slug("table:public.a_b");
+    assert_eq!(normalized_a, normalized_b);
+    assert_ne!(
+        stable_selector_hash("table:public.a-b"),
+        stable_selector_hash("table:public.a_b")
+    );
+}
+
+#[test]
+fn password_selectors_do_not_derive_from_secret_values() {
+    let html = ui_html();
+    let js = ui_js();
+
+    assert!(html
+        .contains(r#"id="profile-password" type="password" data-testid="profile-password-input""#));
+    assert!(!js.contains("profile-password-\" +"));
+    assert!(!js.contains("profilePassword"));
+    assert!(js.contains("const password = value(\"profile-password\")"));
+    assert!(!js.contains("setAttribute(\"data-testid\", value(\"profile-password\")"));
+}
+
+fn selector_readable_slug(value: &str) -> String {
+    let mut slug = String::new();
+    let mut previous_dash = false;
+    for character in value.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            slug.push(character);
+            previous_dash = false;
+        } else if !previous_dash && !slug.is_empty() {
+            slug.push('-');
+            previous_dash = true;
+        }
+    }
+    while slug.ends_with('-') {
+        slug.pop();
+    }
+    slug.chars().take(72).collect()
+}
+
+fn stable_selector_hash(value: &str) -> String {
+    let mut hash = 2166136261u32;
+    for unit in value.encode_utf16() {
+        hash ^= u32::from(unit);
+        hash = hash.wrapping_mul(16777619);
+    }
+    format!("{hash:08x}")[..8].to_string()
 }
 
 #[test]

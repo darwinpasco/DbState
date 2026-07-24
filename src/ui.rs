@@ -24,9 +24,9 @@ const UI_HTML: &str = r#"<!doctype html>
   </section>
 
   <section class="context-strip" aria-label="Workspace summary">
-    <span>Workspace: <strong id="header-workspace">service working directory</strong></span>
-    <span>Branch: <strong id="header-branch">unknown</strong></span>
-    <span>Protected: <strong id="header-protected-branch">unknown</strong></span>
+    <span>Workspace: <strong id="header-workspace" data-testid="workspace-status">service working directory</strong></span>
+    <span>Branch: <strong id="header-branch" data-testid="workspace-git-branch">unknown</strong></span>
+    <span>Protected: <strong id="header-protected-branch" data-testid="workspace-protected-branch">unknown</strong></span>
     <span>Working tree: <strong id="header-tree">unknown</strong></span>
   </section>
 
@@ -62,7 +62,7 @@ const UI_HTML: &str = r#"<!doctype html>
         </div>
         <div class="form-grid">
           <label for="workspace-path">Local repository path
-            <input id="workspace-path" type="text" autocomplete="off" spellcheck="false" placeholder="Leave empty to use the service working directory">
+            <input id="workspace-path" data-testid="workspace-path-input" type="text" autocomplete="off" spellcheck="false" placeholder="Leave empty to use the service working directory">
           </label>
         </div>
         <p class="note">Session-only. The path is not persisted. DbState does not clone or fetch repositories. The service must already have filesystem access.</p>
@@ -82,28 +82,28 @@ const UI_HTML: &str = r#"<!doctype html>
             <button type="button" data-action="init-write" data-testid="workspace-initialize-project" disabled>Initialize DbState Project</button>
           </div>
         </div>
-        <div class="directory-picker" id="directory-picker" hidden>
+        <div class="directory-picker" id="directory-picker" data-testid="directory-picker" hidden>
           <div class="directory-picker-header">
             <h3>Select Workspace Folder</h3>
-            <button type="button" class="secondary-button" data-action="directory-close">Cancel</button>
+            <button type="button" class="secondary-button" data-action="directory-close" data-testid="directory-picker-cancel">Cancel</button>
           </div>
           <p class="note">Browse folders visible to the DbState service process. In Docker, this means container paths such as /workspace.</p>
-          <div class="directory-picker-error" id="directory-picker-error"></div>
+          <div class="directory-picker-error" id="directory-picker-error" data-testid="directory-picker-error"></div>
           <div class="directory-picker-controls">
             <label for="directory-picker-path">Current path
-              <input id="directory-picker-path" type="text" autocomplete="off" spellcheck="false">
+              <input id="directory-picker-path" data-testid="directory-picker-path-input" type="text" autocomplete="off" spellcheck="false">
             </label>
             <div class="button-row">
               <button type="button" data-action="directory-roots">Roots</button>
-              <button type="button" data-action="directory-up">Up</button>
+              <button type="button" data-action="directory-up" data-testid="directory-picker-parent">Up</button>
               <button type="button" data-action="directory-refresh">Refresh</button>
-              <button type="button" data-action="directory-select">Select this folder</button>
+              <button type="button" data-action="directory-select" data-testid="directory-select-current">Select this folder</button>
             </div>
           </div>
           <div class="directory-root-list" id="directory-root-list"></div>
           <div class="directory-list" id="directory-list"></div>
         </div>
-        <dl class="summary-list" id="workspace-summary"></dl>
+        <dl class="summary-list" id="workspace-summary" data-testid="workspace-project-status"></dl>
         <section class="subsection" data-testid="workspace-git-workflow-pointer">
           <h3>Git Workflow</h3>
           <p class="note">Open Git Workflow for recommended branch guidance, generated commit text, intended write paths, written/generated files, and manual Git commands.</p>
@@ -124,6 +124,7 @@ const UI_HTML: &str = r#"<!doctype html>
             <option value="referenceDataRepoToDatabase">Reference Data Compare: Repository to Database</option>
             <option value="referenceDataDatabaseToRepository">Reference Data Compare: Database to Repository</option>
           </select>
+          <p class="note">Active workflow: <strong id="active-workflow-mode" data-testid="active-workflow-mode">Schema Compare: Repository to Database</strong></p>
         </div>
         <div class="split-pane">
           <section class="subsection" id="source-panel">
@@ -165,12 +166,12 @@ const UI_HTML: &str = r#"<!doctype html>
                 <div id="profile-panel" hidden>
                   <div class="form-grid">
                     <label for="profile-select">Saved profile
-                      <select id="profile-select">
+                      <select id="profile-select" data-testid="profile-select">
                         <option value="">No profile selected</option>
                       </select>
                     </label>
                     <label for="profile-password">Session-only password
-                      <input id="profile-password" type="password" autocomplete="off" spellcheck="false">
+                      <input id="profile-password" type="password" data-testid="profile-password-input" autocomplete="off" spellcheck="false">
                     </label>
                   </div>
                   <dl class="summary-list compact" id="profile-summary"></dl>
@@ -211,6 +212,11 @@ const UI_HTML: &str = r#"<!doctype html>
                     <button type="button" data-action="profile-save">Save Profile</button>
                     <button type="button" data-action="profile-delete">Delete Profile</button>
                     <button type="button" data-action="connection-test" data-testid="source-target-run">Test Connection</button>
+                  </div>
+                  <div id="database-connection-status" class="note" data-testid="database-connection-status">
+                    <span id="database-connection-running" hidden>Connection test is running.</span>
+                    <span id="database-connection-success" data-testid="database-connection-success" hidden>Connection test succeeded.</span>
+                    <span id="database-connection-error" data-testid="database-connection-error" hidden>Connection test failed.</span>
                   </div>
                   <p class="note">Profiles store host, port, database, username, SSL mode, and description only. Passwords, tokens, and full URLs are never saved.</p>
                 </div>
@@ -372,12 +378,25 @@ rows:
           <h3>Schema Compare: Database to Repository</h3>
           <p class="note">Preview reads PostgreSQL and the selected repository without writing files. Write repository changes writes only under the selected repository's database/objects/ paths, respects protected branch and scoped dirty-target guardrails, and never changes PostgreSQL.</p>
           <label for="repository-write-confirmation">Typed confirmation
-            <input id="repository-write-confirmation" type="text" autocomplete="off">
+            <input id="repository-write-confirmation" data-testid="repository-write-confirmation-input" type="text" autocomplete="off">
           </label>
           <p class="note">Type WRITE REPOSITORY FILES to enable the repository file write action.</p>
+          <div id="repository-write-preflight" class="note" data-testid="repository-write-preflight">Repository writes require typed confirmation and Git guardrail checks.</div>
           <div class="button-row">
             <button type="button" data-action="repository-sync-preview" data-testid="preview-repository-sync">Preview Repository Sync</button>
             <button type="button" data-action="repository-sync-write" data-testid="write-repository-changes" disabled>Write Repository Changes</button>
+          </div>
+          <div id="repository-sync-preview-status" class="note" data-testid="repository-sync-preview-status">
+            <span id="repository-sync-preview-loading" data-testid="repository-sync-preview-loading" hidden>Repository sync preview is running.</span>
+            <span id="repository-sync-preview-success" data-testid="repository-sync-preview-success" hidden>Repository sync preview completed.</span>
+            <span id="repository-sync-preview-error" data-testid="repository-sync-preview-error" hidden>Repository sync preview failed.</span>
+          </div>
+          <div id="repository-write-status" class="note">
+            <span id="repository-write-loading" data-testid="repository-write-loading" hidden>Repository write is running.</span>
+            <span id="repository-write-success" data-testid="repository-write-success" hidden>Repository write completed.</span>
+            <span id="repository-write-error" data-testid="repository-write-error" hidden>Repository write failed.</span>
+            <span id="repository-write-written-count" data-testid="repository-write-written-count">Written: 0</span>
+            <span id="repository-write-skipped-count" data-testid="repository-write-skipped-count">Skipped: 0</span>
           </div>
         </div>
       </section>
@@ -387,7 +406,7 @@ rows:
           <h2>Results</h2>
           <p>Review comparison and planning results. Include selections are UI-only in this shell.</p>
         </div>
-        <div class="results-context" aria-label="Results source and target context">
+        <div class="results-context" aria-label="Results source and target context" data-testid="comparison-summary">
           <span>Source: <strong id="results-source">Repository desired state</strong></span>
           <span>Target: <strong id="results-target">PostgreSQL target</strong></span>
           <span>Operation: <strong id="results-operation">none</strong></span>
@@ -416,7 +435,11 @@ rows:
               <option value="inspected">inspected</option>
             </select>
           </label>
+          <label for="results-search">Search
+            <input id="results-search" data-testid="results-search-input" type="search" autocomplete="off" spellcheck="false" disabled placeholder="Use browser find in this beta">
+          </label>
           <span id="results-count" data-testid="results-visible-row-count">0 result rows</span>
+          <span id="results-count-automation" data-testid="results-count" hidden>0 result rows</span>
           <span id="included-count" data-testid="results-included-count">0 included</span>
         </div>
         <div class="status-legend" aria-label="Status legend" data-testid="results-status-legend">
@@ -470,13 +493,20 @@ rows:
         </section>
       </section>
 
-      <section class="workflow-panel" id="step-object-diff">
+      <section class="workflow-panel" id="step-object-diff" data-testid="object-diff-panel">
         <div class="panel-heading">
           <h2>Object Diff</h2>
           <p>Select a result row to inspect available object-level details.</p>
         </div>
         <section class="subsection">
           <h3 id="selected-object-title">No object selected</h3>
+          <dl class="summary-list compact" id="object-diff-automation-summary">
+            <dt>Object ref</dt><dd id="object-diff-object-ref" data-testid="object-diff-object-ref">none</dd>
+            <dt>Object type</dt><dd id="object-diff-object-type" data-testid="object-diff-object-type">none</dd>
+            <dt>Status</dt><dd id="object-diff-status" data-testid="object-diff-status">none</dd>
+          </dl>
+          <div id="object-diff-loading" class="note" data-testid="object-diff-loading" hidden>Loading DDL detail...</div>
+          <div id="object-diff-error" class="results-error-summary" data-testid="object-diff-error" hidden></div>
           <dl class="summary-list compact" id="selected-object-summary"></dl>
         </section>
         <div id="data-diff-view" data-testid="reference-data-data-diff" hidden>
@@ -692,9 +722,11 @@ rows:
           <p class="note" data-testid="git-workflow-staged-scope-note">Commit message is generated from staged changes. DbState does not stage files from the UI.</p>
           <div id="git-workflow-message" class="response-summary" data-testid="git-workflow-message">Review Git handoff details after a write or generate action.</div>
           <dl class="summary-list compact" id="git-handoff-summary" data-testid="git-handoff-summary">
-            <dt>Current branch</dt><dd id="git-handoff-current-branch">unknown</dd>
-            <dt>Protected branch</dt><dd id="git-handoff-protected-branch">unknown</dd>
-            <dt>Worktree</dt><dd id="git-handoff-worktree">unknown</dd>
+            <dt>Current branch</dt><dd id="git-handoff-current-branch" data-testid="git-current-branch">unknown</dd>
+            <dt>Default branch</dt><dd id="git-handoff-default-branch" data-testid="git-default-branch">unknown</dd>
+            <dt>Protected branch</dt><dd id="git-handoff-protected-branch" data-testid="git-protected-branch-status">unknown</dd>
+            <dt>Worktree</dt><dd id="git-handoff-worktree" data-testid="git-working-tree-status">unknown</dd>
+            <dt>Detached HEAD</dt><dd id="git-handoff-detached-head" data-testid="git-detached-head-status">unknown</dd>
             <dt>Dirty path count</dt><dd id="git-handoff-dirty-count">unknown</dd>
             <dt>Suggested branch name</dt><dd id="git-handoff-branch-name">unknown</dd>
             <dt>Suggested commit title</dt><dd id="git-handoff-commit-title">unknown</dd>
@@ -2361,6 +2393,39 @@ const UI_JS: &str = r#"(function () {
     renderWarnings(data || {});
   }
 
+  function setHidden(id, hidden) {
+    const element = byId(id);
+    if (element) {
+      element.hidden = hidden;
+    }
+  }
+
+  function setRepositorySyncPreviewState(stateName) {
+    setHidden("repository-sync-preview-loading", stateName !== "loading");
+    setHidden("repository-sync-preview-success", stateName !== "success");
+    setHidden("repository-sync-preview-error", stateName !== "error");
+  }
+
+  function setRepositoryWriteState(stateName, data) {
+    setHidden("repository-write-loading", stateName !== "loading");
+    setHidden("repository-write-success", stateName !== "success");
+    setHidden("repository-write-error", stateName !== "error");
+    const written = writtenPaths(data || {}).length;
+    const skipped = Array.isArray(data && data.skipped)
+      ? data.skipped.length
+      : Array.isArray(data && data.filesUnchanged)
+        ? data.filesUnchanged.length
+        : 0;
+    byId("repository-write-written-count").textContent = "Written: " + written;
+    byId("repository-write-skipped-count").textContent = "Skipped: " + skipped;
+  }
+
+  function setConnectionStatusState(stateName) {
+    setHidden("database-connection-running", stateName !== "running");
+    setHidden("database-connection-success", stateName !== "success");
+    setHidden("database-connection-error", stateName !== "error");
+  }
+
   function updateSummary(id, entries) {
     const target = byId(id);
     target.innerHTML = "";
@@ -2381,13 +2446,47 @@ const UI_JS: &str = r#"(function () {
     return text;
   }
 
+  function stableSelectorHash(value) {
+    const text = textOrEmpty(value);
+    let hash = 2166136261;
+    for (let index = 0; index < text.length; index += 1) {
+      hash ^= text.charCodeAt(index);
+      hash = Math.imul(hash, 16777619) >>> 0;
+    }
+    return hash.toString(16).padStart(8, "0").slice(0, 8);
+  }
+
+  function selectorSlug(value, fallback) {
+    const text = textOrEmpty(value);
+    const readable = text.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 72);
+    const base = readable || fallback || "item";
+    return base + "-" + stableSelectorHash(text);
+  }
+
   function repositoryObjectPathSlug(path) {
-    const slug = textOrEmpty(path).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
-    return slug || "repository-object";
+    return selectorSlug(friendlyPath(path), "repository-object");
   }
 
   function repositoryObjectRowTestId(path) {
     return "repository-file-row-" + repositoryObjectPathSlug(path);
+  }
+
+  function directoryEntryTestId(path) {
+    return "directory-picker-entry-" + selectorSlug(friendlyPath(path), "directory");
+  }
+
+  function resultRowIdentity(row) {
+    if (!row) {
+      return "unknown";
+    }
+    return textOrEmpty(row.objectRef)
+      || textOrEmpty(row.relativePath)
+      || [row.objectType, row.schema, row.parentName, row.name].filter(Boolean).join(":")
+      || "unknown";
+  }
+
+  function resultRowSelectorSlug(row) {
+    return selectorSlug(resultRowIdentity(row), "result");
   }
 
   function formatBytes(size) {
@@ -2548,6 +2647,7 @@ const UI_JS: &str = r#"(function () {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "directory-entry";
+      button.setAttribute("data-testid", directoryEntryTestId(root.path));
       if (sameDirectoryPath(root.path, state.directoryCurrentPath) || sameDirectoryPath(root.path, workspacePath())) {
         button.classList.add("directory-entry-selected");
       }
@@ -2578,6 +2678,7 @@ const UI_JS: &str = r#"(function () {
       const row = document.createElement("button");
       row.type = "button";
       row.className = "directory-entry";
+      row.setAttribute("data-testid", directoryEntryTestId(directory.path));
       if (sameDirectoryPath(directory.path, workspacePath())) {
         row.classList.add("directory-entry-selected");
       }
@@ -2667,6 +2768,9 @@ const UI_JS: &str = r#"(function () {
       state.workspace.branch = data.branch;
       byId("header-branch").textContent = data.branch;
       byId("repository-branch").textContent = data.branch;
+    }
+    if (data.defaultBranch) {
+      state.workspace.defaultBranch = data.defaultBranch;
     }
     if (typeof data.isProtectedBranch === "boolean") {
       state.workspace.isProtectedBranch = data.isProtectedBranch;
@@ -2911,8 +3015,10 @@ const UI_JS: &str = r#"(function () {
     const dirtyCount = typeof (data && data.dirtyPathCount) === "number" ? data.dirtyPathCount : state.workspace.dirtyPathCount;
     const worktree = textOrEmpty((data && data.workingTreeStatus) || state.workspace.workingTreeStatus || "unknown");
     byId("git-handoff-current-branch").textContent = branch;
+    byId("git-handoff-default-branch").textContent = textOrEmpty((data && data.defaultBranch) || state.workspace.defaultBranch || "unknown");
     byId("git-handoff-protected-branch").textContent = protectedBranch ? "yes" : "no";
     byId("git-handoff-worktree").textContent = worktree;
+    byId("git-handoff-detached-head").textContent = branch === "unknown" ? "yes" : "no";
     byId("git-handoff-dirty-count").textContent = dirtyCount;
     const writeSucceededOnWorkingBranch = data && data.success === true && written.length && !protectedBranch && branch !== "unknown";
     const branchDisplay = writeSucceededOnWorkingBranch ? "Already on working branch: " + branch : branchCommand;
@@ -3268,6 +3374,12 @@ const UI_JS: &str = r#"(function () {
       }
     });
     byId("source-target-description").textContent = layout.description;
+    byId("active-workflow-mode").textContent = Array.from(byId("workflow-mode").options).filter(function (option) {
+      return option.value === selectedMode;
+    }).map(function (option) {
+      return option.textContent;
+    })[0] || selectedMode;
+    byId("active-workflow-mode").setAttribute("data-workflow-mode", selectedMode);
     byId("source-kind").textContent = layout.sourceKind;
     byId("target-kind").textContent = layout.targetKind;
     byId("source-type").textContent = layout.sourceType;
@@ -4806,6 +4918,7 @@ const UI_JS: &str = r#"(function () {
       body.appendChild(tr);
     }
     byId("results-count").textContent = visibleRows.length + " table summary row(s)";
+    byId("results-count-automation").textContent = visibleRows.length + " table summary row(s)";
     byId("included-count").textContent = "Reference-data rows available in Reports / Raw JSON";
     renderSelectedObject();
     updateReferenceDataReviewScriptWriteButton();
@@ -4833,18 +4946,21 @@ const UI_JS: &str = r#"(function () {
     visibleRows.forEach(function (row, visibleIndex) {
       const sourceIndex = state.rows.indexOf(row);
       const ref = rowRef(row, sourceIndex);
+      const selectorSlug = resultRowSelectorSlug(row);
       if (!state.included.has(ref)) {
         state.included.add(ref);
       }
       const tr = document.createElement("tr");
       tr.dataset.index = String(visibleIndex);
-      if (textOrEmpty(row.name).toLowerCase() === "actor") {
-        tr.setAttribute("data-testid", "results-row-actor");
+      tr.setAttribute("data-testid", "results-row-" + selectorSlug);
+      tr.setAttribute("data-object-ref", resultRowIdentity(row));
+      if (row.relativePath) {
+        tr.setAttribute("data-repository-path", row.relativePath);
       }
       tr.classList.toggle("selected", visibleIndex === state.selectedIndex);
       const include = document.createElement("input");
       include.type = "checkbox";
-      include.setAttribute("data-testid", "results-include-checkbox");
+      include.setAttribute("data-testid", "results-include-" + selectorSlug);
       include.checked = state.included.has(ref);
       include.addEventListener("change", function (event) {
         event.stopPropagation();
@@ -4858,22 +4974,28 @@ const UI_JS: &str = r#"(function () {
       });
 
       [
-        include,
-        row.objectType,
-        row.schema,
-        row.name,
-        statusBadge(row.status),
-        row.operation || "",
-        Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings),
-      ].forEach(function (value, cellIndex) {
+        { value: include },
+        { value: row.objectType, testId: "results-row-type-" + selectorSlug },
+        { value: row.schema },
+        { value: row.name, testId: "results-open-" + selectorSlug },
+        { value: statusBadge(row.status), testId: "results-row-status-" + selectorSlug },
+        { value: row.operation || "", testId: "results-row-path-" + selectorSlug, repositoryPath: row.relativePath || "" },
+        { value: Array.isArray(row.warnings) ? row.warnings.length : textOrEmpty(row.warnings) },
+      ].forEach(function (item, cellIndex) {
         const td = document.createElement("td");
         if (visibleIndex === 0 && cellIndex === 0) {
           td.setAttribute("data-testid", "results-row-first-selectable");
         }
-        if (value instanceof HTMLElement) {
-          td.appendChild(value);
+        if (item.testId) {
+          td.setAttribute("data-testid", item.testId);
+        }
+        if (item.repositoryPath) {
+          td.setAttribute("data-repository-path", item.repositoryPath);
+        }
+        if (item.value instanceof HTMLElement) {
+          td.appendChild(item.value);
         } else {
-          td.textContent = textOrEmpty(value);
+          td.textContent = textOrEmpty(item.value);
         }
         tr.appendChild(td);
       });
@@ -4893,6 +5015,7 @@ const UI_JS: &str = r#"(function () {
       td.colSpan = 7;
       td.textContent = "No object rows are available in the latest response. Use Reports / Raw JSON for the full service response.";
       tr.appendChild(td);
+      tr.setAttribute("data-testid", "results-empty-state");
       body.appendChild(tr);
     }
 
@@ -4916,11 +5039,18 @@ const UI_JS: &str = r#"(function () {
       return state.included.has(ref);
     }).length;
     byId("results-count").textContent = state.visibleRows.length + " visible of " + state.rows.length + " row(s)";
+    byId("results-count-automation").textContent = state.visibleRows.length + " visible of " + state.rows.length + " row(s)";
     byId("included-count").textContent = visibleIncluded + " included in filter";
   }
 
   function clearObjectDiffDetails(message) {
     state.selectedObjectDdl = null;
+    byId("object-diff-object-ref").textContent = "none";
+    byId("object-diff-object-type").textContent = "none";
+    byId("object-diff-status").textContent = "none";
+    byId("object-diff-loading").hidden = true;
+    byId("object-diff-error").hidden = true;
+    byId("object-diff-error").textContent = "";
     byId("source-detail").className = "";
     byId("target-detail").className = "";
     byId("source-detail").textContent = message || "DDL not available yet for this object.";
@@ -5489,6 +5619,9 @@ const UI_JS: &str = r#"(function () {
       const referenceDirection = directionForWorkflowMode(currentWorkflowMode());
       if (!row) {
         byId("selected-object-title").textContent = "No reference-data table selected";
+        byId("object-diff-object-ref").textContent = "none";
+        byId("object-diff-object-type").textContent = "referenceDataTable";
+        byId("object-diff-status").textContent = "none";
         updateSummary("selected-object-summary", {
           source: referenceDirection.sourceLabel,
           target: referenceDirection.targetLabel
@@ -5498,6 +5631,9 @@ const UI_JS: &str = r#"(function () {
       }
       if (row.objectType !== "referenceDataTable" || !rowMatchesCurrentWorkflow(row)) {
         byId("selected-object-title").textContent = "No reference-data table selected";
+        byId("object-diff-object-ref").textContent = "none";
+        byId("object-diff-object-type").textContent = "referenceDataTable";
+        byId("object-diff-status").textContent = "none";
         updateSummary("selected-object-summary", {
           message: "Selected result belongs to a different workflow. Run Reference Data Compare again."
         });
@@ -5506,6 +5642,9 @@ const UI_JS: &str = r#"(function () {
       }
       const tableName = row.raw && row.raw.tableName ? row.raw.tableName : row.schema + "." + row.name;
       byId("selected-object-title").textContent = "Data Diff: " + tableName;
+      byId("object-diff-object-ref").textContent = resultRowIdentity(row);
+      byId("object-diff-object-type").textContent = row.objectType || "referenceDataTable";
+      byId("object-diff-status").textContent = row.status || "unknown";
       updateSummary("selected-object-summary", {
         objectType: "referenceDataTable",
         table: tableName,
@@ -5523,12 +5662,18 @@ const UI_JS: &str = r#"(function () {
     if (!row) {
       byId("selected-object-title").textContent = "No object selected";
       byId("selected-object-summary").innerHTML = "";
+      byId("object-diff-object-ref").textContent = "none";
+      byId("object-diff-object-type").textContent = "none";
+      byId("object-diff-status").textContent = "none";
       clearObjectDiffDetails("DDL not available yet for this object.");
       return;
     }
     if (!rowMatchesCurrentWorkflow(row)) {
       const message = "Selected result belongs to a different workflow. Run the current workflow again.";
       byId("selected-object-title").textContent = "No object selected";
+      byId("object-diff-object-ref").textContent = "none";
+      byId("object-diff-object-type").textContent = "none";
+      byId("object-diff-status").textContent = "none";
       updateSummary("selected-object-summary", {
         message: message
       });
@@ -5536,6 +5681,9 @@ const UI_JS: &str = r#"(function () {
       return;
     }
     byId("selected-object-title").textContent = row.objectType + ": " + row.name;
+    byId("object-diff-object-ref").textContent = resultRowIdentity(row);
+    byId("object-diff-object-type").textContent = row.objectType || "unknown";
+    byId("object-diff-status").textContent = row.status || "unknown";
     updateSummary("selected-object-summary", {
       objectType: row.objectType,
       schema: row.schema,
@@ -5552,6 +5700,9 @@ const UI_JS: &str = r#"(function () {
     setObjectDiffMode(state.objectDiffMode || "fullContext");
     byId("source-detail").textContent = "Loading DDL detail...";
     byId("target-detail").textContent = "Loading DDL detail...";
+    byId("object-diff-loading").hidden = false;
+    byId("object-diff-error").hidden = true;
+    byId("object-diff-error").textContent = "";
     updateDdlComparisonStatus(null, null);
     byId("selected-json").textContent = redactedJson(objectDiffDisplayPayload(row, direction));
     loadSelectedObjectDdl(row, direction);
@@ -5899,12 +6050,15 @@ const UI_JS: &str = r#"(function () {
         warnings: ["Reference-data compare rows are read-only data results, not DDL objects."]
       };
       renderLoadedObjectDiff();
+      byId("object-diff-loading").hidden = true;
       return;
     }
     let detail = {};
     try {
       detail = await requestJson(approvedEndpoints.objectDdl, objectDdlRequest(row));
     } catch (error) {
+      byId("object-diff-error").hidden = false;
+      byId("object-diff-error").textContent = error.message || "DDL detail request failed.";
       detail = { repositoryDdl: "", databaseDdl: "", objectOnly: {}, fullContext: {}, relatedObjects: {}, warnings: [error.message || "DDL detail request failed."] };
     }
 
@@ -5934,6 +6088,7 @@ const UI_JS: &str = r#"(function () {
     }
     state.selectedObjectDdl = detail;
     renderLoadedObjectDiff();
+    byId("object-diff-loading").hidden = true;
   }
 
   function objectDiffDirectionRegressionFixture() {
@@ -6005,7 +6160,11 @@ const UI_JS: &str = r#"(function () {
   if (typeof window !== "undefined") {
     window.dbstateUiTestHooks = {
       objectDiffDirectionRegressionFixture: objectDiffDirectionRegressionFixture,
-      staleCompareResultInDatabaseToRepositoryFixture: staleCompareResultInDatabaseToRepositoryFixture
+      staleCompareResultInDatabaseToRepositoryFixture: staleCompareResultInDatabaseToRepositoryFixture,
+      stableSelectorHash: stableSelectorHash,
+      selectorSlug: selectorSlug,
+      resultRowSelectorSlug: resultRowSelectorSlug,
+      repositoryObjectPathSlug: repositoryObjectPathSlug
     };
   }
 
@@ -6864,6 +7023,15 @@ const UI_JS: &str = r#"(function () {
     const config = options || {};
     responseSummary.textContent = "Running " + label + "...";
     setOperationAlert(label, "running", 0, 0, "Running " + label + "...", "info");
+    if (label === "Connection test") {
+      setConnectionStatusState("running");
+    }
+    if (label === "Database to Repository Preview") {
+      setRepositorySyncPreviewState("loading");
+    }
+    if (label === "Database to Repository Write") {
+      setRepositoryWriteState("loading", {});
+    }
     showStep(config.step || "reports");
     try {
       const data = await requestJson(endpoint, body, config.method);
@@ -6920,6 +7088,15 @@ const UI_JS: &str = r#"(function () {
       if (label === "Health") {
         servicePill.textContent = data.success ? "Service healthy" : "Service issue";
       }
+      if (label === "Connection test") {
+        setConnectionStatusState(data && data.success ? "success" : "error");
+      }
+      if (label === "Database to Repository Preview") {
+        setRepositorySyncPreviewState(data && data.success ? "success" : "error");
+      }
+      if (label === "Database to Repository Write") {
+        setRepositoryWriteState(data && data.success ? "success" : "error", data);
+      }
       if (writeGenerateSuccessOpensGitWorkflow(label, data)) {
         openGitWorkflowAfterWrite(label, data);
       }
@@ -6940,6 +7117,15 @@ const UI_JS: &str = r#"(function () {
       renderResults(rows);
       if (label === "Health") {
         servicePill.textContent = "Service not reachable";
+      }
+      if (label === "Connection test") {
+        setConnectionStatusState("error");
+      }
+      if (label === "Database to Repository Preview") {
+        setRepositorySyncPreviewState("error");
+      }
+      if (label === "Database to Repository Write") {
+        setRepositoryWriteState("error", data);
       }
     }
   }
