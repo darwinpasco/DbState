@@ -11017,6 +11017,8 @@ fn object_ddl_returns_rls_policy_ddl_and_related_objects() {
 
 #[test]
 fn slice15_repository_sync_preview_uses_dry_run_and_does_not_write_without_connection() {
+    let _guard = ENV_LOCK.get_or_init(|| Mutex::new(())).lock().unwrap();
+    env::remove_var("DBSTATE_POSTGRES_URL");
     let dir = create_temp_dir("slice15-preview");
     init_git_repo(&dir);
     create_complete_structure(&dir);

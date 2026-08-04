@@ -1632,7 +1632,13 @@ fn service_repository_sync_endpoint(
                 args.push(connection.url);
             }
         }
-        Ok(None) => {}
+        Ok(None) => {
+            return service_error_response(
+                400,
+                command,
+                "Missing PostgreSQL connection URL. Provide a session URL, saved profile, or DBSTATE_POSTGRES_URL.",
+            )
+        }
         Err(error) => return service_error_response(400, command, &error),
     }
 
